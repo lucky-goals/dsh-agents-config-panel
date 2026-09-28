@@ -174,6 +174,9 @@ describe('http-routes', () => {
     expect(data.catalog).toEqual(catalog);
     expect(data.subagents).toHaveLength(1);
     expect(data.subagents[0].id).toBe('tool-subagent-coder');
+    expect(data.subagentProviders.map((provider: any) => provider.name)).toEqual(['spawn', 'fork']);
+    expect(data.diagnostics.hostApi).toBe(2);
+    expect(data.diagnostics.subagentProvidersSource).toBe('patch');
     expect(data.members).toHaveLength(1);
     expect(data.members[0].name).toBe('tester');
   });
@@ -286,6 +289,22 @@ describe('http-routes with async catalog on the real fixture', () => {
   const post = (suffix: string, body: Record<string, unknown>) =>
     call(routes, suffix, createMockReq('POST', `/plugins/dsh-wuyou-agent/api${suffix}`, body));
 
+  it('F0: state exposes the real ACP provider directory and host API version', async () => {
+    const { status, data } = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state'));
+
+    expect(status).toBe(200);
+    expect(data.subagentProviders.map((provider: any) => provider.name)).toEqual([
+      'spawn',
+      'fork',
+      'ccacp',
+      'cursoracp',
+      'kiroopsuacp',
+      'kirogptacp',
+    ]);
+    expect(data.subagentProviders.slice(2).every((provider: any) => provider.kind === 'acp')).toBe(true);
+    expect(data.diagnostics.hostApi).toBe(2);
+    expect(data.diagnostics.subagentProvidersSource).toBe('patch');
+  });
   it('F1: spawn create with an async catalog returns 200 and writes the row', async () => {
     const { status, data } = await post('/subagents', {
       expectedRevision: computeRevision(REAL_FIXTURE),
@@ -455,9 +474,12 @@ describe('http-routes with async catalog on the real fixture', () => {
 
     expect(status).toBe(200);
     expect(data.diagnostics).toEqual({
+      hostApi: 2,
       atomicWrite: { loaded: false, tried: ['file:///a', 'file:///b'] },
       catalogSource: 'runtime',
       catalogErrors: ['resolveModelInfo(x, y): boom'],
+      subagentProvidersSource: 'patch',
+      subagentProviderErrors: ['subagents 服务尚未绑定，provider 能力来自配置推断'],
     });
   });
 
@@ -471,8 +493,11 @@ describe('http-routes with async catalog on the real fixture', () => {
     });
 
     expect(data.diagnostics).toEqual({
+      hostApi: 2,
       atomicWrite: { loaded: true, anchor: 'file:///anchor/package.json', resolvedPath: '/resolved/index.js' },
       catalogSource: 'patch',
+      subagentProvidersSource: 'patch',
+      subagentProviderErrors: ['subagents 服务尚未绑定，provider 能力来自配置推断'],
     });
   });
 
@@ -585,6 +610,28 @@ describe('write request validation (F22-INPUT)', () => {
     });
   }
 
+  for (const [field, value] of [
+    ['maxDepth', 2],
+    ['modelSelectionSettings', true],
+    ['persona', 'temporary persona'],
+    ['toolFilter', ['subagent']],
+  ] as const) {
+    it(`rejects immutable subagent field ${field} before reading or locking`, async () => {
+      const tracked = trackedIO();
+      const routes = createRoutes({ io: tracked.io, profileDefault: 'standard-acp', getCatalog: asyncCatalog() });
+      const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', {
+        expectedRevision: REV,
+        action: 'update',
+        id: 'tool-subagent-coder',
+        patch: { [field]: value },
+      }));
+
+      expect(status).toBe(400);
+      expect(data).toEqual({ code: 'INVALID', message: `字段 ${field} 不能通过此接口修改` });
+      expect(tracked.touched).toEqual({ reads: 0, locks: 0 });
+      expect(tracked.text()).toBe(REAL_FIXTURE);
+    });
+  }
   it('a valid unchanged tester re-save still returns 200 and leaves the file byte-identical', async () => {
     const tracked = trackedIO();
     const routes = createRoutes({ io: tracked.io, profileDefault: 'standard-acp', getCatalog: asyncCatalog() });

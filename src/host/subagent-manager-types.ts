@@ -2,7 +2,8 @@ export type ReasoningEffort = string;
 
 export interface SubagentInput {
   toolName: string;
-  provider: 'spawn' | 'fork';
+  /** Any provider name registered in the current subagent provider directory (v2.1). */
+  provider: string;
   backgroundMode?: 'continuable' | 'one-shot';
   agentOptions?: {
     provider: string;
@@ -28,8 +29,11 @@ export type SubagentPatch = {
 export interface SubagentRow {
   id: string;
   disabled: boolean;
+  /** true iff config.provider is in the current subagent provider directory. */
   editable: boolean;
   config: Record<string, unknown>;
+  /** Present exactly when editable is false. */
+  readOnlyReason?: string;
 }
 
 /** Compatibility aliases for the original Panel A client contract. */

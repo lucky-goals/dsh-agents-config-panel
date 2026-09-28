@@ -159,18 +159,30 @@ describe('real fixture HTTP route integration', () => {
   expect(response.body.members).toHaveLength(5);
 });
 
-  it('maps read-only ACP mutation and stale revisions without changing the file', async () => {
+  it('allows registered ACP updates and rejects unregistered providers without changing the file', async () => {
     const initial = await request(base, '/plugins/dsh-wuyou-agent/api/state?profile=standard-acp');
     const initialRevision = String(initial.body.revision);
-    const beforeReadOnly = await readFile(join(profileDir, 'cordis.patch.yml'), 'utf8');
-    const readOnly = await request(base, '/plugins/dsh-wuyou-agent/api/subagents', 'POST', {
+    const acpUpdate = await request(base, '/plugins/dsh-wuyou-agent/api/subagents', 'POST', {
       expectedRevision: initialRevision,
       action: 'update',
       id: 'tool-subagent-acp',
+      patch: { toolName: 'subagent_route_acp' },
+    });
+    expect(acpUpdate.status).toBe(200);
+    expect(acpUpdate.body.notice).toBe('已保存，新建会话后生效');
+    const afterAcp = await readFile(join(profileDir, 'cordis.patch.yml'), 'utf8');
+    expect(listSubagents(afterAcp).find((row) => row.id === 'tool-subagent-route-acp')?.config.toolName).toBe('subagent_route_acp');
+
+    const beforeReadOnly = afterAcp;
+    const readOnly = await request(base, '/plugins/dsh-wuyou-agent/api/subagents', 'POST', {
+      expectedRevision: String(acpUpdate.body.revision),
+      action: 'update',
+      id: 'tool-subagent-codex',
       patch: { backgroundMode: 'one-shot' },
     });
     expect(readOnly.status).toBe(422);
     expect(readOnly.body.code).toBe('READ_ONLY');
+    expect(readOnly.body.message).toBe("provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑");
     expect(await readFile(join(profileDir, 'cordis.patch.yml'), 'utf8')).toBe(beforeReadOnly);
 
     await appendFile(join(profileDir, 'cordis.patch.yml'), '\n# external revision change\n', 'utf8');

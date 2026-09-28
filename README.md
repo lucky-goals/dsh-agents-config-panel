@@ -2,14 +2,14 @@
 
 无忧Agent 是一个 DSH（DeepSeek Harness）0.1.7-rc.2 插件，在 DSH Web 的设置对话框里加两个页面，用来直接编辑当前 profile 的 `cordis.patch.yml`，不用手改 YAML：
 
-- **无忧Agent · Subagent**：管理 `preset-standard-acp` → `delegation` 组里的 `@deepseek-ai/dsh-tool-subagent` 工具行，可新增、编辑、删除 `spawn`/`fork` 行；ACP 类后端的行只读。
-- **无忧Agent · 团队成员**：管理 `@nanmicoder/dsh-agent-teams` 中某个团队 profile 的成员，可新增、编辑、删除，团队至少保留一个成员。
+- **无忧Agent · Subagent**：管理 `preset-standard-acp` → `delegation` 组里的 `@deepseek-ai/dsh-tool-subagent` 工具行，可以新增、编辑、删除。provider 下拉的选项来自 DSH 运行时已注册的 subagent provider（spawn、fork，以及 ccacp、cursoracp 等 ACP provider）。表单显示哪些字段由 provider 的能力决定。provider 未注册的行（例如 codex、claude-code 占位行）只读。
+- **无忧Agent · 团队成员**：管理 `@nanmicoder/dsh-agent-teams` 中某个团队 profile 的成员，可以新增、编辑、删除，团队至少保留一个成员。每个成员占两行：第一行是成员名和角色，第二行是 Provider / Model / Reasoning Effort。
 
-保存后配置立即写入文件，**新建会话后生效**。
+保存后配置立即写入文件，**新建会话后生效**。升级插件后要重启 `dsh web`，新的 Host 才会加载，见 [INSTALL.md 第 5 节](docs/INSTALL.md#5-生效)。
 
-![两个设置页（本地 E2E 生成的截图）](test/e2e/artifacts-release/browser-settings.png)
+![两个设置页（本地 E2E 生成的截图）](test/e2e/artifacts-v2.1-r2/browser-settings.png)
 
-> 截图由 `bash scripts/e2e-isolated-profile.sh` 在本地生成，存放在 `test/e2e/artifacts-release/`。该目录已被 `.gitignore` 忽略，克隆后要先跑一次 E2E 才能看到这张图。
+> 截图由 `bash scripts/e2e-isolated-profile.sh` 在本地生成，存放在 `test/e2e/artifacts-v2.1-r2/`。`test/e2e/` 已被 `.gitignore` 忽略，克隆后要先跑一次 E2E 才能看到这张图。
 
 ## 快速开始
 

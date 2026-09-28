@@ -13,6 +13,7 @@ import React from 'react';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { listSubagents } from '../host/subagent-manager';
+import { resolveSubagentProviders } from '../host/subagent-providers';
 import { listMembers, listTeamProfiles } from '../host/members-editor';
 import { readCatalog } from '../host/catalog';
 import { SubagentPanel } from './panel-a/SubagentPanel';
@@ -32,12 +33,16 @@ const FIXTURE = readFileSync(join(REPO_ROOT, 'test/fixtures/real-web-cordis.patc
 const HEALTHY: StateDiagnostics = {
   atomicWrite: { loaded: true, anchor: 'file:///plugin/lib/index.js', resolvedPath: '/profile/node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js' },
   catalogSource: 'runtime',
+  hostApi: 2,
+  subagentProvidersSource: 'patch',
 };
 
 const BLOCKED: StateDiagnostics = {
   atomicWrite: { loaded: false, tried: ['file:///plugin/lib/index.js', 'file:///profile/package.json'] },
   catalogSource: 'patch',
   catalogErrors: ['llm service unavailable'],
+  hostApi: 2,
+  subagentProvidersSource: 'patch',
 };
 
 /** GET state as the Host would build it from the fixture for one team profile. */
@@ -45,7 +50,9 @@ function fixtureState(profile = 'standard-acp', diagnostics: StateDiagnostics = 
   return {
     revision: 'fixture-rev',
     catalog: readCatalog(FIXTURE),
+    // No runtime subagents service: the Host falls back to the patch (v2.1 §1).
     subagents: listSubagents(FIXTURE),
+    subagentProviders: resolveSubagentProviders(FIXTURE, null),
     teamProfiles: listTeamProfiles(FIXTURE),
     profile,
     members: listMembers(FIXTURE, profile) as TeamMember[],
@@ -74,6 +81,18 @@ function rowHtml(html: string, firstCell: string): string | undefined {
 function firstColumn(html: string): string[] {
   const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? '';
   return [...tbody.matchAll(/<tr><td[^>]*>([^<]*)/g)].map((m) => m[1]);
+}
+
+/** Panel B (v2.1 two-row layout): member names from each tbody's row header, in order. */
+function memberNames(html: string): string[] {
+  return [...html.matchAll(/<th scope="row"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
+}
+
+/** Panel B: the whole <tbody> of one member. */
+function memberGroup(html: string, name: string): string | undefined {
+  return [...html.matchAll(/<tbody[^>]*>([\s\S]*?)<\/tbody>/g)]
+    .map((m) => m[1])
+    .find((body) => new RegExp(`<th scope="row"[^>]*>${name}</th>`).test(body));
 }
 
 /** Opening-tag attributes of <button> elements whose text contains `label`. */
@@ -115,7 +134,13 @@ describe('fixture sanity', () => {
 });
 
 describe('SubagentPanel render (real fixture)', () => {
-  it('marks real ACP rows read-only and keeps real spawn rows editable', async () => {
+  it('patch fallback registers the real ACP providers (t40 resolveSubagentProviders)', () => {
+    expect(resolveSubagentProviders(FIXTURE, null).map((p) => p.name)).toEqual([
+      'spawn', 'fork', 'ccacp', 'cursoracp', 'kiroopsuacp', 'kirogptacp',
+    ]);
+  });
+
+  it('v2.1: registered ACP rows are editable, unregistered codex/claude-code rows stay read-only', async () => {
     const store = createSubagentStore(fixtureApi());
     await store.load();
     const html = renderToString(<SubagentPanel store={store} />);
@@ -125,12 +150,29 @@ describe('SubagentPanel render (real fixture)', () => {
       listSubagents(FIXTURE).map((row) => String(row.config.toolName)),
     );
 
-    for (const acp of ['subagent_acp', 'subagent_cursor', 'subagent_reviewer', 'subagent_codex', 'subagent_claude_code']) {
+    // ccacp / cursoracp rows: registered through the patch fallback.
+    for (const acp of ['subagent_acp', 'subagent_cursor', 'subagent_reviewer', 'subagent_explore', 'subagent_architect', 'subagent_research']) {
       const row = rowHtml(html, acp);
       expect(row, acp).toBeDefined();
-      expect(row, acp).toContain('只读');
-      for (const tag of buttonTags(row!, '编辑')) expect(tag, acp).toContain('disabled');
+      expect(row, acp).not.toContain('只读');
+      for (const label of ['编辑', '删除']) {
+        const [tag] = buttonTags(row!, label);
+        expect(tag, `${acp} ${label}`).toBeDefined();
+        expect(tag, `${acp} ${label}`).not.toContain('disabled');
+      }
     }
+
+    // codex / claude-code: provider not registered → read-only with the contract wording.
+    for (const [toolName, provider] of [['subagent_codex', 'codex'], ['subagent_claude_code', 'claude-code']]) {
+      const row = rowHtml(html, toolName);
+      expect(row, toolName).toBeDefined();
+      expect(row, toolName).toContain('只读');
+      for (const tag of [...buttonTags(row!, '编辑'), ...buttonTags(row!, '删除')]) {
+        expect(tag, toolName).toContain('disabled');
+        expect(tag, toolName).toContain(`provider &#x27;${provider}&#x27; 未注册，此行只读。安装对应插件并重启 DSH 后再编辑`);
+      }
+    }
+    expect(html).not.toContain('ACP 后端的 subagent 工具为只读');
 
     for (const editable of ['subagent_coder', 'subagent_tester', 'subagent_fork']) {
       const row = rowHtml(html, editable);
@@ -196,12 +238,81 @@ describe('MembersPanel render (real fixture)', () => {
     await store.load();
     const html = renderToString(<MembersPanel store={store} />);
 
-    expect(firstColumn(html)).toEqual(['claude', 'coder', 'tester', 'front-designer', 'generalist']);
+    expect(memberNames(html)).toEqual(['claude', 'coder', 'tester', 'front-designer', 'generalist']);
     expect(api.getState).toHaveBeenCalledWith('standard-acp');
     expect(html).toMatch(/团队 profile：(<!-- -->)?standard-acp/);
     for (const member of listMembers(FIXTURE, 'standard-acp')) {
-      if (member.model) expect(rowHtml(html, member.name), member.name).toContain(String(member.model));
+      if (member.model) expect(memberGroup(html, member.name), member.name).toContain(String(member.model));
     }
+  });
+
+  it('v2.1 §7: one tbody per member, two rows, three header columns', async () => {
+    const store = createMembersStore(fixtureApi());
+    await store.load();
+    const html = renderToString(<MembersPanel store={store} />);
+    const real = listMembers(FIXTURE, 'standard-acp');
+
+    const thead = html.match(/<thead>([\s\S]*?)<\/thead>/)![1];
+    expect([...thead.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1])).toEqual(['成员名', '角色', '操作']);
+
+    const bodies = [...html.matchAll(/<tbody[^>]*>([\s\S]*?)<\/tbody>/g)].map((m) => m[1]);
+    expect(bodies).toHaveLength(real.length);
+    for (const member of real) {
+      const body = memberGroup(html, member.name)!;
+      expect(body, member.name).toBeDefined();
+      const rows = [...body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((m) => m[1]);
+      expect(rows, member.name).toHaveLength(2);
+      // Row 1: name header (nowrap, min 9.5em), role (min 12em), actions rowSpan=2.
+      expect(rows[0]).toMatch(/<th scope="row" style="[^"]*white-space:nowrap[^"]*min-width:9.5em/);
+      expect(rows[0]).not.toContain('overflow-wrap:anywhere');
+      expect(rows[0]).toMatch(/<td style="[^"]*min-width:12em[^"]*"/);
+      // React SSR serialises rowSpan as lowercase `rowspan`.
+      expect(rows[0]).toMatch(/<td rowspan="2"[^>]*>[\s\S]*编辑[\s\S]*删除/);
+      // Row 2: colSpan=2 with a labelled Provider / Model / Reasoning Effort list, no focusable elements.
+      expect(rows[1]).toMatch(/^<td colSpan="2"[^>]*><dl/);
+      expect([...rows[1].matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((m) => m[1])).toEqual(['Provider', 'Model', 'Reasoning Effort']);
+      const values = [...rows[1].matchAll(/<dd[^>]*>([^<]*)<\/dd>/g)].map((m) => m[1]);
+      expect(values, member.name).toEqual([member.provider, member.model, member.reasoning_effort].map((v) => (v ? String(v) : '-')));
+      expect(rows[1]).not.toMatch(/<(button|a|input|select)\b/);
+    }
+  });
+
+  it('v2.1 §7: empty values show "-" and an empty list is a single colSpan=3 row', async () => {
+    const store = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [{ name: 'bare' }] })));
+    await store.load();
+    const body = memberGroup(renderToString(<MembersPanel store={store} />), 'bare')!;
+    expect(body).toMatch(/min-width:12em[^"]*">-<\/td>/);
+    expect([...body.matchAll(/<dd[^>]*>([^<]*)<\/dd>/g)].map((m) => m[1])).toEqual(['-', '-', '-']);
+
+    const empty = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [] })));
+    await empty.load();
+    const html = renderToString(<MembersPanel store={empty} />);
+    expect(memberNames(html)).toEqual([]);
+    expect(html).toMatch(/<td[^>]*colSpan="3"[^>]*>暂无成员<\/td>/);
+  });
+
+  it('v2.1 §7: edit and delete buttons still drive the store', async () => {
+    const api = fixtureApi();
+    const store = createMembersStore(api);
+    await store.load();
+    // Each member group keeps exactly one enabled 编辑 and one enabled 删除 button.
+    const html = renderToString(<MembersPanel store={store} />);
+    for (const name of memberNames(html)) {
+      const body = memberGroup(html, name)!;
+      for (const label of ['编辑', '删除']) {
+        const tags = buttonTags(body, label);
+        expect(tags, `${name} ${label}`).toHaveLength(1);
+        expect(tags[0], `${name} ${label}`).not.toContain('disabled');
+        expect(tags[0], `${name} ${label}`).not.toContain('tabindex');
+      }
+    }
+    // SSR cannot click; drive the store the way the buttons' onClick handlers do.
+    store.openEdit('coder');
+    expect(store.getSnapshot().form.editingName).toBe('coder');
+    store.cancel();
+    store.requestDelete('coder');
+    await store.confirmDelete();
+    expect(api.mutateMembers).toHaveBeenCalledWith(expect.objectContaining({ action: 'remove', name: 'coder' }));
   });
 
   it('defaults to standard-acp and switches profiles when the patch declares several', async () => {
@@ -226,7 +337,7 @@ describe('MembersPanel render (real fixture)', () => {
     await store.setProfile('gpt-only');
     html = renderToString(<MembersPanel store={store} />);
     expect(selectedOption(html, /aria-label="团队 profile"/)).toBe('gpt-only');
-    expect(firstColumn(html)).toEqual(['tester', 'generalist']);
+    expect(memberNames(html)).toEqual(['tester', 'generalist']);
 
     store.requestDelete('tester');
     await store.confirmDelete();

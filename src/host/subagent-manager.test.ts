@@ -7,6 +7,7 @@ import {
   updateSubagent,
 } from './subagent-manager';
 import { readCatalog } from './catalog';
+import { resolveSubagentProviders } from './subagent-providers.js';
 
 const fixture = readFileSync(
   new URL('../../test/fixtures/real-web-cordis.patch.yml', import.meta.url),
@@ -52,6 +53,54 @@ function expectOnlyInsertionBeforePresetTail(original: string, changed: string):
   expect(`${changed.slice(0, originalMarker)}${changed.slice(changedMarker)}`).toBe(original);
 }
 
+const patchProviders = resolveSubagentProviders(fixture, null);
+
+function providerInfo(name: string): any {
+  const provider = patchProviders.find((entry) => entry.name === name);
+  expect(provider, `missing provider ${name}`).toBeDefined();
+  return provider;
+}
+
+function targetRowBounds(text: string, id: string): [number, number] {
+  const marker = new RegExp(`^([ \\t]*)- id: ${id}$`, 'm');
+  const match = marker.exec(text);
+  expect(match, `missing row ${id}`).not.toBeNull();
+  const start = match!.index;
+  const next = new RegExp(`^${match![1]}- id: `, 'm').exec(text.slice(start + match![0].length));
+  return [start, next ? start + match![0].length + next.index : text.length];
+}
+
+function expectOnlyTargetRowChanged(original: string, changed: string, id: string): void {
+  const [originalStart, originalEnd] = targetRowBounds(original, id);
+  const [changedStart, changedEnd] = targetRowBounds(changed, id);
+  expect(changed.slice(0, changedStart)).toBe(original.slice(0, originalStart));
+  expect(changed.slice(changedEnd)).toBe(original.slice(originalEnd));
+}
+
+function rowConfig(text: string, id: string): Record<string, any> {
+  const row = listSubagents(text).find((entry) => entry.id === id);
+  expect(row, `missing row ${id}`).toBeDefined();
+  return row!.config;
+}
+
+function resolvedMaxDepth(configured: unknown): unknown {
+  if (configured === 'provider-managed') return undefined;
+  if (configured !== undefined) return configured;
+  return 1;
+}
+
+function assertMountable(config: Record<string, any>, provider: any): void {
+  if (resolvedMaxDepth(config.maxDepth) !== undefined && !provider.capabilities.depthLimit) throw new Error('maxDepth');
+  if (config.agentOptions !== undefined && !provider.capabilities.agentOptions) throw new Error('agentOptions');
+  if (config.modelSelectionSettings === true && !provider.capabilities.agentOptions) throw new Error('modelSelectionSettings');
+  if ((config.backgroundMode ?? 'one-shot') === 'continuable' && !provider.prepareContinuable) throw new Error('continuable');
+}
+
+function mountProvider(name: string): any {
+  const info = providerInfo(name);
+  return { capabilities: info.capabilities, prepareContinuable: info.capabilities.continuable };
+}
+
 describe('SubagentManager against the real patch shape', () => {
   it('lists every dsh-tool-subagent row and excludes other delegation names', () => {
     const rows = listSubagents(fixture);
@@ -74,20 +123,22 @@ describe('SubagentManager against the real patch shape', () => {
     expect(rows.find((row) => row.id === 'tool-subagent')?.editable).toBe(true);
     expect(rows.find((row) => row.id === 'tool-subagent-fork')?.editable).toBe(true);
     expect(rows.find((row) => row.id === 'tool-subagent-acp')).toMatchObject({
-      editable: false,
+      editable: true,
       disabled: false,
       config: { provider: 'ccacp' },
     });
-    expect(rows.find((row) => row.id === 'tool-subagent-cursor')?.editable).toBe(false);
+    expect(rows.find((row) => row.id === 'tool-subagent-cursor')?.editable).toBe(true);
     expect(rows.find((row) => row.id === 'tool-subagent-codex')).toMatchObject({
       editable: false,
       disabled: true,
       config: { provider: 'codex' },
+      readOnlyReason: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
     });
     expect(rows.find((row) => row.id === 'tool-subagent-claude-code')).toMatchObject({
       editable: false,
       disabled: true,
       config: { provider: 'claude-code' },
+      readOnlyReason: "provider 'claude-code' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
     });
     expect(rows.some((row) => row.id === 'tool-subagent-control')).toBe(false);
     expect(rows.some((row) => row.id === 'tool-subagent-list-agents')).toBe(false);
@@ -174,25 +225,30 @@ describe('SubagentManager against the real patch shape', () => {
     expect(unknownModel).toMatchObject({ ok: false, code: 'INVALID' });
   });
 
-  it('keeps ACP rows read-only for both update and remove', () => {
+  it('keeps unregistered provider rows read-only for both update and remove', () => {
     const patch = updateSubagent(
       fixture,
-      'tool-subagent-acp',
-      { backgroundMode: 'continuable' },
-      catalog
+      'tool-subagent-codex',
+      { provider: 'spawn' },
+      catalog,
+      resolveSubagentProviders(fixture, null)
     );
     expect(patch).toMatchObject({
       ok: false,
       code: 'READ_ONLY',
-      message: 'ACP 后端的 subagent 工具为只读',
+      message: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
     });
     expect(patch.ok ? patch.yamlText : fixture).toBe(fixture);
 
-    const removed = removeSubagent(fixture, 'tool-subagent-acp');
+    const removed = removeSubagent(
+      fixture,
+      'tool-subagent-codex',
+      resolveSubagentProviders(fixture, null)
+    );
     expect(removed).toMatchObject({
       ok: false,
       code: 'READ_ONLY',
-      message: 'ACP 后端的 subagent 工具为只读',
+      message: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
     });
   });
 
@@ -415,5 +471,304 @@ describe('SubagentManager against the real patch shape', () => {
     expect(() => listSubagents(malformed)).toThrow(
       '未找到 preset-standard-acp 的 delegation 组，当前 profile 结构不受支持'
     );
+  });
+
+  it.each([
+    ['spawn → ccacp', 'ccacp'],
+    ['spawn → cursoracp', 'cursoracp'],
+  ])('normalizes %s to an ACP-mountable target row', (_label, targetProvider) => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-coder',
+      { provider: targetProvider } as any,
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-coder');
+
+    expect(config).toMatchObject({
+      provider: targetProvider,
+      toolName: 'subagent_coder',
+      backgroundMode: 'one-shot',
+      maxDepth: 'provider-managed',
+    });
+    expect(config).not.toHaveProperty('agentOptions');
+    expect(config).not.toHaveProperty('modelSelectionSettings');
+    expect(config).not.toHaveProperty('persona');
+    expect(config).not.toHaveProperty('toolFilter');
+    assertMountable(config, mountProvider(targetProvider));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent-coder');
+  });
+
+  it('keeps the spawn → fork normalization regression mountable', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-coder',
+      { provider: 'fork' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-coder');
+
+    expect(config).toMatchObject({
+      provider: 'fork',
+      toolName: 'subagent_coder',
+      backgroundMode: 'continuable',
+    });
+    expect(config).not.toHaveProperty('agentOptions');
+    assertMountable(config, mountProvider('fork'));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent-coder');
+  });
+
+  it('drops modelSelectionSettings when the default spawn row switches to cursoracp', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent',
+      { provider: 'cursoracp' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent');
+
+    expect(config).toMatchObject({
+      provider: 'cursoracp',
+      backgroundMode: 'one-shot',
+      maxDepth: 'provider-managed',
+    });
+    expect(config).not.toHaveProperty('agentOptions');
+    expect(config).not.toHaveProperty('modelSelectionSettings');
+    expect(config).not.toHaveProperty('persona');
+    expect(config).not.toHaveProperty('toolFilter');
+    assertMountable(config, mountProvider('cursoracp'));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent');
+  });
+
+  it('normalizes fork → ccacp and preserves only target-row bytes', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-fork',
+      { provider: 'ccacp' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-fork');
+
+    expect(config).toMatchObject({
+      provider: 'ccacp',
+      backgroundMode: 'one-shot',
+      maxDepth: 'provider-managed',
+    });
+    expect(config).not.toHaveProperty('agentOptions');
+    expect(config).not.toHaveProperty('persona');
+    expect(config).not.toHaveProperty('toolFilter');
+    assertMountable(config, mountProvider('ccacp'));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent-fork');
+  });
+
+  it('normalizes ccacp → fork by removing maxDepth and agentOptions', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-acp',
+      { provider: 'fork', backgroundMode: 'continuable' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-acp');
+
+    expect(config).toMatchObject({
+      provider: 'fork',
+      backgroundMode: 'continuable',
+    });
+    expect(config).not.toHaveProperty('maxDepth');
+    expect(config).not.toHaveProperty('agentOptions');
+    assertMountable(config, mountProvider('fork'));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent-acp');
+  });
+
+  it('preserves one-shot when ccacp → fork omits backgroundMode', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-acp',
+      { provider: 'fork' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-acp');
+
+    expect(config).toMatchObject({
+      provider: 'fork',
+      backgroundMode: 'one-shot',
+    });
+    expect(config).not.toHaveProperty('maxDepth');
+    expect(config).not.toHaveProperty('agentOptions');
+    assertMountable(config, mountProvider('fork'));
+  });
+
+  it('normalizes ccacp → spawn with supplied agentOptions and no maxDepth key', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-acp',
+      {
+        provider: 'spawn',
+        agentOptions: { provider: 'gpt-gateway', model: 'gpt-6-luna', reasoningEffort: 'high' },
+      },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-acp');
+
+    expect(config).toMatchObject({
+      provider: 'spawn',
+      backgroundMode: 'one-shot',
+      agentOptions: { provider: 'gpt-gateway', model: 'gpt-6-luna', reasoningEffort: 'high' },
+    });
+    expect(config).not.toHaveProperty('maxDepth');
+    assertMountable(config, mountProvider('spawn'));
+    expectOnlyTargetRowChanged(fixture, changed, 'tool-subagent-acp');
+  });
+
+  it.each([
+    ['ccacp → cursoracp', 'ccacp', 'cursoracp'],
+    ['cursoracp → ccacp', 'cursoracp', 'ccacp'],
+  ])('changes only provider for an ACP ↔ ACP switch (%s)', (_label, from, to) => {
+    const source = from === 'ccacp' ? fixture : replaceFirstFrom(
+      fixture,
+      /^ *- id: tool-subagent-acp$/m,
+      'provider: ccacp',
+      'provider: cursoracp',
+    );
+    const changed = yamlText(updateSubagent(
+      source,
+      'tool-subagent-acp',
+      { provider: to },
+      catalog,
+      patchProviders,
+    ));
+    const rowStart = findRequiredLine(source, /^ *- id: tool-subagent-acp$/m);
+    const providerAt = source.indexOf(`provider: ${from}`, rowStart);
+    expect(providerAt).toBeGreaterThan(rowStart);
+    const expected = `${source.slice(0, providerAt)}provider: ${to}${source.slice(providerAt + `provider: ${from}`.length)}`;
+
+    expect(changed).toBe(expected);
+    expect(rowConfig(changed, 'tool-subagent-acp')).toEqual({
+      provider: to,
+      toolName: 'subagent_acp',
+      backgroundMode: 'one-shot',
+      maxDepth: 'provider-managed',
+    });
+    assertMountable(rowConfig(changed, 'tool-subagent-acp'), mountProvider(to));
+  });
+
+  it('keeps a real ACP row byte-identical when its effective values do not change', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-acp',
+      { provider: 'ccacp', toolName: 'subagent_acp', backgroundMode: 'one-shot' },
+      catalog,
+      patchProviders,
+    ));
+    expect(changed).toBe(fixture);
+  });
+
+  it('changes only backgroundMode for a real spawn row', () => {
+    const changed = yamlText(updateSubagent(
+      fixture,
+      'tool-subagent-coder',
+      { backgroundMode: 'one-shot' },
+      catalog,
+      patchProviders,
+    ));
+    const rowStart = findRequiredLine(fixture, /^ *- id: tool-subagent-coder$/m);
+    const backgroundAt = fixture.indexOf('backgroundMode: continuable', rowStart);
+    expect(backgroundAt).toBeGreaterThan(rowStart);
+    const expected = `${fixture.slice(0, backgroundAt)}backgroundMode: one-shot${fixture.slice(backgroundAt + 'backgroundMode: continuable'.length)}`;
+
+    expect(changed).toBe(expected);
+    assertMountable(rowConfig(changed, 'tool-subagent-coder'), mountProvider('spawn'));
+  });
+
+  it('removes persona and toolFilter before switching a spawn row to ACP', () => {
+    const augmented = replaceFirstFrom(
+      fixture,
+      /^ *- id: tool-subagent-coder$/m,
+      '                    reasoningEffort: max\n',
+      '                    reasoningEffort: max\n                  persona: temporary persona\n                  toolFilter:\n                    - subagent\n',
+    );
+    const changed = yamlText(updateSubagent(
+      augmented,
+      'tool-subagent-coder',
+      { provider: 'ccacp' },
+      catalog,
+      patchProviders,
+    ));
+    const config = rowConfig(changed, 'tool-subagent-coder');
+
+    expect(config).toMatchObject({ provider: 'ccacp', backgroundMode: 'one-shot', maxDepth: 'provider-managed' });
+    expect(config).not.toHaveProperty('agentOptions');
+    expect(config).not.toHaveProperty('persona');
+    expect(config).not.toHaveProperty('toolFilter');
+    assertMountable(config, mountProvider('ccacp'));
+    expectOnlyTargetRowChanged(augmented, changed, 'tool-subagent-coder');
+  });
+
+  it('rejects an update to an unknown provider without changing the fixture', () => {
+    const result = updateSubagent(
+      fixture,
+      'tool-subagent-coder',
+      { provider: 'codex' },
+      catalog,
+      patchProviders,
+    );
+    expect(result).toEqual({ ok: false, code: 'INVALID', message: "provider 'codex' 未注册" });
+  });
+
+  it('allows removing a known ACP row and changes no neighboring bytes', () => {
+    const start = findRequiredLine(fixture, /^ *- id: tool-subagent-cursor$/m);
+    const followingComment = findRequiredLine(fixture, /^ *# ── Specialized subagent tools\b/m);
+    const end = fixture.lastIndexOf('\n', followingComment - 2) + 1;
+    const result = removeSubagent(fixture, 'tool-subagent-cursor', patchProviders);
+    const changed = yamlText(result);
+
+    expect(changed).toBe(`${fixture.slice(0, start)}${fixture.slice(end)}`);
+    expect(listSubagents(changed).some((row) => row.id === 'tool-subagent-cursor')).toBe(false);
+  });
+
+  it('creates a normalized ACP row with the exact v2.1 key set and order', () => {
+    const changed = yamlText(createSubagent(
+      fixture,
+      {
+        toolName: 'subagent_new_acp',
+        provider: 'ccacp',
+        backgroundMode: 'continuable',
+        agentOptions: { provider: 'gpt-gateway', model: 'gpt-6-luna' },
+      } as any,
+      catalog,
+      patchProviders,
+    ));
+    const row = listSubagents(changed).find((entry) => entry.id === 'tool-subagent-new-acp');
+    expect(row).toBeDefined();
+    expect(row!.config).toEqual({
+      provider: 'ccacp',
+      toolName: 'subagent_new_acp',
+      backgroundMode: 'one-shot',
+      maxDepth: 'provider-managed',
+    });
+    expect(row!.config).not.toHaveProperty('disabled');
+    expect(row!.config).not.toHaveProperty('persona');
+    expect(row!.config).not.toHaveProperty('toolFilter');
+    assertMountable(row!.config, mountProvider('ccacp'));
+    expectOnlyInsertionBeforePresetTail(fixture, changed);
+  });
+
+  it('retains one-argument listSubagents compatibility while exposing known ACP rows as editable', () => {
+    const rows = listSubagents(fixture);
+    expect(rows.find((row) => row.id === 'tool-subagent-acp')).toMatchObject({
+      editable: true,
+      config: { provider: 'ccacp' },
+    });
+    expect(rows.find((row) => row.id === 'tool-subagent-codex')).toMatchObject({
+      editable: false,
+      readOnlyReason: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
+    });
   });
 });

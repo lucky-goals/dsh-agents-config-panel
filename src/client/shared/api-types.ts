@@ -27,6 +27,8 @@ export interface SubagentRow {
   id: string;
   disabled: boolean;
   editable: boolean;
+  /** Present when editable is false; explains why in Chinese. */
+  readOnlyReason?: string;
   config: Record<string, unknown>;
 }
 
@@ -51,6 +53,8 @@ export interface StateResponse {
   revision: string;
   catalog: ModelCatalog;
   subagents: SubagentRow[];
+  /** v2.1: list of subagent providers with their capabilities. */
+  subagentProviders?: SubagentProviderInfo[];
   teamProfiles: string[];
   profile: string;
   members: TeamMember[];
@@ -71,6 +75,29 @@ export interface StateDiagnostics {
   };
   catalogSource: 'runtime' | 'patch';
   catalogErrors?: string[];
+  /** Present when Host implements v2.1 provider-capability API. */
+  hostApi?: number;
+  subagentProvidersSource?: 'runtime' | 'patch';
+  subagentProviderErrors?: string[];
+}
+
+// ============================================================================
+// Subagent Provider (v2.1)
+// ============================================================================
+
+export interface SubagentProviderCapabilities {
+  agentOptions: boolean;
+  depthLimit: boolean;
+  continuable: boolean;
+  persona: boolean;
+  toolFilter: boolean;
+}
+
+export interface SubagentProviderInfo {
+  name: string;
+  kind: 'in-process' | 'acp' | 'unknown';
+  capabilities: SubagentProviderCapabilities;
+  source: 'runtime' | 'patch';
 }
 
 // ============================================================================

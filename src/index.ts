@@ -21,6 +21,7 @@ export * from './host/patch-io.js';
 export * from './host/types.js';
 export * from './host/catalog.js';
 export * from './host/runtime-deps.js';
+export * from './host/subagent-providers.js';
 
 export const name = 'wuyou-agent';
 
@@ -138,6 +139,10 @@ export function apply(ctx: Context, config?: Config) {
       profileDefault,
       getCatalog: (yamlText) => buildCatalogWithSource(ctx.get('llm') as LLMService | undefined, yamlText),
       getAtomicWriteDiagnostics: () => atomicWriteDiagnostics,
+      // Late-bound on purpose: `subagents` is not in inject (contract v2.1 §1),
+      // so a service that binds after these routes is picked up on the next
+      // request without restarting the plugin.
+      getSubagentsService: () => ctx.get('subagents'),
       logger: ctx.logger,
     });
 

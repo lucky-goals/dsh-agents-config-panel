@@ -26,6 +26,52 @@ export interface MembersPanelProps {
   close?: () => void;
 }
 
+/** Second-row fields, in contract §7 order. */
+const MEMBER_DETAILS = [
+  ['Provider', 'provider'],
+  ['Model', 'model'],
+  ['Reasoning Effort', 'reasoning_effort'],
+] as const;
+
+/**
+ * Panel-local table styles (contract §7). The shared tableStyles.td sets
+ * `overflowWrap: 'anywhere'`, which shredded member names; these cells
+ * override it without touching PanelChrome.
+ */
+const cellBase: React.CSSProperties = {
+  padding: '8px 8px 2px',
+  fontSize: '13px',
+  textAlign: 'left',
+  verticalAlign: 'top',
+  border: 'none',
+};
+
+const memberTable = {
+  nameHead: { ...tableStyles.th, minWidth: '9.5em' } as React.CSSProperties,
+  /** Separator between members; the two rows of one member share no line. */
+  group: { borderBottom: '1px solid var(--dsw-alias-border-l1)' } as React.CSSProperties,
+  name: {
+    ...cellBase,
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+    minWidth: '9.5em',
+    overflowWrap: 'normal',
+    color: 'var(--dsw-alias-label-primary)',
+  } as React.CSSProperties,
+  role: {
+    ...cellBase,
+    minWidth: '12em',
+    whiteSpace: 'normal',
+    overflowWrap: 'break-word',
+  } as React.CSSProperties,
+  actions: { ...cellBase, padding: '8px', whiteSpace: 'nowrap' } as React.CSSProperties,
+  details: { ...cellBase, padding: '2px 8px 8px', fontSize: '12px' } as React.CSSProperties,
+  dl: { display: 'flex', flexWrap: 'wrap', gap: '2px 16px', margin: 0 } as React.CSSProperties,
+  pair: { display: 'flex', gap: '4px', whiteSpace: 'nowrap' } as React.CSSProperties,
+  dt: { color: 'var(--dsw-alias-label-secondary)' } as React.CSSProperties,
+  dd: { margin: 0, color: 'var(--dsw-alias-label-primary)' } as React.CSSProperties,
+};
+
 export function MembersPanel({ store, close }: MembersPanelProps) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
@@ -89,26 +135,21 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
         </div>
       )}
 
+      {/* v2.1 §7: fixed two-row layout, one <tbody> per member. */}
       <table style={tableStyles.table}>
         <thead>
           <tr>
-            <th style={tableStyles.th}>成员名</th>
-            <th style={tableStyles.th}>角色</th>
-            <th style={tableStyles.th}>Provider</th>
-            <th style={tableStyles.th}>Model</th>
-            <th style={tableStyles.th}>Reasoning Effort</th>
-            <th style={tableStyles.th}>操作</th>
+            <th scope="col" style={memberTable.nameHead}>成员名</th>
+            <th scope="col" style={tableStyles.th}>角色</th>
+            <th scope="col" style={tableStyles.th}>操作</th>
           </tr>
         </thead>
-        <tbody>
-          {state.members.map((member) => (
-            <tr key={member.name}>
-              <td style={tableStyles.td}>{member.name}</td>
-              <td style={tableStyles.td}>{member.role || '-'}</td>
-              <td style={tableStyles.td}>{member.provider || '-'}</td>
-              <td style={tableStyles.td}>{member.model || '-'}</td>
-              <td style={tableStyles.td}>{member.reasoning_effort || '-'}</td>
-              <td style={tableStyles.td}>
+        {state.members.map((member) => (
+          <tbody key={member.name} style={memberTable.group}>
+            <tr>
+              <th scope="row" style={memberTable.name}>{member.name}</th>
+              <td style={memberTable.role}>{member.role || '-'}</td>
+              <td rowSpan={2} style={memberTable.actions}>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <Button onClick={() => store.openEdit(member.name)} disabled={busy || blocked} title={writeTitle}>
                     编辑
@@ -124,15 +165,29 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
                 </div>
               </td>
             </tr>
-          ))}
-          {state.members.length === 0 && !busy && (
             <tr>
-              <td style={{ ...tableStyles.td, color: 'var(--dsw-alias-label-secondary)' }} colSpan={6}>
+              <td colSpan={2} style={memberTable.details}>
+                <dl style={memberTable.dl}>
+                  {MEMBER_DETAILS.map(([label, key]) => (
+                    <div key={key} style={memberTable.pair}>
+                      <dt style={memberTable.dt}>{label}</dt>
+                      <dd style={memberTable.dd}>{String(member[key] || '-')}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </td>
+            </tr>
+          </tbody>
+        ))}
+        {state.members.length === 0 && !busy && (
+          <tbody>
+            <tr>
+              <td style={{ ...tableStyles.td, color: 'var(--dsw-alias-label-secondary)' }} colSpan={3}>
                 暂无成员
               </td>
             </tr>
-          )}
-        </tbody>
+          </tbody>
+        )}
       </table>
 
       <Modal isOpen={mode !== null} onClose={() => store.cancel()} title={mode === 'add' ? '新建成员' : '编辑成员'}>

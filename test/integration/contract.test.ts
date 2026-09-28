@@ -270,16 +270,27 @@ describe('real fixture host/client contract', () => {
     expect(refreshed.revision).toBe(external.getSnapshot().revision);
   });
 
-  it('blocks ACP edits in the client before any write is attempted', async () => {
+  it('allows registered ACP edits and blocks unregistered providers before any write', async () => {
     const harness = await createHarness();
     await harness.subagents.load(TEAM_PROFILE);
     const before = await readFile(harness.patchPath, 'utf8');
 
     harness.subagents.openEdit('tool-subagent-acp');
+    harness.subagents.setField('toolName', 'subagent_contract_acp');
+    await harness.subagents.submit();
 
-    const state = harness.subagents.getSnapshot();
-    expect(state.form.mode).toBeNull();
-    expect(state.error).toBe('ACP 后端的 subagent 工具为只读');
-    expect(await readFile(harness.patchPath, 'utf8')).toBe(before);
+    const edited = harness.subagents.getSnapshot();
+    expect(edited.form.mode).toBeNull();
+    expect(edited.error).toBeNull();
+    expect(edited.notice).toBe('已保存，新建会话后生效');
+    const afterRegistered = await readFile(harness.patchPath, 'utf8');
+    expect(afterRegistered).not.toBe(before);
+    expect(edited.rows.find((row) => row.id === 'tool-subagent-contract-acp')?.config.toolName).toBe('subagent_contract_acp');
+
+    harness.subagents.openEdit('tool-subagent-codex');
+    const blocked = harness.subagents.getSnapshot();
+    expect(blocked.form.mode).toBeNull();
+    expect(blocked.error).toBe("provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑");
+    expect(await readFile(harness.patchPath, 'utf8')).toBe(afterRegistered);
   });
 });

@@ -159,7 +159,17 @@ describe('index', () => {
     );
 
     expect(response.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-    expect(JSON.parse(responseBody).profile).toBe('standard-acp');
+    const state = JSON.parse(responseBody);
+    expect(state.profile).toBe('standard-acp');
+    expect(state.subagentProviders.map((provider: any) => provider.name)).toEqual([
+      'spawn',
+      'fork',
+      'ccacp',
+      'cursoracp',
+      'kiroopsuacp',
+      'kirogptacp',
+    ]);
+    expect(state.diagnostics.hostApi).toBe(2);
   });
 
   it('registers once when webServer binds after apply', () => {

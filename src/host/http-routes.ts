@@ -10,6 +10,7 @@ import type { ModelCatalog } from './catalog.js';
 import type { CatalogResult, CatalogSource } from './runtime-deps.js';
 import { computeRevision } from './patch-io.js';
 import { listSubagents, createSubagent, updateSubagent, removeSubagent } from './subagent-manager.js';
+import { subagentProviderDirectory, type SubagentProviderDirectory } from './subagent-providers.js';
 import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } from './members-editor.js';
 
 /** Maximum accepted request body, in bytes. */
@@ -22,10 +23,16 @@ export interface AtomicWriteDiagnostics {
   tried?: string[];
 }
 
+/** Host API revision announced in state.diagnostics (contract v2.1 §1, §9). */
+export const HOST_API = 2;
+
 export interface StateDiagnostics {
+  hostApi: typeof HOST_API;
   atomicWrite: AtomicWriteDiagnostics;
   catalogSource: CatalogSource;
   catalogErrors?: string[];
+  subagentProvidersSource: SubagentProviderDirectory['source'];
+  subagentProviderErrors?: string[];
 }
 
 export interface RouteContext {
@@ -39,6 +46,11 @@ export interface RouteContext {
   getCatalog: (yamlText: string) => ModelCatalog | CatalogResult | Promise<ModelCatalog | CatalogResult>;
   /** Current atomic-write load state, reported in state diagnostics. */
   getAtomicWriteDiagnostics?: () => AtomicWriteDiagnostics;
+  /**
+   * The live DSH `subagents` service (late-bound, read per request, never
+   * cached). Absent or undefined means the provider list falls back to the patch.
+   */
+  getSubagentsService?: () => unknown;
   logger?: { error(msg: string): void };
 }
 
@@ -145,6 +157,7 @@ export function buildState(
   profile: string,
   catalogInfo: CatalogResult,
   atomicWrite: AtomicWriteDiagnostics,
+  providerDirectory: SubagentProviderDirectory = subagentProviderDirectory(yamlText, undefined),
 ) {
   let subagents: unknown[] = [];
   let teamProfiles: string[] = [];
@@ -152,7 +165,7 @@ export function buildState(
   const errors: { subagents?: string; members?: string } = {};
 
   try {
-    subagents = listSubagents(yamlText);
+    subagents = listSubagents(yamlText, providerDirectory.providers);
   } catch (err) {
     errors.subagents = errorMessage(err);
   }
@@ -172,15 +185,19 @@ export function buildState(
   }
 
   const diagnostics: StateDiagnostics = {
+    hostApi: HOST_API,
     atomicWrite,
     catalogSource: catalogInfo.source,
     ...(catalogInfo.errors.length > 0 ? { catalogErrors: catalogInfo.errors } : {}),
+    subagentProvidersSource: providerDirectory.source,
+    ...(providerDirectory.errors.length > 0 ? { subagentProviderErrors: providerDirectory.errors } : {}),
   };
 
   return {
     revision: computeRevision(yamlText),
     catalog: catalogInfo.catalog,
     subagents,
+    subagentProviders: providerDirectory.providers,
     teamProfiles,
     profile,
     members,
@@ -225,6 +242,46 @@ function requireNonEmptyString(body: Record<string, unknown>, name: string): str
   return value;
 }
 
+/** Subagent config keys this interface never writes (contract v2.1 §6, §10). */
+const IMMUTABLE_SUBAGENT_FIELDS = ['maxDepth', 'modelSelectionSettings', 'persona', 'toolFilter'] as const;
+const SUBAGENT_FIELDS = ['toolName', 'provider', 'backgroundMode', 'agentOptions'] as const;
+const AGENT_OPTION_FIELDS = ['provider', 'model', 'reasoningEffort'] as const;
+const BACKGROUND_MODES = ['continuable', 'one-shot'];
+
+/**
+ * Type-only checks for a subagent input/patch; whether `provider` is
+ * registered is decided inside the lock (v2.1 drops the spawn|fork enum).
+ */
+function validateSubagentPayload(field: string, payload: Record<string, unknown>): void {
+  for (const key of IMMUTABLE_SUBAGENT_FIELDS) {
+    if (key in payload) throw invalidField(key, '不能通过此接口修改');
+  }
+  for (const key of Object.keys(payload)) {
+    if (!(SUBAGENT_FIELDS as readonly string[]).includes(key)) throw invalidField(`${field}.${key}`, '不支持');
+  }
+  for (const key of ['toolName', 'provider'] as const) {
+    const value = payload[key];
+    if (value === null) throw invalidField(key, '不能清空');
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0)) {
+      throw invalidField(key, '必须是非空字符串');
+    }
+  }
+  const mode = payload.backgroundMode;
+  if (mode === null) throw invalidField('backgroundMode', '不能清空');
+  if (mode !== undefined && (typeof mode !== 'string' || !BACKGROUND_MODES.includes(mode))) {
+    throw invalidField('backgroundMode', `必须是 ${BACKGROUND_MODES.join('、')} 之一`);
+  }
+  const options = payload.agentOptions;
+  if (options !== undefined) {
+    if (!isPlainObject(options)) throw invalidField(`${field}.agentOptions`, '必须是 JSON 对象');
+    for (const key of Object.keys(options)) {
+      if (!(AGENT_OPTION_FIELDS as readonly string[]).includes(key)) {
+        throw invalidField(`${field}.agentOptions.${key}`, '不支持');
+      }
+    }
+  }
+}
+
 /**
  * Validate a write body before any file read or lock. Throws a 400 INVALID
  * RouteError naming the first offending field (F22-INPUT).
@@ -253,9 +310,7 @@ export function validateWriteBody(kind: WriteKind, body: Record<string, unknown>
     const payload = body[payloadField];
     if (!isPlainObject(payload)) throw invalidField(payloadField, '必须是 JSON 对象');
     if (action === 'update' && Object.keys(payload).length === 0) throw invalidField(payloadField, '至少需要一个字段');
-    if (kind === 'subagents' && payload.agentOptions !== undefined && !isPlainObject(payload.agentOptions)) {
-      throw invalidField(`${payloadField}.agentOptions`, '必须是 JSON 对象');
-    }
+    if (kind === 'subagents') validateSubagentPayload(payloadField, payload);
     result.payload = payload;
   }
   return result;
@@ -285,6 +340,17 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
   const atomicWriteDiagnostics = (): AtomicWriteDiagnostics =>
     context.getAtomicWriteDiagnostics?.() ?? { loaded: false };
 
+  /** Provider directory for this text, read from the live service every call (no cache). */
+  const loadProviders = (yamlText: string): SubagentProviderDirectory => {
+    let service: unknown;
+    try {
+      service = context.getSubagentsService?.();
+    } catch {
+      service = undefined;
+    }
+    return subagentProviderDirectory(yamlText, service);
+  };
+
   /** Profile for the state returned by a request: query string, else the default. */
   const queryProfile = (req: IncomingMessage): string =>
     new URL(req.url ?? '/', 'http://x').searchParams.get('profile') ?? profileDefault;
@@ -294,27 +360,37 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
    * the exact text being transformed, so validation never sees a Promise or a
    * stale llm-pi-ai fallback.
    */
+  type MutationOutcome = { catalog: CatalogResult; yamlText: string; providers: SubagentProviderDirectory };
+
   const mutate = async (
     expectedRevision: string,
-    apply: (yamlText: string, catalog: ModelCatalog) => { ok: true; yamlText: string } | { ok: false; code: string; message: string },
-  ): Promise<{ catalog: CatalogResult; yamlText: string }> => {
+    apply: (
+      yamlText: string,
+      catalog: ModelCatalog,
+      providers: SubagentProviderDirectory,
+    ) => { ok: true; yamlText: string } | { ok: false; code: string; message: string },
+  ): Promise<MutationOutcome> => {
     let used: CatalogResult | undefined;
+    let directory: SubagentProviderDirectory | undefined;
     let written: string | undefined;
     await io.writePatchLocked(expectedRevision, async (yamlText) => {
       used = await loadCatalog(yamlText);
-      const result = apply(yamlText, used.catalog);
+      // Provider list read under the lock, against the exact text being replaced.
+      directory = loadProviders(yamlText);
+      const result = apply(yamlText, used.catalog, directory);
       if (!result.ok) throw mutationError(result.code, result.message);
       written = result.yamlText;
       return result.yamlText;
     });
     // State describes exactly what this request committed (no second read that
-    // could fail or race after the write already succeeded).
-    return { catalog: used!, yamlText: written! };
+    // could fail or race after the write already succeeded). The directory is
+    // re-derived for the written text so patch-inferred ACP names stay current.
+    return { catalog: used!, yamlText: written!, providers: directory!.source === 'runtime' ? directory! : loadProviders(written!) };
   };
 
-  const sendMutationState = (res: ServerResponse, profile: string, outcome: { catalog: CatalogResult; yamlText: string }) => {
+  const sendMutationState = (res: ServerResponse, profile: string, outcome: MutationOutcome) => {
     sendJson(res, 200, {
-      ...buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics()),
+      ...buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics(), outcome.providers),
       notice: '已保存，新建会话后生效',
     });
   };
@@ -335,7 +411,7 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           const profile = queryProfile(req);
           const yamlText = await io.readPatch();
           const catalog = await loadCatalog(yamlText);
-          sendJson(res, 200, buildState(yamlText, profile, catalog, atomicWriteDiagnostics()));
+          sendJson(res, 200, buildState(yamlText, profile, catalog, atomicWriteDiagnostics(), loadProviders(yamlText)));
         } catch (err) {
           errorResponse(res, err, logger);
         }
@@ -353,10 +429,11 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           const write = validateWriteBody('subagents', body);
           const profile = queryProfile(req);
 
-          const outcome = await mutate(write.expectedRevision, (yamlText, current) => {
-            if (write.action === 'create') return createSubagent(yamlText, write.payload as any, current);
-            if (write.action === 'update') return updateSubagent(yamlText, write.target!, write.payload as any, current);
-            return removeSubagent(yamlText, write.target!);
+          const outcome = await mutate(write.expectedRevision, (yamlText, current, directory) => {
+            const providers = directory.providers;
+            if (write.action === 'create') return createSubagent(yamlText, write.payload as any, current, providers);
+            if (write.action === 'update') return updateSubagent(yamlText, write.target!, write.payload as any, current, providers);
+            return removeSubagent(yamlText, write.target!, providers);
           });
 
           sendMutationState(res, profile, outcome);

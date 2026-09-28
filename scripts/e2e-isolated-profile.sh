@@ -10,19 +10,22 @@ PACKAGE_PATH="${PROFILE_DIR}/package.json"
 INSTALLED_PLUGIN="${PROFILE_DIR}/node_modules/@nanmicoder/dsh-wuyou-agent"
 WEB_PATCH="${HOME}/.dsh/profiles/web/cordis.patch.yml"
 WEB_PACKAGE="${HOME}/.dsh/profiles/web/package.json"
-ARTIFACT_DIR="${E2E_ARTIFACTS_DIR:-${ROOT_DIR}/test/e2e/artifacts}"
+ARTIFACT_DIR="${E2E_ARTIFACTS_DIR:-${ROOT_DIR}/test/e2e/artifacts-v2.1}"
 if [[ "${ARTIFACT_DIR}" != /* ]]; then
   ARTIFACT_DIR="${ROOT_DIR}/${ARTIFACT_DIR}"
 fi
 PATCH_TEMPLATE="${E2E_PATCH_TEMPLATE:-${ROOT_DIR}/test/e2e/wuyou-test.patch.template.yml}"
+ACP_PACKAGE_VERSION="${E2E_ACP_PACKAGE_VERSION:-0.1.5-rc.2}"
 LOG_FIRST="${ARTIFACT_DIR}/wuyou-isolated.log"
 LOG_RESTART="${ARTIFACT_DIR}/wuyou-isolated-restart.log"
+LOG_RESTART_AFTER_SPAWN="${ARTIFACT_DIR}/wuyou-isolated-restart-after-spawn.log"
 LOG_BUNDLE_REMOVED="${ARTIFACT_DIR}/wuyou-bundle-removed.log"
 LOG_BUNDLE_RESTORED="${ARTIFACT_DIR}/wuyou-bundle-restored.log"
 COOKIE_JAR="${ARTIFACT_DIR}/wuyou-cookie.txt"
 STATE_BEFORE="${ARTIFACT_DIR}/state-before.json"
 STATE_AFTER="${ARTIFACT_DIR}/state-after.json"
 STATE_RESTART="${ARTIFACT_DIR}/state-restart.json"
+STATE_RESTART_AFTER_SPAWN="${ARTIFACT_DIR}/state-restart-after-spawn.json"
 BUNDLE_RESTORED_STATE="${ARTIFACT_DIR}/bundle-restored-state.json"
 CREATE_RESPONSE="${ARTIFACT_DIR}/create-response.json"
 TESTER_RESAVE_RESPONSE="${ARTIFACT_DIR}/tester-resave-response.json"
@@ -31,7 +34,11 @@ ROLE_CLEAR_RESPONSE="${ARTIFACT_DIR}/member-role-null-response.json"
 EFFORT_CLEAR_RESPONSE="${ARTIFACT_DIR}/subagent-effort-null-response.json"
 INVALID_PROVIDER_RESPONSE="${ARTIFACT_DIR}/member-provider-null-response.json"
 FORK_CONVERT_RESPONSE="${ARTIFACT_DIR}/fork-convert-response.json"
-ACP_RESPONSE="${ARTIFACT_DIR}/acp-readonly-response.json"
+ACP_CONVERT_RESPONSE="${ARTIFACT_DIR}/acp-convert-response.json"
+ACP_EDIT_RESPONSE="${ARTIFACT_DIR}/acp-edit-response.json"
+ACP_CREATE_RESPONSE="${ARTIFACT_DIR}/acp-create-response.json"
+ACP_BACK_TO_SPAWN_RESPONSE="${ARTIFACT_DIR}/acp-back-to-spawn-response.json"
+ACP_READONLY_RESPONSE="${ARTIFACT_DIR}/acp-readonly-response.json"
 STALE_RESPONSE="${ARTIFACT_DIR}/stale-response.json"
 INVALID_INPUT_RESPONSE="${ARTIFACT_DIR}/invalid-input-response.json"
 DUPLICATE_ID_RESPONSE="${ARTIFACT_DIR}/duplicate-id-response.json"
@@ -41,6 +48,7 @@ BROWSER_SCREENSHOT_MOBILE="${ARTIFACT_DIR}/browser-settings-mobile.png"
 PATCH_BACKUP="${ARTIFACT_DIR}/cordis.patch.before.yml"
 PATCH_INITIAL="${ARTIFACT_DIR}/cordis.patch.initial.yml"
 PATCH_AFTER_CREATE="${ARTIFACT_DIR}/cordis.patch.after-create.yml"
+ACP_BEFORE_EDIT_PATCH="${ARTIFACT_DIR}/cordis.patch.before-acp-edit.yml"
 PATCH_AFTER_MUTATIONS="${ARTIFACT_DIR}/cordis.patch.after-mutations.yml"
 PATCH_DIFF="${ARTIFACT_DIR}/cordis.patch.diff"
 MEMBER_ADD_RESPONSE="${ARTIFACT_DIR}/member-add-response.json"
@@ -57,6 +65,8 @@ BUNDLE_CONTRAST="${ARTIFACT_DIR}/bundle-contrast.json"
 BUNDLE_REMOVED_RESPONSE="${ARTIFACT_DIR}/bundle-removed-response.txt"
 BUNDLE_DUMP="${ARTIFACT_DIR}/dump-config.txt"
 FILE_MODE="${ARTIFACT_DIR}/file-mode.json"
+CREDENTIAL_SCAN="${ARTIFACT_DIR}/credential-scan.txt"
+R6_NEGATIVE_LOG="${ARTIFACT_DIR}/r6-negative-mount-error.log"
 
 SERVER_PID=""
 PORT=""
@@ -67,6 +77,8 @@ BUNDLE_RESTORED=0
 TOKEN_PIPE=""
 WEB_PATCH_BEFORE=""
 WEB_PACKAGE_BEFORE=""
+WEB_PATCH_MODE_BEFORE=""
+WEB_PACKAGE_MODE_BEFORE=""
 
 sha256() {
   shasum -a 256 "$1" | awk '{print $1}'
@@ -92,6 +104,40 @@ assert_mode_600() {
 fail() {
   printf 'E2E_FAIL: %s\n' "$*" >&2
   exit 1
+}
+
+check_dsh_mount_errors() {
+  local log_path="$1" phrase
+  [[ -f "${log_path}" ]] || return 1
+  local phrases=(
+    'cannot enforce maxDepth'
+    'does not support child agentOptions'
+    'does not support child model selection'
+    'does not support `backgroundMode: continuable`'
+  )
+  for phrase in "${phrases[@]}"; do
+    if grep -Fq -- "${phrase}" "${log_path}"; then
+      printf 'E2E_R6_MOUNT_ERROR phrase=%s log=%s\n' "${phrase}" "${log_path}" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+assert_no_dsh_mount_errors() {
+  local log_path="$1" label="${2:-startup}"
+  if ! check_dsh_mount_errors "${log_path}"; then
+    fail "${label} log contains a dsh-tool-subagent mount error"
+  fi
+  printf 'E2E_R6_MOUNT_CHECK label=%s passed=1\n' "${label}"
+}
+
+prove_dsh_mount_detector_rejects_bad_log() {
+  printf 'dsh-tool-subagent: cannot enforce maxDepth\n' >"${R6_NEGATIVE_LOG}"
+  if check_dsh_mount_errors "${R6_NEGATIVE_LOG}"; then
+    fail "R6 negative mount-error detector accepted a known bad log"
+  fi
+  printf 'E2E_R6_NEGATIVE detector_rejected=1 phrase=cannot-enforce-maxDepth\n'
 }
 
 stop_server() {
@@ -121,7 +167,7 @@ restore_profile() {
 redact_file() {
   local path="$1"
   [[ -f "${path}" ]] || return 0
-  perl -pi -e 's/([?&]token=)[A-Za-z0-9_-]+/${1}<redacted>/g; s/(dsh-auth=)[^;[:space:]]+/${1}<redacted>/g; s/k_[A-Za-z0-9_-]{20,}/k_<redacted>/g' "${path}"
+  perl -pi -e 's/[?&]token=[A-Za-z0-9_-]+/[redacted-token]/g; s/dsh-auth=[^;[:space:]]+/[redacted-auth]/g; s/k_[A-Za-z0-9_-]{20,}/[redacted-key]/g' "${path}"
 }
 
 redact_artifacts() {
@@ -152,26 +198,43 @@ cleanup() {
     printf 'E2E_CLEANUP_ERROR: production package.json changed\n' >&2
     exit_code=1
   fi
+  if [[ -n "${WEB_PATCH_MODE_BEFORE}" ]] && [[ "$(file_mode "${WEB_PATCH}")" != "${WEB_PATCH_MODE_BEFORE}" ]]; then
+    printf 'E2E_CLEANUP_ERROR: production cordis.patch.yml permissions changed\n' >&2
+    exit_code=1
+  fi
+  if [[ -n "${WEB_PACKAGE_MODE_BEFORE}" ]] && [[ "$(file_mode "${WEB_PACKAGE}")" != "${WEB_PACKAGE_MODE_BEFORE}" ]]; then
+    printf 'E2E_CLEANUP_ERROR: production package.json permissions changed\n' >&2
+    exit_code=1
+  fi
   if [[ -n "${WEB_PATCH_BEFORE}" ]]; then
     {
       printf 'web.cordis.patch.before=%s\n' "${WEB_PATCH_BEFORE}"
       printf 'web.cordis.patch.after=%s\n' "$(sha256 "${WEB_PATCH}")"
+      printf 'web.cordis.patch.mode.before=%s\n' "${WEB_PATCH_MODE_BEFORE}"
+      printf 'web.cordis.patch.mode.after=%s\n' "$(file_mode "${WEB_PATCH}")"
       printf 'web.package.json.before=%s\n' "${WEB_PACKAGE_BEFORE}"
       printf 'web.package.json.after=%s\n' "$(sha256 "${WEB_PACKAGE}")"
+      printf 'web.package.json.mode.before=%s\n' "${WEB_PACKAGE_MODE_BEFORE}"
+      printf 'web.package.json.mode.after=%s\n' "$(file_mode "${WEB_PACKAGE}")"
     } >"${PRODUCTION_HASHES}"
   fi
-  if grep -rE '[?&]token=[A-Za-z0-9_-]{8,}|dsh-auth=[^<;[:space:]]{8,}|k_[A-Za-z0-9_-]{20,}' "${ARTIFACT_DIR}" 2>/dev/null; then
+  credential_status=passed
+  if grep -RIEq '[?&]token=|dsh-auth=|(^|[^[:alnum:]])k_[A-Za-z0-9_-]{20,}' "${ARTIFACT_DIR}" 2>/dev/null; then
     printf 'E2E_FAIL:credential-residue\n' >&2
+    credential_status=failed
     exit_code=1
   fi
-  if grep -RIEq '(^|[^[:alnum:]])(sk-[A-Za-z0-9]|ghp_[A-Za-z0-9]|xox[baprs]-[A-Za-z0-9]|Bearer[[:space:]]+[A-Za-z0-9._-]{12,})' "${ARTIFACT_DIR}" 2>/dev/null; then
+  if grep -RIEq '(^|[^[:alnum:]])(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9_-]{16,}|Bearer[[:space:]]+[A-Za-z0-9._-]{12,})' "${ARTIFACT_DIR}" 2>/dev/null; then
     printf 'E2E_CLEANUP_ERROR: credential-like value found in retained artifacts\n' >&2
+    credential_status=failed
     exit_code=1
   fi
   if find "${ARTIFACT_DIR}" -type f -iname '*cookie*' -print -quit 2>/dev/null | grep -q .; then
     printf 'E2E_CLEANUP_ERROR: cookie artifact was retained\n' >&2
+    credential_status=failed
     exit_code=1
   fi
+  printf 'status=%s\nquery_token_marker=absent\nauth_cookie_marker=absent\nkey_prefix=absent\n' "${credential_status}" >"${CREDENTIAL_SCAN}"
   exit "${exit_code}"
 }
 trap cleanup EXIT INT TERM
@@ -210,8 +273,9 @@ let recent = '';
 let tokenSent = false;
 function redact(text) {
   return text
-    .replace(/([?&]token=)[A-Za-z0-9_-]+/g, '$1<redacted>')
-    .replace(/(dsh-auth=)[^;\s]+/g, '$1<redacted>');
+    .replace(/[?&]token=[A-Za-z0-9_-]+/g, '[redacted-token]')
+    .replace(/dsh-auth=[^;\s]+/g, '[redacted-auth]')
+    .replace(/k_[A-Za-z0-9_-]{20,}/g, '[redacted-key]');
 }
 function consume(chunk) {
   const text = String(chunk);
@@ -300,6 +364,7 @@ NODE
     grep -Ei 'wuyou-agent:.*(did not activate|failed to load|activation failed)' "${log_path}" >&2 || true
     fail "plugin activation failure found in startup log"
   fi
+  assert_no_dsh_mount_errors "${log_path}" "${log_path}"
 }
 
 assert_http_not_forbidden() {
@@ -392,19 +457,20 @@ JSON
 }
 
 mkdir -p "${ARTIFACT_DIR}"
-rm -f "${LOG_FIRST}" "${LOG_RESTART}" "${LOG_BUNDLE_REMOVED}" "${LOG_BUNDLE_RESTORED}" \
-  "${COOKIE_JAR}" "${STATE_BEFORE}" "${STATE_AFTER}" "${STATE_RESTART}" \
+rm -f "${LOG_FIRST}" "${LOG_RESTART}" "${LOG_RESTART_AFTER_SPAWN}" "${LOG_BUNDLE_REMOVED}" "${LOG_BUNDLE_RESTORED}" \
+  "${COOKIE_JAR}" "${STATE_BEFORE}" "${STATE_AFTER}" "${STATE_RESTART}" "${STATE_RESTART_AFTER_SPAWN}" \
   "${BUNDLE_RESTORED_STATE}" "${BUNDLE_REMOVED_RESPONSE}" "${BUNDLE_CONTRAST}" \
-  "${BUNDLE_PACKAGE_BACKUP}" "${BUNDLE_DUMP}" "${INSTALL_PACKAGE}" \
+  "${BUNDLE_PACKAGE_BACKUP}" "${BUNDLE_DUMP}" "${INSTALL_PACKAGE}" "${R6_NEGATIVE_LOG}" \
   "${CREATE_RESPONSE}" "${TESTER_RESAVE_RESPONSE}" "${POST_WRITE_RESAVE_RESPONSE}" \
   "${ROLE_CLEAR_RESPONSE}" "${EFFORT_CLEAR_RESPONSE}" "${INVALID_PROVIDER_RESPONSE}" \
-  "${FORK_CONVERT_RESPONSE}" "${ACP_RESPONSE}" "${STALE_RESPONSE}" \
+  "${FORK_CONVERT_RESPONSE}" "${ACP_CONVERT_RESPONSE}" "${ACP_EDIT_RESPONSE}" "${ACP_CREATE_RESPONSE}" "${ACP_BACK_TO_SPAWN_RESPONSE}" "${ACP_READONLY_RESPONSE}" "${STALE_RESPONSE}" \
   "${INVALID_INPUT_RESPONSE}" "${DUPLICATE_ID_RESPONSE}" "${BROWSER_RESULT}" \
   "${BROWSER_SCREENSHOT}" "${BROWSER_SCREENSHOT_MOBILE}" "${PATCH_BACKUP}" "${PATCH_INITIAL}" \
-  "${PATCH_AFTER_CREATE}" "${PATCH_AFTER_MUTATIONS}" "${PATCH_DIFF}" \
+  "${PATCH_AFTER_CREATE}" "${ACP_BEFORE_EDIT_PATCH}" "${PATCH_AFTER_MUTATIONS}" "${PATCH_DIFF}" \
   "${MEMBER_ADD_RESPONSE}" "${MEMBER_UPDATE_RESPONSE}" "${MEMBER_REMOVE_RESPONSE}" \
   "${MEMBER_REMOVE_HELPER_RESPONSE}" "${MEMBER_REMOVE_CODER_RESPONSE}" "${LAST_MEMBER_RESPONSE}" \
-  "${PRODUCTION_HASHES}" "${ATOMIC_WRITE_SOURCE}" "${FILE_MODE}"
+  "${PRODUCTION_HASHES}" "${ATOMIC_WRITE_SOURCE}" "${FILE_MODE}" "${CREDENTIAL_SCAN}"
+prove_dsh_mount_detector_rejects_bad_log
 
 [[ "${PROFILE}" == "wuyou-test" ]] || fail "E2E refuses to run outside wuyou-test"
 [[ -x "${DSH_BIN}" ]] || fail "DSH binary is not executable: ${DSH_BIN}"
@@ -415,8 +481,10 @@ rm -f "${LOG_FIRST}" "${LOG_RESTART}" "${LOG_BUNDLE_REMOVED}" "${LOG_BUNDLE_REST
 
 WEB_PATCH_BEFORE="$(sha256 "${WEB_PATCH}")"
 WEB_PACKAGE_BEFORE="$(sha256 "${WEB_PACKAGE}")"
-printf 'web.cordis.patch.before=%s\nweb.package.json.before=%s\n' \
-  "${WEB_PATCH_BEFORE}" "${WEB_PACKAGE_BEFORE}" >"${PRODUCTION_HASHES}"
+WEB_PATCH_MODE_BEFORE="$(file_mode "${WEB_PATCH}")"
+WEB_PACKAGE_MODE_BEFORE="$(file_mode "${WEB_PACKAGE}")"
+printf 'web.cordis.patch.before=%s\nweb.cordis.patch.mode.before=%s\nweb.package.json.before=%s\nweb.package.json.mode.before=%s\n' \
+  "${WEB_PATCH_BEFORE}" "${WEB_PATCH_MODE_BEFORE}" "${WEB_PACKAGE_BEFORE}" "${WEB_PACKAGE_MODE_BEFORE}" >"${PRODUCTION_HASHES}"
 cp "${PATCH_PATH}" "${PATCH_BACKUP}"
 cp "${PATCH_TEMPLATE}" "${PATCH_PATH}"
 chmod 600 "${PATCH_PATH}"
@@ -437,6 +505,10 @@ fi
 [[ "$(sha256 "${ROOT_DIR}/lib/index.js")" == "$(sha256 "${INSTALLED_PLUGIN}/lib/index.js")" ]] || fail "installed lib/index.js differs from repository build"
 [[ "$(sha256 "${ROOT_DIR}/lib/client.js")" == "$(sha256 "${INSTALLED_PLUGIN}/lib/client.js")" ]] || fail "installed lib/client.js differs from repository build"
 printf 'E2E_INSTALL target=%s lib_sha=%s client_sha=%s\n' "${installed_target}" "$(sha256 "${ROOT_DIR}/lib/index.js")" "$(sha256 "${ROOT_DIR}/lib/client.js")"
+env -u DSH_PROFILE "${DSH_BIN}" plugin --profile "${PROFILE}" add -w "@deepseek-ai/dsh-subagent-acp@${ACP_PACKAGE_VERSION}"
+ACP_INSTALLED_VERSION="$(node -e 'process.stdout.write(require(process.argv[1]).version)' "${PROFILE_DIR}/node_modules/@deepseek-ai/dsh-subagent-acp/package.json")"
+[[ "${ACP_INSTALLED_VERSION}" == "${ACP_PACKAGE_VERSION}" ]] || fail "isolated ACP package version mismatch: expected ${ACP_PACKAGE_VERSION}, got ${ACP_INSTALLED_VERSION}"
+printf 'E2E_INSTALL_ACP package=@deepseek-ai/dsh-subagent-acp version=%s\n' "${ACP_INSTALLED_VERSION}"
 cp "${PACKAGE_PATH}" "${INSTALL_PACKAGE}"
 env -u DSH_PROFILE "${DSH_BIN}" --profile "${PROFILE}" --dump-config >"${BUNDLE_DUMP}" 2>&1
 if ! grep -Fq '# == @nanmicoder/dsh-wuyou-agent' "${BUNDLE_DUMP}" || ! grep -Eq '^- id: wuyou-agent$' "${BUNDLE_DUMP}"; then
@@ -696,6 +768,20 @@ const [statePath, browserPath] = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 const browser = JSON.parse(fs.readFileSync(browserPath, 'utf8'));
 if (Object.keys(state.errors ?? {}).length) throw new Error(`plugin state errors: ${JSON.stringify(state.errors)}`);
+if (state.diagnostics?.hostApi !== 2) throw new Error(`expected hostApi=2, got ${JSON.stringify(state.diagnostics)}`);
+if (state.diagnostics?.subagentProvidersSource !== 'runtime') {
+  throw new Error(`expected runtime provider source, got ${JSON.stringify(state.diagnostics)}`);
+}
+const providerNames = (state.subagentProviders ?? []).map((provider) => provider.name);
+for (const required of ['spawn', 'fork', 'e2eacp', 'e2eacp2']) {
+  if (!providerNames.includes(required)) throw new Error(`runtime provider ${required} missing: ${providerNames}`);
+}
+for (const name of ['e2eacp', 'e2eacp2']) {
+  const provider = state.subagentProviders.find((item) => item.name === name);
+  if (provider?.kind !== 'acp' || provider.capabilities?.continuable !== false) {
+    throw new Error(`unexpected ACP capabilities for ${name}: ${JSON.stringify(provider)}`);
+  }
+}
 const remoteProviders = browser.rpc.providers.body.result.value;
 const remoteCatalog = browser.rpc.catalog.body.result.value;
 const stateProviderIds = state.catalog.providers.map((item) => item.id).sort();
@@ -907,7 +993,7 @@ FORK_REVISION="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON
 printf 'E2E_FORK_CONVERSION status=%s provider=spawn\n' "${FORK_CONVERT_STATUS}"
 
 ACP_HASH_BEFORE="$(sha256 "${PATCH_PATH}")"
-ACP_PAYLOAD="$(node - "${FORK_CONVERT_RESPONSE}" <<'NODE'
+ACP_CONVERT_PAYLOAD="$(node - "${FORK_CONVERT_RESPONSE}" <<'NODE'
 const fs = require('node:fs');
 const response = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const route = response.catalog.providers.flatMap((provider) => provider.models.map((model) => ({
@@ -915,23 +1001,123 @@ const route = response.catalog.providers.flatMap((provider) => provider.models.m
   model: model.id,
   reasoningEffort: model.reasoningEfforts?.[0],
 })))[0];
+if (!route) throw new Error('no catalog route for ACP conversion');
 process.stdout.write(JSON.stringify({
   action: 'update',
   expectedRevision: response.revision,
-  id: 'tool-subagent-acp',
-  patch: { provider: 'spawn', agentOptions: route },
+  id: 'tool-subagent-e2e',
+  patch: { provider: 'e2eacp', backgroundMode: 'one-shot', agentOptions: route },
 }));
 NODE
 )"
-ACP_STATUS="$(curl -sS --max-time 15 -o "${ACP_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
-  -H 'content-type: application/json' --data "${ACP_PAYLOAD}" \
+ACP_CONVERT_STATUS="$(curl -sS --max-time 15 -o "${ACP_CONVERT_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
+  -H 'content-type: application/json' --data "${ACP_CONVERT_PAYLOAD}" \
   "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
-assert_status "${ACP_STATUS}" "422" "ACP read-only update" "${ACP_RESPONSE}"
-node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(value.code!=="READ_ONLY") throw new Error(`expected READ_ONLY, got ${JSON.stringify(value)}`)' "${ACP_RESPONSE}"
-[[ "$(sha256 "${PATCH_PATH}")" == "${ACP_HASH_BEFORE}" ]] || fail "ACP read-only request changed the patch"
-printf 'E2E_ACP status=%s code=READ_ONLY unchanged=1\n' "${ACP_STATUS}"
+assert_status "${ACP_CONVERT_STATUS}" "200" "spawn to registered ACP conversion" "${ACP_CONVERT_RESPONSE}"
+node - "${ACP_CONVERT_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const row = state.subagents.find((item) => item.id === 'tool-subagent-e2e');
+if (!row || row.config?.provider !== 'e2eacp' || row.config?.backgroundMode !== 'one-shot') {
+  throw new Error(`registered ACP conversion missing: ${JSON.stringify(row)}`);
+}
+if (row.config?.maxDepth !== 'provider-managed' || Object.prototype.hasOwnProperty.call(row.config, 'agentOptions')) {
+  throw new Error(`ACP normalization retained incompatible keys: ${JSON.stringify(row.config)}`);
+}
+for (const key of ['modelSelectionSettings', 'persona', 'toolFilter']) {
+  if (Object.prototype.hasOwnProperty.call(row.config, key)) throw new Error(`ACP row retained ${key}`);
+}
+NODE
+ACP_CONVERT_REVISION="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).revision)' "${ACP_CONVERT_RESPONSE}")"
+cp "${PATCH_PATH}" "${ACP_BEFORE_EDIT_PATCH}"
+printf 'E2E_ACP_CONVERT status=%s provider=e2eacp normalized=1\n' "${ACP_CONVERT_STATUS}"
 
-ROLE_CLEAR_PAYLOAD="$(node - "${FORK_CONVERT_RESPONSE}" <<'NODE'
+ACP_EDIT_PAYLOAD="$(node - "${ACP_CONVERT_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const response = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+process.stdout.write(JSON.stringify({
+  action: 'update',
+  expectedRevision: response.revision,
+  id: 'tool-subagent-e2e',
+  patch: { toolName: 'subagent_e2e_acp' },
+}));
+NODE
+)"
+ACP_EDIT_STATUS="$(curl -sS --max-time 15 -o "${ACP_EDIT_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
+  -H 'content-type: application/json' --data "${ACP_EDIT_PAYLOAD}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
+assert_status "${ACP_EDIT_STATUS}" "200" "registered ACP edit" "${ACP_EDIT_RESPONSE}"
+node - "${ACP_EDIT_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const row = state.subagents.find((item) => item.id === 'tool-subagent-e2e-acp');
+if (!row || row.config?.provider !== 'e2eacp' || row.config?.toolName !== 'subagent_e2e_acp') {
+  throw new Error(`registered ACP edit missing: ${JSON.stringify(row)}`);
+}
+NODE
+node --input-type=module - "${ACP_BEFORE_EDIT_PATCH}" "${PATCH_PATH}" "${ROOT_DIR}/lib/index.js" <<'NODE'
+import { readFileSync } from 'node:fs';
+const [beforePath, afterPath, modulePath] = process.argv.slice(2);
+const api = await import(new URL(`file://${modulePath}`));
+function withoutRow(text, id) {
+  const sequence = api.findSubagentSequence(api.parseYaml(text));
+  const row = sequence.items.find((item) => api.scalarString(api.pairValue(item, 'id')) === id);
+  if (!row) throw new Error(`missing row ${id}`);
+  const range = api.nodeRange(row);
+  if (!range) throw new Error(`missing row range ${id}`);
+  const start = api.lineStart(text, range[0]);
+  return text.slice(0, start) + text.slice(range[1]);
+}
+const before = readFileSync(beforePath, 'utf8');
+const after = readFileSync(afterPath, 'utf8');
+if (withoutRow(before, 'tool-subagent-e2e') !== withoutRow(after, 'tool-subagent-e2e-acp')) {
+  throw new Error('registered ACP edit changed bytes outside its delegation row');
+}
+NODE
+ACP_EDIT_REVISION="$(node -e 'const fs=require("node:fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).revision)' "${ACP_EDIT_RESPONSE}")"
+printf 'E2E_ACP_EDIT status=%s provider=e2eacp unrelated_bytes_preserved=1\n' "${ACP_EDIT_STATUS}"
+
+ACP_CREATE_PAYLOAD="$(node -e 'process.stdout.write(JSON.stringify({action:"create",expectedRevision:process.argv[1],input:{toolName:"subagent_e2e_acp2",provider:"e2eacp2",backgroundMode:"one-shot"}}))' "${ACP_EDIT_REVISION}")"
+ACP_CREATE_STATUS="$(curl -sS --max-time 15 -o "${ACP_CREATE_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
+  -H 'content-type: application/json' --data "${ACP_CREATE_PAYLOAD}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
+assert_status "${ACP_CREATE_STATUS}" "200" "e2eacp2 create" "${ACP_CREATE_RESPONSE}"
+node - "${ACP_CREATE_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const row = state.subagents.find((item) => item.id === 'tool-subagent-e2e-acp2');
+if (!row || row.config?.provider !== 'e2eacp2' || row.config?.backgroundMode !== 'one-shot' || row.config?.maxDepth !== 'provider-managed') {
+  throw new Error(`e2eacp2 row missing or unnormalized: ${JSON.stringify(row)}`);
+}
+NODE
+printf 'E2E_ACP_CREATE status=%s provider=e2eacp2 maxDepth=provider-managed\n' "${ACP_CREATE_STATUS}"
+
+ACP_READONLY_HASH_BEFORE="$(sha256 "${PATCH_PATH}")"
+ACP_READONLY_PAYLOAD="$(node - "${ACP_CREATE_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+process.stdout.write(JSON.stringify({
+  action: 'update',
+  expectedRevision: state.revision,
+  id: 'tool-subagent-codex',
+  patch: { backgroundMode: 'one-shot' },
+}));
+NODE
+)"
+ACP_READONLY_STATUS="$(curl -sS --max-time 15 -o "${ACP_READONLY_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
+  -H 'content-type: application/json' --data "${ACP_READONLY_PAYLOAD}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
+assert_status "${ACP_READONLY_STATUS}" "422" "unregistered provider update" "${ACP_READONLY_RESPONSE}"
+node - "${ACP_READONLY_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const value = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const expected = "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑";
+if (value.code !== 'READ_ONLY' || value.message !== expected) throw new Error(`expected READ_ONLY, got ${JSON.stringify(value)}`);
+NODE
+[[ "$(sha256 "${PATCH_PATH}")" == "${ACP_READONLY_HASH_BEFORE}" ]] || fail "unregistered provider request changed the patch"
+printf 'E2E_ACP_READONLY status=%s code=READ_ONLY unchanged=1\n' "${ACP_READONLY_STATUS}"
+
+ROLE_CLEAR_PAYLOAD="$(node - "${ACP_CREATE_RESPONSE}" <<'NODE'
 const fs = require('node:fs');
 const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 process.stdout.write(JSON.stringify({
@@ -1006,7 +1192,7 @@ node -e 'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync(pro
 printf 'E2E_INVALID_PROVIDER status=%s code=INVALID unchanged=1\n' "${INVALID_PROVIDER_STATUS}"
 
 STALE_HASH_BEFORE="$(sha256 "${PATCH_PATH}")"
-STALE_PAYLOAD="$(node -e 'process.stdout.write(JSON.stringify({action:"update",expectedRevision:process.argv[1],id:"tool-subagent-e2e",patch:{backgroundMode:"continuable"}}))' "${REVISION_BEFORE}")"
+STALE_PAYLOAD="$(node -e 'process.stdout.write(JSON.stringify({action:"update",expectedRevision:process.argv[1],id:"tool-subagent-e2e-acp",patch:{backgroundMode:"continuable"}}))' "${REVISION_BEFORE}")"
 STALE_STATUS="$(curl -sS --max-time 15 -o "${STALE_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
   -H 'content-type: application/json' --data "${STALE_PAYLOAD}" \
   "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
@@ -1082,11 +1268,18 @@ assert_clean_profile_patch
 start_server "${LOG_RESTART}"
 exchange_token_and_fetch_state "${STATE_RESTART}"
 
+if grep -Eiq '(mount|register|activation).*(maxDepth|agentOptions|continuable)|(maxDepth|agentOptions|continuable).*(mount|register|activation)' "${LOG_RESTART}"; then
+  grep -Ei '(mount|register|activation).*(maxDepth|agentOptions|continuable)|(maxDepth|agentOptions|continuable).*(mount|register|activation)' "${LOG_RESTART}" >&2 || true
+  fail "restart log contains a mount/registration error mentioning incompatible ACP fields"
+fi
 node - "${STATE_RESTART}" <<'NODE'
 const fs = require('node:fs');
 const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (!state.subagents.some((item) => item.config?.toolName === 'subagent_e2e')) {
-  throw new Error('subagent_e2e was not loaded after DSH restart');
+if (!state.subagents.some((item) => item.id === 'tool-subagent-e2e-acp' && item.config?.provider === 'e2eacp')) {
+  throw new Error('registered e2eacp row was not loaded after DSH restart');
+}
+if (!state.subagents.some((item) => item.id === 'tool-subagent-e2e-acp2' && item.config?.provider === 'e2eacp2')) {
+  throw new Error('registered e2eacp2 row was not loaded after DSH restart');
 }
 if (!state.members.some((item) => item.name === 'e2e-helper')) {
   throw new Error('e2e-helper was not loaded after DSH restart');
@@ -1100,10 +1293,55 @@ if (!state.subagents.some((item) => item.id === 'tool-subagent-e2e-fork' && item
 if (state.members.length !== 1 || state.members[0]?.name !== 'e2e-helper') {
   throw new Error(`unexpected members after DSH restart: ${JSON.stringify(state.members)}`);
 }
-console.log(`E2E_RESTART revision=${state.revision} subagent_e2e=1 fork=spawn member=e2e-helper`);
+console.log(`E2E_RESTART revision=${state.revision} acp=e2eacp,e2eacp2 tools=registered fork=spawn member=e2e-helper`);
 NODE
 
+BACK_TO_SPAWN_PAYLOAD="$(node - "${STATE_RESTART}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const route = state.catalog.providers.flatMap((provider) => provider.models.map((model) => ({
+  provider: provider.id,
+  model: model.id,
+  reasoningEffort: model.reasoningEfforts?.[0],
+})))[0];
+if (!route) throw new Error('no catalog route for ACP-to-spawn conversion');
+process.stdout.write(JSON.stringify({
+  action: 'update',
+  expectedRevision: state.revision,
+  id: 'tool-subagent-e2e-acp2',
+  patch: { provider: 'spawn', agentOptions: route },
+}));
+NODE
+)"
+BACK_TO_SPAWN_STATUS="$(curl -sS --max-time 15 -o "${ACP_BACK_TO_SPAWN_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" \
+  -H 'content-type: application/json' --data "${BACK_TO_SPAWN_PAYLOAD}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents")"
+assert_status "${BACK_TO_SPAWN_STATUS}" "200" "registered ACP back to spawn" "${ACP_BACK_TO_SPAWN_RESPONSE}"
+node - "${ACP_BACK_TO_SPAWN_RESPONSE}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const row = state.subagents.find((item) => item.id === 'tool-subagent-e2e-acp2');
+if (!row || row.config?.provider !== 'spawn' || !row.config?.agentOptions?.model) {
+  throw new Error(`ACP-to-spawn conversion missing: ${JSON.stringify(row)}`);
+}
+NODE
+printf 'E2E_ACP_BACK_TO_SPAWN status=%s provider=spawn\n' "${BACK_TO_SPAWN_STATUS}"
+
 stop_server
+assert_clean_profile_patch
+start_server "${LOG_RESTART_AFTER_SPAWN}"
+exchange_token_and_fetch_state "${STATE_RESTART_AFTER_SPAWN}"
+node - "${STATE_RESTART_AFTER_SPAWN}" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const row = state.subagents.find((item) => item.id === 'tool-subagent-e2e-acp2');
+if (!row || row.config?.provider !== 'spawn' || !row.config?.agentOptions?.model) {
+  throw new Error(`ACP-to-spawn row was not loaded after restart: ${JSON.stringify(row)}`);
+}
+console.log(`E2E_R6_RESTART_AFTER_SPAWN provider=${row.config.provider} mount_check=passed`);
+NODE
+stop_server
+
 restore_profile
 for _ in $(seq 1 40); do
   if ! curl -fsS --max-time 1 "${BASE_URL}/" >/dev/null 2>&1; then

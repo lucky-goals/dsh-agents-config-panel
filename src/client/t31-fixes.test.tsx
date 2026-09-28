@@ -302,10 +302,9 @@ const GPT_ONLY = REAL_MEMBERS.filter((m) => m.provider === 'gpt-gateway');
 const twoProfileState = (profile: string) =>
   fixtureState(profile, profile === 'gpt-only' ? GPT_ONLY : REAL_MEMBERS, TWO_PROFILES);
 
-/** Text of each tbody row's first cell. */
+/** Member names in render order (v2.1 two-row layout: one row header per member tbody). */
 function memberColumn(html: string): string[] {
-  const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? '';
-  return [...tbody.matchAll(/<tr><td[^>]*>([^<]*)/g)].map((m) => m[1]);
+  return [...html.matchAll(/<th scope="row"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
 }
 
 describe('M1 members store: stale responses are discarded', () => {
@@ -505,7 +504,11 @@ describe('L2 client messages', () => {
   it('shared messages equal what the Host returns for the same case (real fixture)', () => {
     expect(MSG.toolNameDuplicate('subagent_coder')).toBe(failure(createSubagent(FIXTURE, { toolName: 'subagent_coder', provider: 'fork' }, CATALOG)));
     expect(MSG.toolNameFormat('bad-name')).toBe(failure(createSubagent(FIXTURE, { toolName: 'bad-name', provider: 'fork' }, CATALOG)));
-    expect(MSG.readOnly).toBe(failure(updateSubagent(FIXTURE, 'tool-subagent-cursor', { backgroundMode: 'one-shot' }, CATALOG)));
+    // v2.1: unregistered providers are read-only with the new wording; registered ACP rows are editable.
+    expect(MSG.providerUnregistered('codex')).toBe(failure(updateSubagent(FIXTURE, 'tool-subagent-codex', { backgroundMode: 'one-shot' }, CATALOG)));
+    expect(MSG.providerUnregistered('claude-code')).toBe(failure(updateSubagent(FIXTURE, 'tool-subagent-claude-code', { backgroundMode: 'one-shot' }, CATALOG)));
+    expect(updateSubagent(FIXTURE, 'tool-subagent-cursor', { backgroundMode: 'one-shot' }, CATALOG).ok).toBe(true);
+    expect(MSG.providerNotInList('codex')).toBe(failure(updateSubagent(FIXTURE, 'tool-subagent-coder', { provider: 'codex' } as any, CATALOG)));
     expect(MSG.subagentNotFound('tool-subagent-nope')).toBe(failure(updateSubagent(FIXTURE, 'tool-subagent-nope', { backgroundMode: 'one-shot' }, CATALOG)));
     expect(MSG.agentModelRequired).toBe(failure(createSubagent(FIXTURE, { toolName: 'subagent_x', provider: 'spawn', agentOptions: { provider: 'gpt-gateway' } as any }, CATALOG)));
     expect(MSG.agentProviderRequired).toBe(failure(createSubagent(FIXTURE, { toolName: 'subagent_x', provider: 'spawn', agentOptions: { model: 'gpt-6-luna' } as any }, CATALOG)));
@@ -518,7 +521,9 @@ describe('L2 client messages', () => {
   it('matches requirements B2 wording for the four named cases', () => {
     const b2 = readFileSync(join(REPO_ROOT, 'docs/requirements.md'), 'utf8');
     expect(b2).toContain(`「${MSG.lastMember}」`);
-    expect(b2).toContain(`「${MSG.readOnly}」`);
+    // v2.1 replaced「ACP 后端的 subagent 工具为只读」with the unregistered-provider wording.
+    expect(b2).not.toContain(`「${MSG.readOnly}」`);
+    expect(b2).toContain(`「${MSG.providerUnregistered('codex')}」`);
     expect(b2).toContain("「工具名 '<toolName>' 已存在」");
     expect(MSG.toolNameDuplicate('<toolName>')).toBe("工具名 '<toolName>' 已存在");
     expect(b2).toContain("「成员 '<name>' 已存在」");

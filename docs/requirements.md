@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.0  
+版本：2.1
 插件包名：`@nanmicoder/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -110,8 +110,9 @@ Panel A 的路径为：根序列中带 `insert` 键的项 → 它的 `insert` �
   - `codex` 和 `claude-code` 各 1 条：`tool-subagent-codex`、`tool-subagent-claude-code`，两行均带 `disabled: true`。
 - 同一 delegation `config` 序列另有 5 条其他 name 的行：`tool-subagent-control`、`tool-subagent-list-agents`、`workflow-ptc`、`tool-workflow`、`tool-ralph`；这些行不展示，也不修改。
 - `kiroopsuacp` 和 `kirogptacp` 只出现在根级 host `insert` 行，不属于 delegation 的 13 条 Panel A 行。
-- 通用只读规则：`config.provider` 不是 `spawn` 或 `fork` 就是只读；只有这两种 provider 的行可编辑。
-- `config` 中可能有 `toolName`、`backgroundMode`、`maxDepth`、`modelSelectionSettings`、`persona`、`agentOptions` 等键；未被契约要求更新的键必须原样保留。
+- 一行的 `editable` 为 true，当且仅当 `config.provider` 出现在本次 state 的 `subagentProviders` 中，与 `disabled` 无关。已知的 ACP 行可以编辑和删除。
+- provider 未注册的行保持只读，包括 `tool-subagent-codex`（`codex`）和 `tool-subagent-claude-code`（`claude-code`）；不允许把 provider 改成已注册名字，也不允许删除。它们是 `disabled: true` 的未知能力占位行。
+- `config` 中可能有 `toolName`、`backgroundMode`、`maxDepth`、`modelSelectionSettings`、`persona`、`agentOptions` 等键；未被契约要求更新的键必须原样保留。`editable === true` 时不返回 `readOnlyReason`；`editable === false` 时必须返回 `readOnlyReason`，文案见 B2。
 
 ### A2. Panel B 定位路径与成员形状
 
@@ -144,12 +145,42 @@ validateModelRoute(catalog, provider: string, model: string, effort?: string): s
 // 模型未声明 reasoningEfforts 时，按 ['low','medium','high','max'] 处理
 
 // src/host/subagent-manager.ts
-interface SubagentRow { id: string; disabled: boolean; editable: boolean; config: Record<string, unknown> }  // editable = config.provider 为 spawn 或 fork
-interface SubagentInput { toolName: string; provider: 'spawn'|'fork'; backgroundMode?: 'continuable'|'one-shot'; agentOptions?: { provider: string; model: string; reasoningEffort?: string } }
-listSubagents(yamlText): SubagentRow[]            // 结构缺失时抛 Error，message 用 STRUCTURE 对应的文案
-createSubagent(yamlText, input, catalog): Result  // id = 'tool-subagent-' + toolName 去掉 'subagent_' 前缀、下划线改连字符；追加到 delegation config 序列末尾
-updateSubagent(yamlText, id, patch: Partial<SubagentInput>, catalog): Result
-removeSubagent(yamlText, id): Result
+interface SubagentProviderCapabilities {
+  agentOptions: boolean
+  depthLimit: boolean
+  continuable: boolean
+  persona: boolean
+  toolFilter: boolean
+}
+interface SubagentProviderInfo {
+  name: string
+  /** 展示和诊断用途；表单和写入均由 capabilities 及 fork 例外决定。 */
+  kind: 'in-process' | 'acp' | 'unknown'
+  capabilities: SubagentProviderCapabilities
+  source: 'runtime' | 'patch'
+}
+// runtime 为 { names, providers }，null 时按真实 patch 推断；运行时列表为空也不走 patch 兜底。
+resolveSubagentProviders(yamlText: string, runtime: {
+  names: string[]
+  providers: Record<string, { capabilities: SubagentProviderCapabilities; prepareContinuable: boolean }>
+} | null): SubagentProviderInfo[]
+interface SubagentRow {
+  id: string
+  disabled: boolean
+  editable: boolean
+  config: Record<string, unknown>
+  readOnlyReason?: string
+}
+interface SubagentInput {
+  toolName: string
+  provider: string
+  backgroundMode?: 'continuable'|'one-shot'
+  agentOptions?: { provider: string; model: string; reasoningEffort?: string }
+}
+listSubagents(yamlText, subagentProviders?): SubagentRow[] // editable 按 provider 是否在本次 subagentProviders 中判断
+createSubagent(yamlText, input, catalog, subagentProviders?): Result // id = 'tool-subagent-' + toolName 去掉 'subagent_' 前缀、下划线改连字符；追加到 delegation config 序列末尾
+updateSubagent(yamlText, id, patch: Partial<SubagentInput>, catalog, subagentProviders?): Result
+removeSubagent(yamlText, id, subagentProviders?): Result
 
 // src/host/members-editor.ts
 interface TeamMember { name: string; role?: string; provider?: string; model?: string; reasoning_effort?: string; [k: string]: unknown }
@@ -163,15 +194,79 @@ removeMember(yamlText, profile, name): Result
 computeRevision(yamlText): string                 // 内容的 sha256 hex
 ```
 
+### B0. Subagent provider 目录与来源
+
+`resolveSubagentProviders(yamlText, runtime)` 是不依赖 Cordis 的纯函数。`kind` 判定为：名字是 `spawn` 或 `fork` 时为 `in-process`；五项 capabilities 全为 false 且 `prepareContinuable === false` 时为 `acp`；其余为 `unknown`。只要 provider 出现在列表里，`unknown` 也按能力位编辑。`outputSchema` 不进入结构，本插件不写该字段。
+
+运行时优先规则：Host 不把 `subagents` 写进插件的 `inject`。服务存在且 `list`、`getProvider` 均可用时，按 `list()` 注册顺序排列，每个名字调用 `getProvider`；`continuable` 取 `typeof prepareContinuable === 'function'`，其余能力从 `provider.capabilities` 读取，缺失按 false。`getProvider` 返回空则丢弃该名字，并记录 `subagent provider '<name>' 已列出但无法读取能力`。服务存在时即使 `list()` 为空，也采用空运行时列表，不合并 patch；每次请求重新调用，不缓存。
+
+仅当 `ctx.get('subagents')` 为 `undefined`、`list`/`getProvider` 非函数或调用抛错时，才从 patch 兜底：固定先加入 `spawn`、`fork`（五项能力 true、continuable true、kind `in-process`、source `patch`），再扫描根序列带 `insert` 的项，读取 `@deepseek-ai/dsh-subagent-acp` 行的 `config.providerName`，空值跳过、重名保留首次，加入能力全 false、continuable false、kind `acp`、source `patch` 的 provider。真实脱敏 fixture 的顺序和结果是 `spawn`、`fork`、`ccacp`、`cursoracp`、`kiroopsuacp`、`kirogptacp`；command、args、env 只用于确认注册行，不放进 state，也不修改。兜底时记录 `subagents 服务尚未绑定，provider 能力来自配置推断`。
+
 ### B1. 校验规则
 
 - `toolName` 匹配 `^subagent(_[a-z0-9]+)*$`，在该 delegation 序列所有 subagent 行里唯一，否则 `DUPLICATE`。id 冲突也是 `DUPLICATE`。
-- `provider` 为 `spawn` 时，`agentOptions.provider` 和 `agentOptions.model` 必填，并且必须通过 `validateModelRoute`。`provider` 为 `fork` 时不能带 `agentOptions`。
-- `config.provider` 不是 `spawn` 或 `fork` 的行只能展示，update 或 remove 返回 `READ_ONLY`。
+- `editable` 为 true 当且仅当当前行 `config.provider` 出现在本次 `subagentProviders`；与 `disabled` 无关。provider 未注册的行，update/remove 在改写前返回 `READ_ONLY`，文件不变。已注册 ACP 行可编辑、可删除。
+- 已注册行把 provider 改成未注册名字时返回 `INVALID`（400），文案 `provider '<name>' 未注册`，文件不变。
+- 先把 patch 合并到目标行，再按最终 provider 的 capabilities 规范化，最后调用 `assertMountable` 等挂载条件校验。`fork` 是唯一按名字处理的例外：禁止 agentOptions。
+- `agentOptions === false` 或 provider 为 fork 时删除 `agentOptions`；目标能力不支持 agentOptions 时删除 `modelSelectionSettings`。`continuable === false` 时将 backgroundMode 规范为 `one-shot`；`depthLimit === false` 时将 maxDepth 规范为 `provider-managed`；`depthLimit === true` 且当前 maxDepth 为 provider-managed 时删除 maxDepth。persona/toolFilter 能力为 false 时删除对应键。目标支持 continuable 时不改写已合法的 backgroundMode。规范化删除不依赖 Client 传 null。
+- spawn/fork 继续使用既有校验文案；其他 provider 缺 agentOptions 时返回 `provider '<name>' 必须配置 agentOptions`，不支持 continuable、maxDepth 或 agentOptions 时返回对应中文 INVALID 文案。`assertMountable` 必须检查最终行的 maxDepth、agentOptions、modelSelectionSettings 和 continuable。
 - `member.name` 匹配 `^[a-z][a-z0-9-]*$`，同一 profile 内唯一。member 的 provider 和 model 要么都填（并通过 `validateModelRoute`），要么都不填。只剩最后一个成员时 remove 返回 `LAST_MEMBER`。
-- **spawn → fork**：`updateSubagent` 的 patch 设 `provider: 'fork'`，且不带 `agentOptions` 时，删除该行原有的 `agentOptions` 块（只删这一行的块，其余字节不变）并返回 ok。patch 显式带了 `agentOptions` 时仍返回 `INVALID`（fork 不能带 agentOptions）。**fork → spawn** 时必须在 patch 里补全 `agentOptions`，新块按该行 `config` 的键缩进写入。
-- 纯函数边界不抛异常：字段值无法安全写成 YAML 标量时，返回 `INVALID` 并说明是哪个字段。只有 B2 所列的结构缺失，`list*` 才会抛 `Error`。
+- **spawn → fork**：patch 设 `provider: 'fork'` 且不带 agentOptions 时删除原有块；显式带 agentOptions 时返回 `INVALID`（fork 不能带 agentOptions）。**fork → spawn** 时 patch 必须补全 agentOptions，按该行 config 缩进写入。
+- 纯函数边界不抛异常：字段值无法安全写成 YAML 标量时返回 `INVALID` 并说明字段；只有 B2 结构缺失时 `list*` 才抛 `Error`。
 - 用当前值原样重新保存一条可编辑行或一名成员时，结果与原文逐字节相同（no-op）。
+
+### B1.1. Provider 能力与切换规范化
+
+表单按当前 `SubagentProviderInfo.capabilities` 决定字段，不按 ACP 名字分支。唯一名字例外是 `fork`：`suppressAgentOptions = (name === 'fork')`。`agentOptions === true` 且不是 fork 时显示 Agent Provider、Model、Reasoning Effort；`agentOptions === false` 或 fork 时隐藏三级联动且提交不带 agentOptions。`continuable === true` 显示 `continuable`/`one-shot` 下拉，`false` 只显示只读 `one-shot`；`depthLimit === false` 显示只读 `maxDepth：provider-managed`，`true` 不显示 maxDepth。能力为 false 时不保留 persona/toolFilter；`modelSelectionSettings` 不提供表单控件，只在能力仍允许 agentOptions 时原样保留。
+
+从不支持 continuable 的 provider 切到支持者，Background Mode 默认 `continuable`；反向切换规范为 `one-shot`。Host 先按最终 provider 规范化再校验，Client 不传 null 也必须得到同样结果：
+
+| 切换 | Host 自动改写 | Client 必须传 |
+|---|---|---|
+| spawn → ACP | 删除 `agentOptions`、`modelSelectionSettings`、`persona`、`toolFilter`；`backgroundMode: one-shot`；`maxDepth: provider-managed` | `provider` |
+| ACP → spawn | 删除 `maxDepth` | `provider`、完整的 `agentOptions`；`backgroundMode` 只在用户改动时传（表单默认会替用户选 `continuable`） |
+| ACP ↔ ACP | 只改 `provider` | `provider` |
+| fork → ACP | 与 spawn → ACP 相同 | `provider` |
+| ACP → fork | 删除 `maxDepth`；不允许留下 `agentOptions` | `provider`；表单默认 `backgroundMode` 为 `continuable`，并传出 |
+| spawn ↔ fork | 沿用 v2.0 | 沿用 v2.0 |
+
+目标 provider `agentOptions === false` 或为 fork 时，即使 Client 多传 agentOptions 也直接删除；但 provider 已是 fork 且本次未改 provider、单独给 fork 行加 agentOptions 时，仍返回 `fork provider 不能配置 agentOptions`。目标 `continuable === false` 写 one-shot；目标 `depthLimit === false` 写 provider-managed；目标 `depthLimit === true` 且当前为 provider-managed 时删除 maxDepth。若按能力无需改写，结果必须与原文逐字节相同。
+
+### B1.2. 新建 provider 行
+
+`subagentProviders` 中每一个已知名字都可用于新建，未注册名字拒绝。新建 ACP 行只写以下键并保持顺序：
+
+```yaml
+- id: tool-subagent-<由 toolName 派生，规则不变>
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: <选中的 ACP 名字>
+    toolName: <toolName>
+    backgroundMode: one-shot
+    maxDepth: provider-managed
+```
+
+不写 `agentOptions`、`modelSelectionSettings`、`persona`、`toolFilter`、`disabled`；id 在整个 delegation 序列唯一。新建 spawn/fork 沿用现有键，不额外写 maxDepth；Client 未传 backgroundMode 时按目标 continuable 能力默认 continuable 或 one-shot。新建 ACP 即使带 agentOptions 或 `backgroundMode: continuable`，Host 也规范化为合法 ACP 行，不返回 INVALID。
+
+### B1.3. 挂载校验
+
+在测试和 Host 校验中使用与 `dsh-tool-subagent@0.1.7-rc.2` 一致的逻辑，不 import DSH 包。测试 provider 能力直接手写：
+
+```ts
+function resolvedMaxDepth(configured: unknown): unknown {
+  if (configured === 'provider-managed') return undefined
+  if (configured !== undefined) return configured
+  return 1
+}
+function assertMountable(config, provider): void {
+  if (resolvedMaxDepth(config.maxDepth) !== undefined && !provider.capabilities.depthLimit) throw new Error('maxDepth')
+  if (config.agentOptions !== undefined && !provider.capabilities.agentOptions) throw new Error('agentOptions')
+  if (config.modelSelectionSettings === true && !provider.capabilities.agentOptions) throw new Error('modelSelectionSettings')
+  if ((config.backgroundMode ?? 'one-shot') === 'continuable' && !provider.prepareContinuable) throw new Error('continuable')
+}
+```
+
+`provider-managed` 的 maxDepth 解析为 undefined，省略时默认 1；若最终 maxDepth、agentOptions、modelSelectionSettings 或 continuable 与 provider capabilities 不相容，返回对应 INVALID 文案（`provider '<name>' 不支持 backgroundMode continuable`、`provider '<name>' 必须将 maxDepth 设为 provider-managed`、`provider '<name>' 不支持 agentOptions`）。
 
 ### B4. null 清空语义
 
@@ -199,34 +294,33 @@ computeRevision(yamlText): string                 // 内容的 sha256 hex
 - 不对文件执行 `chmod`，不提升也不降低原有权限。
 - 新建安装时，`cordis.patch.yml` 应以 `0o600` 创建（由 DSH 初始化或首次写入时保证）。
 
-### B6. 请求体校验规则（t26）
+### B6. 请求体校验规则（t26、v2.1）
 
-在解析 JSON 之后、调用纯函数之前，路由层对请求体做严格校验：
+`validateWriteBody`（`src/host/http-routes.ts`）在读文件、加锁之前运行，只检查类型和形状，遇到第一个不合法的字段就返回 400 `INVALID`，文案统一为 `字段 <name> <原因>`。格式规则（toolName、成员名的正则）、provider 是否已注册、模型路由，都由锁内的纯函数校验，不在这一层。
 
-**POST /subagents**（`action: 'create'`）：
-- `toolName` 必须是字符串，匹配 `^subagent(_[a-z0-9]+)*$`；
-- `provider` 必须是 `'spawn'` 或 `'fork'`；
-- `backgroundMode` 如果存在，必须是 `'continuable'` 或 `'one-shot'`；
-- `agentOptions`（spawn 时必填）中：`provider`、`model` 必须是非空字符串；`reasoningEffort` 如存在，必须是字符串；
-- `disabled` 如果存在，必须是布尔值。
+两条写入路由都要检查：
+- `expectedRevision` 必须是 64 位小写十六进制字符串。
+- `action` 必须属于该路由允许的集合：subagents 是 `create`/`update`/`remove`，members 是 `add`/`update`/`remove`。
+- `update`/`remove` 必须带非空字符串 `id`（subagents）或 `name`（members）。
+- `input`/`member`/`patch` 必须是普通 JSON 对象；`update` 的 `patch` 不能是空对象。
 
-**POST /subagents**（`action: 'update'`）：
-- `id` 必须是非空字符串；
-- `patch` 中每个字段的值必须是对应类型或 `null`；`toolName`、`provider`、`backgroundMode` 不允许为 `null`；`agentOptions` 本身不允许为 `null`（内部字段可以为 `null`）。
+members 路由还要求 `profile` 是非空字符串。成员对象的字段内容由 `addMember`/`updateMember` 校验。
 
-**POST /members**（`action: 'add'`）：
-- `member.name` 必须是字符串，匹配 `^[a-z][a-z0-9-]*$`。
+subagents 路由对 `input` 和 `patch` 的额外要求：
+- 只接受 `toolName`、`provider`、`backgroundMode`、`agentOptions` 四个键，其他键返回 `字段 <field>.<key> 不支持`。例如带 `disabled` 会被拒绝，本接口不写 disabled。
+- `maxDepth`、`modelSelectionSettings`、`persona`、`toolFilter` 出现时返回 `字段 <name> 不能通过此接口修改`。
+- `toolName`、`provider`：可以不出现；出现时必须是非空字符串，传 `null` 返回 `不能清空`。v2.1 不再在路由层把 provider 限制为 spawn/fork。
+- `backgroundMode`：可以不出现；出现时必须是 `continuable` 或 `one-shot`，传 `null` 返回 `不能清空`。
+- `agentOptions` 必须是 JSON 对象，只接受 `provider`、`model`、`reasoningEffort` 三个键；内部字段值的合法性由纯函数判断，`reasoningEffort: null` 表示清空。
 
-不合法时返回 400 `INVALID`，文案描述哪个字段不合法。
-
-**id 唯一性（t26 补充）：** `createSubagent` 在 delegation 序列中比对所有行（不仅 dsh-tool-subagent 行），id 重复时返回 `DUPLICATE`，文案「id '<id>' 已存在」。
+create 生成的 id 要和 delegation 序列中的所有行比较，不只是 dsh-tool-subagent 行；冲突返回 `DUPLICATE`。
 
 ### B2. 错误文案（逐字）
 
 - `STRUCTURE`：「未找到 preset-standard-acp 的 delegation 组，当前 profile 结构不受支持」／「未找到 agent-teams 配置，请确认已安装 @nanmicoder/dsh-agent-teams」／「未找到团队 profile '<p>'」
 - `NOT_FOUND`：「未找到 subagent '<id>'」／「未找到成员 '<name>'」
 - `DUPLICATE`：「工具名 '<toolName>' 已存在」／「id '<id>' 已存在」／「成员 '<name>' 已存在」
-- `READ_ONLY`：「ACP 后端的 subagent 工具为只读」
+- `READ_ONLY`：`provider '<name>' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑`
 - `LAST_MEMBER`：「团队至少需要保留一个成员」
 - `INVALID`：具体说明哪个字段不合法，例如「模型 'x' 不在 provider 'y' 的目录中」「provider 'y' 未配置」「reasoning effort 'z' 不被模型 'x' 支持」
 
@@ -255,14 +349,18 @@ GET /plugins/dsh-wuyou-agent/api/state?profile=standard-acp
   revision: string,
   catalog: ModelCatalog,
   subagents: SubagentRow[],
+  subagentProviders: SubagentProviderInfo[],
   teamProfiles: string[],
   profile: string,
   members: TeamMember[],
   errors: { subagents?: string, members?: string },
   diagnostics: {
+    hostApi: 2,
     atomicWrite: { loaded: boolean, anchor?: string, resolvedPath?: string, tried?: string[] },
     catalogSource: 'runtime' | 'patch',
-    catalogErrors?: string[]
+    catalogErrors?: string[],
+    subagentProvidersSource: 'runtime' | 'patch',
+    subagentProviderErrors?: string[]
   }
 }
 ```
@@ -274,6 +372,9 @@ GET /plugins/dsh-wuyou-agent/api/state?profile=standard-acp
 - `atomicWrite.loaded`：`@deepseek-ai/dsh-atomic-write` 是否已加载。为 `true` 时带上成功的 `anchor` 和 `resolvedPath`；为 `false` 时带上按顺序尝试过的 `tried`。锚点顺序依次为：插件自身的 `import.meta.url`、profile 的 `package.json`、`process.argv[1]` 的真实路径（DSH 入口脚本）、从插件解析到的 `@deepseek-ai/cordis`。加载在首次注册路由时惰性执行，结果会被缓存。成功时记一行 info：`wuyou-agent: dsh-atomic-write loaded via <anchor> -> <resolvedPath>`；失败时记 error，并列出全部锚点。
 - `catalogSource`：`runtime` 表示目录来自 DSH LLM 注册表；`patch` 表示退回 `readCatalog(yamlText)`。
 - `catalogErrors`：运行时查询中已经被 fallback 覆盖的非致命错误，例如某个模型的 `resolveModelInfo` 失败。
+- `hostApi` 固定为 `2`，供新 Client 判断 provider 能力和 ACP 编辑契约是否可用。
+- `subagentProvidersSource` 为 `runtime` 或 `patch`，分别表示运行时 `ctx.get('subagents')` 能力目录或 patch 兜底；`subagentProviderErrors` 收集 provider 能力读取失败和 patch 兜底提示。
+- provider 列表每次构建 state 及每次文件锁内写入前重新解析；路由仍在 `webServer` 与 `profileContext` 就绪后注册，不等待 `subagents`。服务晚绑定时下一次 state 或 mutation 自动切到 runtime，不需重启。
 - 每个成功的 mutation 响应也带 `diagnostics`。
 
 ### C2. Mutation routes
@@ -301,7 +402,7 @@ body：`{ expectedRevision, profile, action: 'add'|'update'|'remove', name?, mem
 | `DUPLICATE` | 409 | 工具名、id 或成员名重复 |
 | `STALE_REVISION` | 409 | 乐观锁版本过期 |
 | `PAYLOAD_TOO_LARGE` | 413 | 请求体超过 1MB（`MAX_BODY_BYTES = 1024*1024`）。如果 `content-length` 已声明超限，路由不读请求体，直接拒绝；如果是流式读取中途超限，也立即拒绝。两种情况都不写文件。文案为「请求体超过 1MB 上限」 |
-| `READ_ONLY` | 422 | ACP 后端行不可写 |
+| `READ_ONLY` | 422 | provider 未注册的行不可写；message 为 `provider '<name>' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑` |
 | `LAST_MEMBER` | 422 | 不允许删除最后一个成员 |
 | `STRUCTURE` | 500 | 配置结构不受支持（缺 delegation 组或缺 agent-teams） |
 | `INTERNAL` | 500 | 未识别的异常，例如文件系统错误或程序缺陷。文案固定为「服务端内部错误」，细节只写进 Host error 日志 |
@@ -371,6 +472,32 @@ window.__ModuleLoader__.load({
   - 服务端返回**非结构化响应**（HTML 错误页、纯文本、空 body、JSON 数组、JSON 字符串、JSON null 等无 `code`/`message` 字段的情况）时，统一回退为中文提示：`401`/`403` 显示「没有访问权限，请刷新页面后重新登录」；`503` 显示「服务暂时不可用，请稍后重试」；其他状态码显示「请求失败（HTTP <status>）」。不暴露原始英文异常或原始 body。
 - Panel B 的团队 profile：优先使用请求的 profile，其次 `standard-acp`，否则用 `teamProfiles[0]`。只有一个时显示为文字「团队 profile：<p>」，多个时显示为下拉框。Client 不硬编码 DSH profile 名 `web`。
 
+### D4. Panel A provider 能力表单
+
+Provider 下拉选项就是 `subagentProviders` 中的 name，按数组顺序排列，不写死 spawn/fork。编辑对话框按选中 provider 的 capabilities 显示控件：
+
+| 条件 | 控件与提交 |
+|---|---|
+| `agentOptions === true` 且不是 fork | Agent Provider、Model、Reasoning Effort；数据来自现有 LLM catalog |
+| `agentOptions === false` 或 fork | 隐藏三级联动，提交不带 agentOptions |
+| `continuable === true` | Background Mode 可选 continuable/one-shot |
+| `continuable === false` | 不显示下拉，只显示只读 one-shot |
+| `depthLimit === false` | 显示只读 `maxDepth：provider-managed` |
+| `depthLimit === true` | 不显示 maxDepth，本版不开放数值修改 |
+
+spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning Effort、Background Mode；fork 包含工具名、Provider、Background Mode；ACP 包含工具名、Provider、只读 one-shot、只读 provider-managed。ACP 或 fork 切到 spawn 时显示三级联动并补完整 agentOptions，默认 Background Mode 为 continuable；spawn 切到 ACP 时 patch 只带 provider（及确实改过的 toolName）。diff 永远不包含 maxDepth、modelSelectionSettings、persona、toolFilter。
+
+`validateForm` 中 provider 必须存在于 `subagentProviders`，否则提示 `provider '<name>' 未注册`；显示三级联动时沿用 agentOptions.provider/model 必填，不显示时不要求且 diff 不带 agentOptions。`continuable === false` 时表单值必须为 one-shot，只有与原行不同才写 patch；从 ACP/fork 切 spawn 时 diff 带完整 agentOptions。`openEdit`/`requestDelete` 对不可编辑行不发请求，展示 `readOnlyReason`。新建时所有已知 provider 可选；ACP 新建写入 provider、toolName、backgroundMode: one-shot、maxDepth: provider-managed，不写 agentOptions、modelSelectionSettings、persona、toolFilter、disabled。
+### D5. Panel B 固定两行布局
+
+成员表固定两行，不做响应式一行/两行切换。每个成员一个 `<tbody>`，包含两行 `<tr>`；表头只有成员名、角色、操作三列。第一行放成员名和角色，操作单元格 `rowspan="2"` 且靠上；第二行以 `<dl>` 横排 Provider、Model、Reasoning Effort，空值显示 `-`。
+
+成员名 `white-space: nowrap`、`min-width: 9.5em`，禁止 `overflow-wrap: anywhere`；角色 `min-width: 12em`、允许正常断行；操作列 nowrap。成员两行之间无分隔线，不同成员以 `var(--dsw-alias-border-l1)` 分隔。第二行字号 12px，dt 使用 `var(--dsw-alias-label-secondary)`、dd 使用 `var(--dsw-alias-label-primary)`；按钮为普通 `<button>`，不设 tabIndex，第二行无可聚焦元素。空列表显示一行 `colSpan={3}`，文案「暂无成员」。样式只写在 `MembersPanel.tsx`，不修改共享 `PanelChrome.tsx` 的 tableStyles；Panel A 表格不变。
+
+### D6. 新 Client 配旧 Host
+
+当 `diagnostics.hostApi` 缺失或不为 `2` 时，新 Client 不使用 `subagentProviders`，provider 下拉退回只有 spawn/fork；ACP 行编辑、删除禁用且不发送 ACP 写入请求。Panel A 顶部显示「当前界面已更新，Subagent 的 ACP 编辑需要重启 DSH 后生效」，颜色使用 `var(--dsw-alias-label-secondary)`。旧 Host 仍以 422 `READ_ONLY` 拒绝 ACP 非法写入，不写出非法配置。该提示只挂在 SubagentPanel。
+
 ## E. 构建与包
 
 - `package.json` 使用 `type: module`。
@@ -396,6 +523,12 @@ window.__ModuleLoader__.load({
         name: '@nanmicoder/dsh-wuyou-agent'
   ```
 
+### E1. 开发验证与热更新
+
+开发期间只运行 Vitest 和不输出文件的类型检查：`npx tsc -p tsconfig.json --noEmit`、`npx tsc -p tsconfig.client.json --noEmit`；只在最终验证时执行一次 `npm run build`。插件以符号链接安装，DSH client-hmr 每 500ms 对 `lib/client.js` 做一次 stat；一次最终 build 后，用户正在使用的界面即可加载新的 Client，Host 端需要重启 DSH 才生效。
+
+最终 build 后、重启 DSH 前允许出现新 Client + 旧 Host：旧 Host state 没有 `subagentProviders` 和 `diagnostics.hostApi`，ACP 行写入仍返回 422 `READ_ONLY`，不能写出非法内容；新 Client 按 D6 检测缺失或非 2 的 hostApi，退回 spawn/fork 下拉、禁用 ACP 编辑删除，并显示重启提示。
+
 ## F. 安装与隔离验收
 
 安装命令：
@@ -418,7 +551,11 @@ E2E 只在隔离 profile `wuyou-test` 中进行：使用 `--from-default-profile
 
 ### G0. 覆盖情况
 
-「E2E」指 `scripts/e2e-isolated-profile.sh`，对应 `test/e2e/artifacts-release/run.log` 中的行。最近一次结果为 `E2E_PASS profile=wuyou-test`。
+「E2E」指 `scripts/e2e-isolated-profile.sh` 打印到标准输出的 `E2E_*` 行。
+- v2.1 最终证据：`test/e2e/artifacts-v2.1-r2/`，是 t49 修复后由 t51 重跑的结果，以 `E2E_PASS profile=wuyou-test` 结束。这个目录里没有 `run.log`。
+- v2.0 证据：`test/e2e/artifacts-release/run.log`。
+
+以上都是本地生成的文件，已被 `.gitignore` 忽略。表中引用的测试名都已在源码中逐字确认。
 
 | 场景 | 覆盖测试 |
 |---|---|
@@ -427,24 +564,29 @@ E2E 只在隔离 profile `wuyou-test` 中进行：使用 `--from-default-profile
 | G3 模型目录 | `src/host/catalog.test.ts`（全部 3 例）；`src/host/runtime-deps.test.ts`「buildCatalog」组；E2E `E2E_CATALOG` |
 | G4 新增并保持范围外原文 | `src/host/subagent-manager.test.ts`「creates a spawn row, reads it back, and preserves every byte outside the insertion」；`src/host/http-routes.test.ts`「F1: spawn create with an async catalog…」；E2E `E2E_CREATE`、`E2E_DIFF only=delegation/tool-subagent-e2e` |
 | G5 toolName 重复 | `src/host/subagent-manager.test.ts`「rejects duplicate names, invalid fork options…」；客户端预校验见 `src/client/panel-a/subagent-panel-store.test.ts`「validates duplicate toolName client-side」 |
-| G6 非 spawn/fork 只读 | `src/host/subagent-manager.test.ts`「keeps ACP rows read-only for both update and remove」；`test/integration/routes.test.ts`「maps read-only ACP mutation…」；`src/client/panels.test.tsx`「marks real ACP rows read-only…」；E2E `E2E_ACP status=422 code=READ_ONLY` |
+| G6 provider 注册与只读占位 | `src/host/subagent-manager.test.ts`「keeps unregistered provider rows read-only for both update and remove」「allows removing a known ACP row and changes no neighboring bytes」；`test/integration/routes.test.ts`「allows registered ACP updates and rejects unregistered providers without changing the file」；`src/client/panels.test.tsx`「v2.1: registered ACP rows are editable, unregistered codex/claude-code rows stay read-only」；E2E `E2E_ACP_READONLY status=422 code=READ_ONLY`（codex 占位行，`acp-readonly-response.json`）、`E2E_ACP_EDIT` |
+| v2.1 provider 目录（运行时优先 / patch 兜底） | `src/host/subagent-providers.test.ts`「infers spawn, fork, and every ACP registration from the real patch」「uses runtime names and registration order without merging patch-only providers」「treats an empty runtime as authoritative instead of falling back to patch」；`src/host/http-routes.test.ts`「F0: state exposes the real ACP provider directory and host API version」；E2E 在重启后检查 `hostApi === 2`、`subagentProvidersSource === 'runtime'`、列表含 spawn/fork/e2eacp/e2eacp2 |
+| v2.1 切换规范化与挂载 | `src/host/subagent-manager.test.ts`「drops modelSelectionSettings when the default spawn row switches to cursoracp」「normalizes fork → ccacp and preserves only target-row bytes」「normalizes ccacp → fork by removing maxDepth and agentOptions」「preserves one-shot when ccacp → fork omits backgroundMode」「normalizes ccacp → spawn with supplied agentOptions and no maxDepth key」「removes persona and toolFilter before switching a spawn row to ACP」「keeps a real ACP row byte-identical when its effective values do not change」「rejects an update to an unknown provider without changing the fixture」「creates a normalized ACP row with the exact v2.1 key set and order」；`src/host/http-routes.test.ts`「rejects immutable subagent field …」；E2E `E2E_ACP_CONVERT`、`E2E_ACP_CREATE … maxDepth=provider-managed`、`E2E_INVALID_PROVIDER`、`E2E_ACP_BACK_TO_SPAWN`，每次重启后跑 `E2E_R6_MOUNT_CHECK`，并用 `E2E_R6_NEGATIVE` 证明检测器能发现挂载错误 |
+| v2.1 表单按能力显示 | `src/client/panel-a/subagent-panel-t49.test.tsx`「ACP dialog: no cascade, read-only one-shot and read-only maxDepth：provider-managed」「spawn dialog: …」「fork dialog: …」「provider drop-down lists subagentProviders in array order」「ACP → spawn: Background Mode becomes continuable and is sent」「spawn → ACP: Background Mode becomes one-shot」；`src/client/panel-a/subagent-panel-store-v2.test.ts`「spawn→ACP sends only provider (Host handles the rest)」 |
+| v2.1 Panel B 两行布局 | `src/client/panels.test.tsx`「v2.1 §7: one tbody per member, two rows, three header columns」「v2.1 §7: empty values show "-" and an empty list is a single colSpan=3 row」。**E2E 不检查这个布局**：`E2E_BROWSER` 只确认两个面板能打开，布局由 SSR 渲染测试覆盖 |
+| v2.1 新 Client + 旧 Host | `src/client/panel-a/subagent-panel-t49.test.tsx`「shown with label-secondary colour when hostApi is missing; drop-down falls back to spawn/fork」「hostApi 1 is treated as old even if the response carries a provider list」「not shown for hostApi 2」；`src/client/panel-a/subagent-panel-store-v2.test.ts`「hostApi !== 2: drop-down is spawn/fork only and no ACP write is sent (contract §9)」。**E2E 没有真正跑旧 Host 场景**，只有单元测试覆盖 |
 | G7 最后一个成员 | `src/host/members-editor.test.ts`「removes members until one remains, then returns LAST_MEMBER…」；E2E `E2E_MEMBERS … last=422/LAST_MEMBER` |
 | G8 成员局部更新与尾部键 | `src/host/members-editor.test.ts`「updates only coder model while preserving roles, other members, and tail patch keys」；`test/integration/routes.test.ts`「updates one member while preserving the real fixture tail keys」 |
 | G9 revision 乐观锁 | `src/host/patch-file.test.ts`「rejects stale revision」；`src/host/http-routes.test.ts`「POST subagents returns 409 on stale revision」；`test/integration/contract.test.ts`「returns 409 for a stale store and auto-refreshes…」；E2E `E2E_STALE status=409 code=STALE_REVISION` |
 | G10 浏览器 bundle | E2E `E2E_BROWSER panels=subagents,members moduleLoader=object`；`src/client/panels.test.tsx`「registers both sections with the D2 id/order/label verbatim」。bundle 文件本身的开头、不含 vue、不内联 react 这三项由 `scripts/build-client.mjs` 的包装和 externals 保证，**没有专门的单元测试**，需要人工核对 `lib/client.js` |
 | G11 隔离安装与 state 路由 | E2E `E2E_INSTALL`、`E2E_AUTH unauth=401 … authenticated=303`；`test/integration/routes.test.ts`「enforces authentication before serving state」；`src/index.test.ts`「fails closed with 503 while the connection service is unavailable」 |
-| G12 生产 profile 哈希不变 | E2E `E2E_CLEANUP … production_hashes_unchanged=1`，`test/e2e/artifacts-release/production-hashes.txt` |
+| G12 生产 profile 哈希不变 | E2E `E2E_CLEANUP … production_hashes_unchanged=1`；`test/e2e/artifacts-v2.1-r2/production-hashes.txt` 记录 web 的 `cordis.patch.yml`、`package.json` 前后哈希和权限位（均为 600） |
 | C2 新增错误码 | `src/host/http-routes.test.ts`：F4（413、400 非法 JSON）、F5（写入时缺团队 profile 返回 404、缺 agent-teams 返回 500）、F6（spawn→fork 删除 agentOptions）、F7（diagnostics）、「unexpected failures return {code, message} without a stack」（INTERNAL）；`src/host/patch-file.test.ts`「throws when atomic write utilities are missing」（DEPENDENCY_UNAVAILABLE） |
-| t26 请求体严格校验 / id 唯一性 | `src/host/http-routes.test.ts`「F4: a body over 1MB…」和 invalid-input 相关用例；`src/host/subagent-manager.test.ts`「rejects duplicate names」中 id 冲突部分；E2E `E2E_DUPLICATE` （`test/e2e/artifacts-release/duplicate-id-response.json`、`test/e2e/artifacts-release/invalid-input-response.json`） |
-| t30 文件权限保留 | `src/host/patch-file.test.ts` 中「0600 write」、「0640 write」、「patchFileMode ENOENT returns 600」、「patchFileMode only returns permission bits」四条；E2E `E2E_FILE_MODE` （`test/e2e/artifacts-release/file-mode.json`） |
-| t30 null 清空字段（Host） | `src/host/members-editor.test.ts`「removes coder multi-line role」、「clears provider and model together」、「clears reasoning_effort」、「provider-only null returns INVALID」等；`src/host/subagent-manager.test.ts`「removes coder's reasoningEffort line」、「spawn reasoningEffort null」等；`src/host/http-routes.test.ts`「带 null 的 patch 返回 200 并删掉对应键」、「必填字段 null 返回 400」 |
-| t31 null 清空字段（Client） | `src/client/t31-fixes.test.tsx`「null-clearable fields emit null for {model,provider,reasoning_effort,role}」、「fork row never emits agentOptions」等；`src/client/panel-a/subagent-panel-store.test.ts`、`src/client/panel-b/members-panel-store.test.ts` 中更新后的用例 |
-| t31 无改动不发请求 | `src/client/t31-fixes.test.tsx`「no-op submit closes form with notice」；`src/client/panel-a/subagent-panel-store.test.ts`「no-op」；`src/client/panel-b/members-panel-store.test.ts`「no-op」 |
-| t31 切换 profile 竞态保护（M1） | `src/client/t31-fixes.test.tsx`「stale profile response is discarded」、「seq guard drops stale load」 |
-| t31 输入法 Escape（L1） | `src/client/t31-fixes.test.tsx`「composing: Escape does not close modal」、「after compositionend: Escape closes modal」 |
-| t31 中文提示（L2） | `src/client/t31-fixes.test.tsx`「401/403 → zh message」、「503 non-struct → zh message」；`src/client/shared/api-client.test.ts` 对应用例 |
-| t32 最终 E2E | `test/e2e/artifacts-release/run.log`（`E2E_PASS`）；`file-mode.json`（0600 保持）；清空响应（`member-role-clear-response.json`、`subagent-effort-clear-response.json`）；重启验证（`E2E_RESTART`）；`production-hashes.txt`（web profile 不变） |
-| t36 非结构化错误回退（Client） | `src/client/shared/api-client.test.ts` 中「null body」、「array body」、「string body」、「HTML body」、「empty body」五条用例；`src/client/t31-fixes.test.tsx` 相关断言 |
+| t26 请求体严格校验 / id 唯一性 | `src/host/http-routes.test.ts` 中参数化的「… → 400 INVALID before any read or lock」、「rejects immutable subagent field …」；`src/host/subagent-manager.test.ts`「F22-ID: new ids are unique against every delegation row, not only subagent rows」「F22-ID: renaming a subagent onto a non-subagent row id is DUPLICATE」；E2E `E2E_INVALID_INPUT`、`E2E_DUPLICATE_ID`（`invalid-input-response.json`、`duplicate-id-response.json`） |
+| t30 文件权限保留 | `src/host/patch-file.test.ts` 的「R28-01: preserves the patch file permission bits」组：参数化的「keeps 600/640 after an update and after an identical re-save」、「uses 0600 when the patch file does not exist」、「reports the existing permission bits only (no type bits)」；E2E `E2E_FILE_MODE`（`file-mode.json`：initial/afterWrite/afterResave 均为 600） |
+| t30 null 清空字段（Host） | `src/host/members-editor.test.ts` 的「M2: null clears an optional member field」组：「removes coder's whole multi-line role block and nothing else」「clears provider and model together」「clears reasoning_effort alone」「rejects clearing provider while keeping model」「rejects clearing the required name」「clearing an absent key is a byte-identical no-op」「clears a field written on the sequence item line without breaking the item」；`src/host/subagent-manager.test.ts` 的「M2: null clears agentOptions.reasoningEffort」组；`src/host/http-routes.test.ts`「M2: null values for clearable fields pass validation and clear the keys」「M2: null for a required field is a 400 naming the field, file unchanged」；E2E `E2E_CLEAR_ROLE`、`E2E_CLEAR_EFFORT`（`member-role-null-response.json`、`subagent-effort-null-response.json`、`member-provider-null-response.json`） |
+| t31 null 清空字段（Client） | `src/client/t31-fixes.test.tsx`「clearing role sends exactly {role:null}」「clearing provider and model (the cascade the form performs) sends nulls for all three route keys」「clearing reasoningEffort sends agentOptions.reasoningEffort=null and nothing else」，以及「M2 nullable-field set matches the Host (t30)」组 |
+| t31 无改动不发请求 | `src/client/t31-fixes.test.tsx`「saving with no changes sends no request, closes the form and says so」；`src/client/panel-a/subagent-panel-t49.test.tsx`「opening an ACP row without backgroundMode and saving unchanged sends nothing」 |
+| t31 切换 profile 竞态保护（M1） | `src/client/t31-fixes.test.tsx` 的「M1 members store: stale responses are discarded」组（「A issued first, B answered first, A answered last → the panel shows B」「a failure of the superseded request does not surface as an error」「409 keeps loading=true and the profile picker disabled until the refresh lands」）和「M1 subagent store: same protection」组 |
+| t31 输入法 Escape（L1） | `src/client/t31-fixes.test.tsx` 的「L1 composition guard」组：「ignores Escape while isComposing」「ignores Escape with keyCode 229」「ignores keys during composition and exactly one keydown right after compositionend」等 |
+| t31 中文提示（L2） | `src/client/t31-fixes.test.tsx`「shared messages equal what the Host returns for the same case (real fixture)」「every client message contains Chinese text」；`src/client/shared/api-client.test.ts`「gives auth rejections ({error} bodies) Chinese fallback text」 |
+| t32 v2.0 最终 E2E | `test/e2e/artifacts-release/run.log`（`E2E_PASS`），包含 `E2E_FILE_MODE`、`E2E_CLEAR_ROLE`、`E2E_CLEAR_EFFORT`、`E2E_RESTART`，以及 `production-hashes.txt`。v2.1 重跑了同样的步骤，结果在 `artifacts-v2.1-r2/` |
+| t36 非结构化错误回退（Client） | `src/client/shared/api-client.test.ts` 的「malformed error bodies (T34-API-001)」组：「null body → Chinese HTTP fallback」「array body → …」「JSON string body → …」「HTML body (non-JSON) → …」「empty body → …」 |
 
 ### G1. 真实结构读取 subagent
 
@@ -459,10 +601,53 @@ Given 一份根为 YAML 序列、包含 insert/preset-standard-acp/delegation/co
   And delegation config 序列还包含 tool-subagent-control、tool-subagent-list-agents、workflow-ptc、tool-workflow、tool-ralph 五条其他 name 的行
 When 调用 listSubagents(yamlText)
 Then 返回上述 13 条 dsh-tool-subagent 行
-  And provider 为 spawn 或 fork 的行 editable 为 true
-  And provider 不是 spawn 或 fork 的行 editable 为 false
+  And provider 出现在 subagentProviders 的行 editable 为 true，与 disabled 无关
+  And provider 未注册的 codex 和 claude-code 行 editable 为 false，并带 readOnlyReason
   And disabled 从每一行的行级字段读取
   And五条其他 name 的行不出现在返回值中
+```
+
+### G1.1. Provider 列表运行时优先与 patch 兜底
+
+```gherkin
+Given fixture 根序列包含 spawn、fork 以及 ccacp、cursoracp、kiroopsuacp、kirogptacp 的真实 ACP 注册行
+When resolveSubagentProviders(fixture, null)
+Then 列表依次为 spawn、fork、ccacp、cursoracp、kiroopsuacp、kirogptacp
+  And source 全部为 patch
+When 传入非空 runtime names 与 providers
+Then 按 runtime list 顺序返回且不合并 patch 名字
+When runtime list 返回空数组
+Then 返回空列表且不回退 patch
+```
+
+### G1.2. Provider 能力切换与挂载校验
+
+```gherkin
+Given 使用真实 fixture 和手写 provider capabilities（ACP 五项能力均 false、prepareContinuable 缺失）
+When 依次执行 tool-subagent-coder 的 spawn→ccacp、spawn→cursoracp、spawn→fork
+  And执行 tool-subagent→cursoracp、tool-subagent-fork→ccacp、ccacp→fork、ccacp↔cursoracp
+  And执行 tool-subagent-acp→spawn，并传入完整 agentOptions
+Then 每次读回的目标 config 都通过 assertMountable
+  And能力为 false 的最终行不含 persona、toolFilter
+  And spawn→ACP 删除 agentOptions/modelSelectionSettings，写 one-shot/provider-managed
+  And ACP→spawn 删除 maxDepth 并保留完整 agentOptions
+  And ACP↔ACP 只改 provider
+  And ACP→fork 删除 maxDepth 且不含 agentOptions
+```
+
+### G1.3. 局部保留、未知 provider 和新建 ACP
+
+```gherkin
+Given fixture 的真实 ACP 行、真实 spawn 行和带 persona/toolFilter 的 spawn 副本
+When no-op 保存真实 ACP 行或只改真实 spawn 行 backgroundMode
+Then ACP 行逐字节不变，spawn 行只改变 backgroundMode
+When 对 tool-subagent-codex update 或 remove
+Then 返回 READ_ONLY，message 为「provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑」，文件字节不变
+When 把已注册 spawn 行的 provider 改成 codex
+Then 返回 INVALID，message 为「provider 'codex' 未注册」，文件字节不变
+When 新建 provider 为 ccacp 的 subagent
+Then 只写 id、name、provider、toolName、backgroundMode: one-shot、maxDepth: provider-managed
+  And不写 agentOptions、modelSelectionSettings、persona、toolFilter、disabled
 ```
 
 ### G2. 读取真实团队成员
@@ -511,18 +696,78 @@ Then 返回 ok 为 false 且 code 为 DUPLICATE
   And YAML 文本不变
 ```
 
-### G6. 非 spawn/fork 行只读
+### G6. 未注册 provider 行只读、已知 ACP 可编辑
 
 ```gherkin
-Given delegation config 序列包含 G1 所列的 13 条 dsh-tool-subagent 行
-  And其中 tool-subagent-acp、tool-subagent-cursor、tool-subagent-explore、tool-subagent-architect、tool-subagent-reviewer、tool-subagent-research、tool-subagent-codex、tool-subagent-claude-code 的 provider 不是 spawn 或 fork
-When 调用 updateSubagent 或 removeSubagent 处理上述任一 id
+Given delegation config 序列包含已注册的 ccacp/cursoracp 行，以及未注册的 codex、claude-code disabled 占位行
+When 调用 updateSubagent 或 removeSubagent 处理已注册 ACP 行
+Then 不因 ACP provider 而返回 READ_ONLY，并按能力规范化和其他校验规则处理
+When 调用 updateSubagent 或 removeSubagent 处理 provider 为 codex 的行
 Then 返回 ok 为 false 且 code 为 READ_ONLY
-  And message 为「ACP 后端的 subagent 工具为只读」
+  And message 为「provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑」
   And YAML 文本不变
-When 调用 updateSubagent 或 removeSubagent 处理 provider 为 spawn 或 fork 的行
-Then 不因 provider 而返回 READ_ONLY，并按其他校验规则处理
+When 把已注册行 provider 改为 codex
+Then 返回 ok 为 false 且 code 为 INVALID
+  And message 为「provider 'codex' 未注册」
 ```
+
+### G6.1. Client store 与组件按能力渲染
+
+```gherkin
+Given state 的 subagentProviders 含 spawn（agentOptions/continuable true）、fork（agentOptions false/continuable true）和 ACP（五项能力 false）
+When 打开 ACP 编辑项
+Then 不显示三级联动，Background Mode 不是 select，并显示只读 one-shot 和 provider-managed
+When 打开 spawn 编辑项
+Then 显示 Agent Provider、Model、Reasoning Effort 和 Background Mode 下拉
+When 打开 fork 编辑项
+Then 不显示三级联动，并显示 Background Mode 下拉
+When 将 ACP 切到 spawn 并提交
+Then Background Mode 默认 continuable，patch 带完整 agentOptions
+When 将 spawn 切到 ACP 并提交
+Then patch 只有 provider（以及确实改过的 toolName）
+When state 缺少 hostApi
+Then ACP 编辑按钮禁用、provider 下拉只有 spawn/fork，不发送 ACP 写入请求
+```
+
+覆盖层：`src/client/panel-a/subagent-panel-store.test.ts` 覆盖切换和 patch；`src/client/panels.test.tsx` 覆盖组件字段、select/只读文本、禁用操作；`src/client/t31-fixes.test.tsx` 覆盖 nullable patch、竞态和旧 Host 中文提示。
+
+### G6.2. Panel B 固定两行
+
+```gherkin
+Given members 含 provider、model、reasoning_effort 和 role 的标准 profile
+When 渲染 MembersPanel
+Then 每个成员对应一个 tbody 且包含两行 tr
+  And表头只有三列
+  And第一行包含成员名和角色，操作单元格 rowSpan 为 2
+  And第二行包含 Provider、Model、Reasoning Effort 的 dt/dd，空值显示 -
+  And成员名 whiteSpace 为 nowrap，第二行无可聚焦元素
+Given members 为空
+When 渲染 MembersPanel
+Then 只显示一行 colSpan 为 3，文案为「暂无成员」
+```
+
+覆盖层：`src/client/panels.test.tsx` 的组件断言覆盖 DOM 结构和 CSS token；`src/client/panel-b/members-panel-store.test.ts` 覆盖成员数据状态；浏览器 E2E 检查实际 DOM/CSS token。
+
+### G6.3. 隔离 profile provider E2E
+
+```gherkin
+Given 使用 `--from-default-profile` 初始化隔离的 wuyou-test profile
+When 执行 `dsh plugin --profile wuyou-test add -w @deepseek-ai/dsh-subagent-acp@0.1.5-rc.2`
+  And在 patch 模板里追加两行 provider 注册行，command 均为 `/usr/bin/true`，providerName 分别为 e2eacp、e2eacp2
+  And重启 wuyou-test
+When GET state
+Then diagnostics.hostApi 为 2，subagentProvidersSource 为 runtime
+  And provider 列表包含 spawn、fork、e2eacp、e2eacp2，后两者能力全为 false
+When 把一个 spawn 行改成 provider=e2eacp 并读取 state
+Then config 不含 agentOptions、modelSelectionSettings，backgroundMode 为 one-shot，maxDepth 为 provider-managed
+When 再次重启 wuyou-test
+Then 启动日志不含 cannot enforce maxDepth、does not support child agentOptions、does not support child model selection 或 does not support backgroundMode: continuable
+When 把该行改回 spawn 并带完整 agentOptions，再次重启
+Then 启动日志仍不含上述错误
+  And测试不真正发起 ACP 委派
+```
+
+覆盖层：`scripts/e2e-isolated-profile.sh` / `test/e2e/artifacts-release/run.log` 的 `E2E_PROVIDER_SWITCH`；所有安装、重启、请求只使用 wuyou-test。
 
 ### G7. 最后一个成员保护
 
@@ -591,11 +836,36 @@ Then ~/.dsh/profiles/web 下文件集合与验收前相同
   And每个文件的哈希与验收前完全一致
 ```
 
-## H. 测试执行要求
+## H. 非目标
+
+- 不编辑 `persona`、`toolFilter`、`maxDepth` 数值、`enableRunInBackground`、`outputSchema`
+- 不修改 `@deepseek-ai/dsh-subagent-acp` 注册行的 command、args、env
+- 不启用 codex/claude-code，也不改动这两行
+- 不改 Panel A 的表格列
+- 不改 Panel B 的字段、校验和写入逻辑
+- 不把 `subagents` 加进 `inject`
+
+## I. 测试执行要求
 
 - 先用真实结构的脱敏 fixture 驱动 Host 纯函数测试，再接入 HTTP 和安装 E2E；fixture 不得使用另一种根结构或不存在的成员定位方式。
 - 纯函数测试必须覆盖结构缺失、目录校验、重复、只读、最后成员、revision 保护和字节保留。
 - HTTP 测试必须覆盖鉴权、200 state、mutation 成功和错误状态码映射。
 - E2E 仅在 `wuyou-test` 执行，完成后核对 G12；禁止为了测试修改 `~/.dsh/profiles/web`。
+
+## J. v2.1 实际交付与计划的差异
+
+v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有写明的地方如下，其余内容均按契约交付。
+
+- **Client 只在确实需要时才发送 `agentOptions`**：只有原 provider 不能带 `agentOptions`、目标 provider 能带时（例如 ACP/fork → spawn），patch 才带完整的 `agentOptions.provider` 和 `agentOptions.model`；其他情况只发送改过的键。这样原样重存和切过去又切回来，都会得到「没有改动」、不发请求。契约 §4 的「Client 必须显式传完整 agentOptions」只适用于前一种情况（t49）。
+- **ACP → fork 省略 `backgroundMode` 时沿用原值**：Host 不会把 one-shot 强制改成 continuable。表单会在切到 fork 时把默认值设为 continuable 并随请求发出（t48、t49）。
+- **`hostApiV2` 初值为 `null`**：state 加载完成、确认 `hostApi !== 2` 之后才显示升级提示，v2 Host 下不会闪一下（t49 F5）。判断条件是 `=== 2`，不是 `>= 2`。
+- **新建时的默认 provider**：新建对话框默认选 `subagentProviders[0]`，列表为空时不能提交（t49 F3）。
+- **E2E 覆盖范围小于 §8**：
+  - Panel B 两行布局只由 SSR 渲染测试覆盖，浏览器 E2E 的 `E2E_BROWSER` 只确认两个面板能打开；
+  - 「新 Client + 旧 Host」只有单元测试，没有在真实旧 Host 上跑过。
+- **证据位置**：
+  - 脚本默认写到 `test/e2e/artifacts-v2.1/`（t43），可以用 `E2E_ARTIFACTS_DIR` 改目录；
+  - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
+  - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
 
 **文档结束**
