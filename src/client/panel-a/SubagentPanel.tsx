@@ -1,6 +1,7 @@
 /**
  * Panel A: Subagent tool rows (React, reads the framework-free store).
  * v2.1: capability-driven form fields, ACP editable, hostApi<2 banner.
+ * v2.3: ACP registrations section; import/export of ACPs + tools in one file.
  */
 import React, { useEffect, useSyncExternalStore } from 'react';
 import {
@@ -16,6 +17,9 @@ import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
 import { FormField } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
+import { ImportPreviewModal, type ImportPreviewSection } from '../ui/ImportPreviewModal';
+import { AcpSection } from './AcpSection';
+import type { SubagentImportPreview } from '../shared/import-export';
 import {
   DiagnosticsBanner,
   PanelHeader,
@@ -61,6 +65,34 @@ const oldHostNoticeStyle: React.CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 };
 
+export const IMPORT_WARNING = '文件中的 ACP 带有本机命令路径和 env，导入后请确认路径在本机存在，env 中没有不该共享的密钥。';
+
+/** Preview dialog sections for a Panel A import file. */
+export function subagentPreviewSections(preview: SubagentImportPreview): ImportPreviewSection[] {
+  return [
+    {
+      title: 'ACP',
+      entries: preview.acps.map(({ item, skip }) => ({
+        label: String(item.providerName ?? '(无名称)'),
+        details: [item.command, ...(item.args ?? [])].join(' '),
+        skip,
+      })),
+    },
+    {
+      title: 'Subagent 工具',
+      entries: preview.subagents.map(({ item, skip }) => ({
+        label: String(item.toolName ?? '(无工具名)'),
+        details: [
+          `Provider: ${item.provider}`,
+          item.backgroundMode && `Background Mode: ${item.backgroundMode}`,
+          item.agentOptions && `Agent: ${item.agentOptions.provider}/${item.agentOptions.model}`,
+        ].filter(Boolean).join('，'),
+        skip,
+      })),
+    },
+  ];
+}
+
 export function SubagentPanel({ store, close }: SubagentPanelProps) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
@@ -72,7 +104,9 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
   const busy = state.loading;
   const writeTitle = writeDisabledTitle(blocked);
   const { values, errors, mode } = state.form;
-  const modalOpen = mode !== null || state.confirmDelete.id !== null;
+  const modalOpen = mode !== null || state.confirmDelete.id !== null ||
+    state.acpForm.mode !== null || state.acpConfirmDelete.id !== null || state.acpTest.id !== null ||
+    state.importPreview !== null;
 
   // v2.1: capabilities of the currently-selected provider. The same predicates
   // decide what submit sends, so the dialog never shows what will not be written.
@@ -101,7 +135,16 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
 
   return (
     <div style={{ padding: '16px', color: 'var(--dsw-alias-label-primary)' }}>
-      <PanelHeader title="Subagent 工具管理" loading={busy} onRefresh={() => void store.load()} close={close} />
+      <PanelHeader
+        title="Subagent 工具管理"
+        loading={busy}
+        onRefresh={() => void store.load()}
+        onExport={() => store.exportConfig()}
+        onImport={(file) => void store.importConfig(file)}
+        importDisabled={blocked}
+        importTitle={writeTitle}
+        close={close}
+      />
 
       {/* §9: only once a state has confirmed hostApi !== 2 (null = not loaded yet). */}
       {state.hostApiV2 === false && <p style={oldHostNoticeStyle}>{MSG.hostApiUpgradeRequired}</p>}
@@ -277,6 +320,22 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
           </Button>
         </div>
       </Modal>
+
+      <AcpSection state={state} store={store} busy={busy} blocked={blocked} writeTitle={writeTitle} />
+
+      {state.importPreview && (
+        <ImportPreviewModal
+          isOpen
+          summary={`文件：${state.importPreview.fileName}${state.importPreview.sourceProfile ? `（来自 DSH profile ${state.importPreview.sourceProfile}）` : ''}，导入到：${state.dshProfile?.name ?? '当前 profile'}`}
+          warning={state.importPreview.acps.some((p) => !p.skip) ? IMPORT_WARNING : undefined}
+          sections={subagentPreviewSections(state.importPreview)}
+          busy={busy}
+          blocked={blocked}
+          error={state.error}
+          onClose={() => store.cancelImport()}
+          onConfirm={() => void store.confirmImport()}
+        />
+      )}
     </div>
   );
 }

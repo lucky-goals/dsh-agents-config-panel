@@ -9,6 +9,9 @@
 
 import type { ApiClient } from '../shared/api-client';
 import type {
+  AcpRow,
+  AcpTestResponse,
+  AcpsMutationRequest,
   SubagentRow,
   SubagentProviderInfo,
   SubagentProviderCapabilities,
@@ -19,6 +22,25 @@ import type {
 } from '../shared/api-types';
 import { DEFAULT_TEAM_PROFILE, WRITE_UNAVAILABLE_MESSAGE, isWriteBlocked } from '../ui/host-state';
 import { MSG } from '../ui/messages';
+import {
+  acpConfigFromForm,
+  acpFormFromRow,
+  diffAcpPatch,
+  emptyAcpForm,
+  validateAcpForm,
+  type AcpFormData,
+  type AcpFormErrors,
+} from './acp-form';
+import {
+  downloadYaml,
+  exportSubagentBundle,
+  importableBundle,
+  parseSubagentBundle,
+  previewSubagentImport,
+  readImportFile,
+  subagentExportFilename,
+  type SubagentImportPreview,
+} from '../shared/import-export';
 
 // ============================================================================
 // State Types
@@ -115,6 +137,37 @@ export interface SubagentPanelState {
     id: string | null;
     toolName: string | null;
   };
+  /**
+   * v2.3: ACP registrations of this DSH profile. They live in the same patch
+   * as the subagent rows, so they share this store's revision: an ACP write
+   * never leaves the subagent form with a stale revision, and vice versa.
+   */
+  acps: AcpRow[];
+  /** `null` until loaded; `false` when the Host predates v2.3 (no `acps` in state). */
+  acpSupported: boolean | null;
+  /** The DSH profile the Host edits (web, desktop, cli, ...). */
+  dshProfile: { name: string; patchPath: string } | null;
+  acpForm: {
+    mode: 'create' | 'edit' | null;
+    editingId: string | null;
+    values: AcpFormData;
+    original: AcpFormData | null;
+    errors: AcpFormErrors;
+  };
+  acpConfirmDelete: { id: string | null; providerName: string | null };
+  /**
+   * v2.4: the ACP test dialog. Tests read the saved row only and never write,
+   * so they neither use `loading` nor wait for the write lock.
+   */
+  acpTest: {
+    id: string | null;
+    providerName: string | null;
+    running: 'static' | 'handshake' | null;
+    result: AcpTestResponse | null;
+    error: string | null;
+  };
+  /** v2.3: parsed import file awaiting confirmation. */
+  importPreview: (SubagentImportPreview & { fileName: string }) | null;
 }
 
 // ============================================================================
@@ -139,7 +192,36 @@ export interface SubagentPanelStore {
 
   /** v2.1: get capabilities for the named provider, or null if not in the list. */
   getProviderCapabilities(name: string): SubagentProviderCapabilities | null;
+
+  // v2.3 ACP registrations
+  openCreateAcp(): void;
+  openEditAcp(id: string): void;
+  setAcpField<K extends keyof AcpFormData>(field: K, value: AcpFormData[K]): void;
+  submitAcp(): Promise<void>;
+  requestDeleteAcp(id: string): void;
+  confirmDeleteAcp(): Promise<void>;
+  /** v2.4: open the test dialog for a saved ACP and run the static checks. */
+  testAcp(id: string): Promise<void>;
+  /** v2.4: start the ACP process and send `initialize` (then terminate it). */
+  runAcpHandshake(): Promise<void>;
+  closeAcpTest(): void;
+
+  // v2.3 import / export (ACPs + subagent tools in one file)
+  exportConfig(): void;
+  importConfig(file: File): Promise<void>;
+  cancelImport(): void;
+  confirmImport(): Promise<void>;
 }
+
+function closedAcpForm(): SubagentPanelState['acpForm'] {
+  return { mode: null, editingId: null, values: emptyAcpForm(), original: null, errors: {} };
+}
+
+const NO_ACP_DELETE = { id: null, providerName: null };
+const NO_ACP_TEST: SubagentPanelState['acpTest'] = { id: null, providerName: null, running: null, result: null, error: null };
+
+/** Old Hosts have no test route: webServer answers 404 without a structured code. */
+export const ACP_TEST_UNAVAILABLE = '当前 Host 不支持 ACP 测试，重启 DSH 后可用';
 
 type SubagentPatch = NonNullable<SubagentsMutationRequest['patch']>;
 
@@ -170,6 +252,13 @@ function initialState(): SubagentPanelState {
     hostApiV2: null,
     form: closedForm(),
     confirmDelete: { id: null, toolName: null },
+    acps: [],
+    acpSupported: null,
+    dshProfile: null,
+    acpForm: closedAcpForm(),
+    acpConfirmDelete: NO_ACP_DELETE,
+    acpTest: NO_ACP_TEST,
+    importPreview: null,
   };
 }
 
@@ -325,7 +414,60 @@ export function createSubagentStore(api: ApiClient): SubagentPanelStore {
       diagnostics: response.diagnostics ?? state.diagnostics,
       subagentProviders,
       hostApiV2,
+      acps: response.acps ?? [],
+      acpSupported: Array.isArray(response.acps),
+      dshProfile: response.dshProfile ?? null,
     };
+  }
+
+  /** Close every dialog (a write or conflict refresh makes them stale). */
+  const CLOSED_DIALOGS = () => ({
+    form: closedForm(),
+    confirmDelete: { id: null, toolName: null },
+    acpForm: closedAcpForm(),
+    acpConfirmDelete: NO_ACP_DELETE,
+    acpTest: NO_ACP_TEST,
+  });
+
+  /** Bumped on every test start/close so a late answer never lands on another dialog. */
+  let testSeq = 0;
+
+  async function runTest(id: string, handshake: boolean) {
+    const seq = ++testSeq;
+    const providerName = state.acps.find((a) => a.id === id)?.config.providerName ?? id;
+    state = { ...state, acpTest: { id, providerName, running: handshake ? 'handshake' : 'static', result: handshake ? state.acpTest.result : null, error: null } };
+    notify();
+    try {
+      const result = await api.testAcp({ id, handshake });
+      if (seq !== testSeq) return;
+      setState({ acpTest: { id, providerName, running: null, result, error: null } });
+    } catch (err: any) {
+      if (seq !== testSeq) return;
+      const error = err.status === 404 && !err.code ? ACP_TEST_UNAVAILABLE : err.message || '测试失败';
+      setState({ acpTest: { ...state.acpTest, running: null, error } });
+    }
+  }
+
+  function setAcpErrors(errors: AcpFormErrors) {
+    state = { ...state, acpForm: { ...state.acpForm, errors } };
+    notify();
+  }
+
+  /** One locked write through `send`; STALE_REVISION refreshes and closes dialogs. */
+  async function write(send: () => Promise<StateResponse & { notice?: string }>, onDone: Partial<SubagentPanelState>, failure: string) {
+    if (writeBlocked()) return null;
+    requestSeq++;
+    setState({ loading: true, error: null, conflict: null });
+    try {
+      const response = await send();
+      requestSeq++;
+      setState({ loading: false, ...fromResponse(response), notice: response.notice ?? null, ...onDone });
+      return response;
+    } catch (err: any) {
+      if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message, { ...CLOSED_DIALOGS(), importPreview: null });
+      else setState({ loading: false, error: err.message || failure });
+      return null;
+    }
   }
 
   async function guardedRead(): Promise<StateResponse | null> {
@@ -513,8 +655,151 @@ export function createSubagentStore(api: ApiClient): SubagentPanelStore {
     },
 
     cancel() {
-      state = { ...state, form: closedForm(), confirmDelete: { id: null, toolName: null }, error: null, conflict: null, notice: null };
+      testSeq++;
+      state = { ...state, ...CLOSED_DIALOGS(), importPreview: null, error: null, conflict: null, notice: null };
       notify();
+    },
+
+    // ------------------------------------------------------------------------
+    // v2.3 ACP registrations
+    // ------------------------------------------------------------------------
+
+    openCreateAcp() {
+      state = { ...state, ...CLOSED_DIALOGS(), acpForm: { ...closedAcpForm(), mode: 'create' }, error: null, conflict: null, notice: null };
+      notify();
+    },
+
+    openEditAcp(id: string) {
+      const row = state.acps.find((a) => a.id === id);
+      if (!row) { setState({ error: `未找到 ACP '${id}'` }); return; }
+      const values = acpFormFromRow(row);
+      state = {
+        ...state,
+        ...CLOSED_DIALOGS(),
+        acpForm: { mode: 'edit', editingId: id, values, original: { ...values }, errors: {} },
+        error: null, conflict: null, notice: null,
+      };
+      notify();
+    },
+
+    setAcpField(field, value) {
+      const errors = { ...state.acpForm.errors };
+      delete errors[field];
+      state = { ...state, acpForm: { ...state.acpForm, values: { ...state.acpForm.values, [field]: value }, errors } };
+      notify();
+    },
+
+    async submitAcp() {
+      const { mode, values, original, editingId } = state.acpForm;
+      if (!mode) return;
+      const errors = validateAcpForm(values, mode, state.acps);
+      if (Object.keys(errors).length > 0) { setAcpErrors(errors); return; }
+
+      let request: AcpsMutationRequest;
+      if (mode === 'create') {
+        request = { expectedRevision: state.revision, action: 'create', input: acpConfigFromForm(values) };
+      } else {
+        const patch = diffAcpPatch(original ?? values, values);
+        if (Object.keys(patch).length === 0) {
+          setState({ acpForm: closedAcpForm(), error: null, conflict: null, notice: MSG.noChanges });
+          return;
+        }
+        request = { expectedRevision: state.revision, action: 'update', id: editingId!, patch };
+      }
+      await write(() => api.mutateAcps(request), { acpForm: closedAcpForm() }, MSG.saveFailed);
+    },
+
+    requestDeleteAcp(id: string) {
+      const row = state.acps.find((a) => a.id === id);
+      if (!row) { setState({ error: `未找到 ACP '${id}'` }); return; }
+      if (row.usedBy.length > 0) {
+        // Same rule the Host enforces with 409 IN_USE.
+        setState({ error: `ACP '${row.config.providerName}' 仍被 subagent 工具使用：${row.usedBy.join('、')}。请先删除或改用其他 provider` });
+        return;
+      }
+      state = { ...state, ...CLOSED_DIALOGS(), acpConfirmDelete: { id, providerName: row.config.providerName }, error: null, conflict: null, notice: null };
+      notify();
+    },
+
+    async confirmDeleteAcp() {
+      const { id } = state.acpConfirmDelete;
+      if (!id) return;
+      await write(
+        () => api.mutateAcps({ expectedRevision: state.revision, action: 'remove', id }),
+        { acpConfirmDelete: NO_ACP_DELETE },
+        MSG.deleteFailed,
+      );
+    },
+
+    async testAcp(id: string) {
+      if (!state.acps.some((a) => a.id === id)) { setState({ error: `未找到 ACP '${id}'` }); return; }
+      state = { ...state, ...CLOSED_DIALOGS(), error: null, conflict: null, notice: null };
+      await runTest(id, false);
+    },
+
+    async runAcpHandshake() {
+      const { id, running } = state.acpTest;
+      if (!id || running) return;
+      await runTest(id, true);
+    },
+
+    closeAcpTest() {
+      testSeq++;
+      setState({ acpTest: NO_ACP_TEST });
+    },
+
+    // ------------------------------------------------------------------------
+    // v2.3 import / export
+    // ------------------------------------------------------------------------
+
+    exportConfig() {
+      try {
+        const profile = state.dshProfile?.name;
+        downloadYaml(subagentExportFilename(profile), exportSubagentBundle(state.acps, state.rows, profile));
+        setState({ error: null, notice: '已导出。文件含 ACP 的 env 与本机路径，分享前请检查' });
+      } catch (err: any) {
+        setState({ error: `导出失败：${err.message}` });
+      }
+    },
+
+    async importConfig(file: File) {
+      setState({ error: null, conflict: null, notice: null });
+      try {
+        const bundle = parseSubagentBundle(await readImportFile(file));
+        const preview = previewSubagentImport(bundle, {
+          acps: state.acps,
+          rows: state.rows,
+          providers: state.subagentProviders.map((p) => p.name),
+        });
+        state = { ...state, ...CLOSED_DIALOGS(), importPreview: { ...preview, fileName: file.name } };
+        notify();
+      } catch (err: any) {
+        setState({ error: `无法导入 ${file.name}：${err.message}` });
+      }
+    },
+
+    cancelImport() {
+      setState({ importPreview: null });
+    },
+
+    async confirmImport() {
+      const preview = state.importPreview;
+      if (!preview) return;
+      const bundle = importableBundle(preview);
+      if (bundle.acps.length === 0 && bundle.subagents.length === 0) { setState({ importPreview: null }); return; }
+      const response = await write(
+        () => api.importSubagentBundle({ expectedRevision: state.revision, bundle }),
+        { importPreview: null },
+        '导入失败',
+      );
+      const report = (response as { importReport?: { created: { acps: string[]; subagents: string[] }; skipped: Array<{ name: string; reason: string }> } } | null)?.importReport;
+      if (!report) return;
+      const summary = `已导入 ${report.created.acps.length} 个 ACP、${report.created.subagents.length} 个 subagent 工具`;
+      const skipped = report.skipped.map((s) => `${s.name}：${s.reason}`);
+      setState({
+        notice: `${summary}。${response!.notice ?? ''}`,
+        error: skipped.length > 0 ? `服务端跳过 ${skipped.length} 项：${skipped.join('；')}` : null,
+      });
     },
   };
 }
