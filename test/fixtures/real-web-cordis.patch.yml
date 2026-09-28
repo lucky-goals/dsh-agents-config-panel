@@ -1,0 +1,829 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# Out-of-process ACP subagent backend. The `subagents` registry is a process
+# singleton — the api-proxy serves its cross-session queries to the browser, and
+# a provider name may only be registered once — so the provider itself lives on
+# the host plane, not in an agent preset. A preset contributes only the
+# delegation tool that resolves this registry.
+#
+# `@deepseek-ai/dsh-subagent-acp` declares no `dsh.bundle`, so `dsh plugin add`
+# installed it as a plain dependency rather than a profile layer; this row is
+# what mounts it. Keep it version-matched to the running runtime:
+#   dsh plugin --profile web add -w @deepseek-ai/dsh-subagent-acp@0.1.7-alpha.2
+- insert:
+    - id: subagent-acp
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: ccacp
+        # Use local installation (npx has spawn issues with claude CLI)
+        command: /opt/example/bin/claude-agent-acp
+        # Auto-answer the child's permission requests with the first allow
+        # option; `reject` would leave the child read-only. No prompt ever
+        # reaches a human.
+        permission: allow
+        # Override model and effort level via environment variables
+        # (overrides /opt/example/claude/settings.json which defaults to claude-fable-5)
+        env:
+          ANTHROPIC_MODEL: claude-opus-5
+          CLAUDE_CODE_EFFORT_LEVEL: xhigh
+        # `cwd` omitted on purpose: each child inherits its delegating parent
+        # session's cwd.
+
+- insert:
+    - id: subagent-acp-cursor
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: cursoracp
+        command: /opt/example/bin/agent
+        # 不要在这里加 `--model`：cursor-agent 的 `acp` 子命令下，只要带上
+        # `--model`（哪怕值是白名单里的 `cursor-grok-4.6-high`，甚至 `auto`），
+        # `session/new` 就会失败并返回
+        #   -32603 Internal error / "Failed to initialize session services"
+        # 子 agent 随即降级成 auto。实测：不带 --model 时 session/new 6 秒内成功。
+        #
+        # 模型改为通过 ACP 协议持久化选择：cursor 把选择写入
+        # /opt/example/cursor/acp-config.json（"selectedModelVariantId"），新建 ACP 会话
+        # 会读取它。当前已设为 grok-4.6[effort=high,fast=true]，即 Grok 4.6 +
+        # effort=high，session/new 返回的 currentModelId 已确认为该值。
+        #
+        # 注意 ACP 与交互式 CLI 是两套模型 ID 命名空间：
+        #   交互式 `agent models` → cursor-grok-4.6-high / -xhigh-fast ...
+        #   ACP availableModels   → grok-4.6[effort=high,fast=true]
+        # ACP 侧只接受 availableModels 里精确列出的变体（fast=false 会被拒），
+        # 且 grok 4.6 仅提供 effort=high 一档，没有 xhigh。
+        args: [ "--trust", "acp" ]
+        permission: allow
+
+# Kiro CLI over the same ACP backend. `kiro-cli acp` is a first-class
+# subcommand, so no wrapper is needed: model and effort are CLI flags rather
+# than environment variables (unlike the `ccacp` row above), and
+# `--trust-all-tools` is Kiro's own auto-approve. `permission: allow` still
+# answers any request that does reach the protocol, so neither layer prompts.
+# Auth comes from the Kiro CLI credential store (IAM Identity Center); the
+# process inherits it, so this row carries no embedded credentials.
+- insert:
+    - id: subagent-acp-kiro
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: kiroopsuacp
+        command: /opt/example/bin/kiro-cli
+        args:
+          - acp
+          - --trust-all-tools
+          - --model
+          - claude-opus-5
+          - --effort
+          - xhigh
+          # Pin the first session's agent (ACP "mode"). Without this, Kiro
+          # resolves `chat.defaultAgent` from its own settings — currently
+          # `dev`, which does not exist, so it logs "user defined default dev
+          # not found" and falls back. Naming `kiro_default` makes the mode
+          # explicit and independent of that setting, and keeps the child off
+          # the planning agents (`kiro_planner` / `planner`), which do not edit
+          # code. Verified over ACP: session/new reports
+          # modes.currentModeId=kiro_default.
+          - --agent
+          - kiro_default
+        permission: allow
+
+- insert:
+    - id: subagent-acp-kiro-gpt
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: kirogptacp
+        command: /opt/example/bin/kiro-cli
+        args:
+          - acp
+          - --trust-all-tools
+          - --model
+          - claude-opus-5.5
+          - --effort
+          - xhigh
+          # Pin the first session's agent (ACP "mode"). Without this, Kiro
+          # resolves `chat.defaultAgent` from its own settings — currently
+          # `dev`, which does not exist, so it logs "user defined default dev
+          # not found" and falls back. Naming `kiro_default` makes the mode
+          # explicit and independent of that setting, and keeps the child off
+          # the planning agents (`kiro_planner` / `planner`), which do not edit
+          # code. Verified over ACP: session/new reports
+          # modes.currentModeId=kiro_default.
+          - --agent
+          - kiro_default
+        permission: allow
+
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-08-13.1
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: gusu-gateway
+    model: kr-claude-opus-5-5
+    reasoningEffort: high
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      gusu-gateway:
+        apiKeyEnv: GUSU_GATEWAY_API_KEY
+        api: anthropic-messages
+        baseURL: https://example.invalid
+        models:
+          - inputModalities:
+              - text
+              - image
+            id: claude-fable-5-1
+            name: Fable 5.1
+            contextWindow: 1000000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - inputModalities:
+              - text
+              - image
+            id: claude-opus-5-5
+            name: Opus 5.5
+            contextWindow: 1000000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - inputModalities:
+              - text
+              - image
+            id: claude-sonnet-5
+            name: Sonnet 5
+            contextWindow: 1000000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - inputModalities:
+              - text
+              - image
+            id: claude-haiku-4-6
+            name: Haiku 4.6
+            contextWindow: 20000
+            maxTokens: 20000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - id: kr-claude-opus-5-5
+            name: kr-claude-opus-5-5
+            contextWindow: 1000000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+      gpt-gateway:
+        apiKeyEnv: GPT_GATEWAY_API_KEY
+        api: openai-responses
+        baseURL: https://example.invalid/v1
+        models:
+          - id: gpt-6-astra
+            name: gpt-6-astra
+            inputModalities:
+              - text
+              - image
+            contextWindow: 272000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - id: gpt-6-sol
+            name: gpt-6-sol
+            inputModalities:
+              - text
+              - image
+            contextWindow: 272000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - id: gpt-6-terra
+            name: gpt-6-terra
+            inputModalities:
+              - text
+              - image
+            contextWindow: 272000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+          - id: gpt-6-luna
+            name: gpt-6-luna
+            inputModalities:
+              - text
+              - image
+            contextWindow: 272000
+            maxTokens: 128000
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
+              max: max
+- id: locale
+  name: "@deepseek-ai/dsh-client-locale"
+  config:
+    preference: zh
+
+# Agent preset migrated from /opt/example/dsh/.agent-presets/standard-acp.
+# dsh 0.1.7 reads preset declarations from the profile patch; that directory is unused.
+# Host ACP providers stay in the rows above. This preset only adds the delegation tools.
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: standard-acp
+
+- insert:
+    - id: preset-standard-acp
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: standard-acp
+        name: 标准模式 + ACP 委派
+        description: 功能完整的编码 Agent，外加 claude-agent-acp 与 Cursor ACP 委派，以及进程内 spawn 实现角色。
+        order: 5
+        plugins:
+          # The `standard` agent preset: the full coding agent, mounted once per process.
+          #
+          # This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
+          # standing scope; every session naming it joins by scope parentage, so the
+          # tools and prompt sections registered here cover each joined agent while a
+          # session's own state stays keyed per Session/Agent inside the plugins. The
+          # host composition (`base.cordis.yml` + `web.cordis.yml`) keeps everything a
+          # preset must not own: the registries themselves, the sandbox and approval
+          # stack, persistence, and the model route.
+          #
+          # A service row here MUST sit inside a group carrying an `isolate` realm.
+          # Without one it publishes into the root realm, where it is process-global —
+          # another preset publishing the same name collides, and a host reader would
+          # resolve one preset's instance for every session; `dsh-agent-presets` rejects
+          # that at mount. `true` means an entry-local realm: this standing mount's own
+          # private instance, apart from every other preset's. (A shared label does NOT
+          # pool instances — `provide()` throws on the second registration under the
+          # same realm symbol; labels join REALMS, and are not what this file needs.)
+
+          # ── identity ────────────────────────────────────────────────────────────────
+
+          # The preset's own persona, shadowing the deployment default for this agent.
+          # `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              suffix: Your working directory is {{cwd}}.
+              prefix: |-
+                你是 orchestrator（技术负责人兼调度器），使用 {{model}} 模型。以下调度规则只适用于 Captain。若 AgentTeams 已将你指定为成员，以成员角色和任务契约为准：直接执行分配的工作、按当前 attempt_id 更新任务并向 Captain 报告，不创建团队、不调用其他子代理，也不重复执行 Captain 的 explore/architect 前置流程。
+                Captain 严禁亲自写大段代码，不跳过角色。
+
+                需要了解当前仓库的实现、调用链、权限入口、页面或数据来源时，禁止自己使用 read、grep、glob 或 bash 翻代码。第一步必须调用 subagent_explore，并在 task 里写清要查的问题、cwd 和只读约束。拿到它返回的路径、符号和结论之前，不要描述代码现状，不要创建 AgentTeams 计划，也不要调用 architect、coder 或其他实现角色。用户已经贴出的文件内容、报错文本，以及 explore 已经返回的结论，可以直接使用。
+
+                你的工作不是「把用户原话转发给 subagent」，而是：
+                用「用户需求 + explore/research 产出」生成任务包。explore、architect、reviewer、research 直接调用对应 Cursor ACP 工具；实现、测试及团队内协作默认由 AgentTeams 的 standard-acp profile 管理。
+                Cursor ACP 的 task、AgentTeams 任务的 description 均须包含对应人设块和本轮 [TASK]。
+
+                —— 调度顺序 ——
+                1. 决策/选型/不明依赖不清 → subagent_research（只读）
+                2. 任何当前实现调研 → 必须 subagent_explore（只读）。没有 explore 结论就还没有仓库事实
+                3. 有足够事实后 → subagent_architect 出契约（只规划，不写代码）
+                4. 使用 agent_teams_status 检查已有团队；优先续用。没有团队时，以 standard-acp profile 调用 agent_teams_create，approval="required"，由 Captain 按契约规划任务及依赖，再等待用户在面板批准执行。不要绕过批准，也不要重复创建团队。
+                   - 通用/后端实现 → coder 成员；UI/样式/交互 → front-designer 成员
+                   - 用 agent_teams_create_task / agent_teams_edit_plan 分配任务。会写同一文件的任务必须串行，无文件冲突的任务可以并行。
+                5. tester 成员验证实现；任务依赖必须确保实现完成后才开始测试。
+                6. 团队完成实现与测试后，Captain 调用 subagent_reviewer（Cursor ACP，对照契约，只读），把结论纳入验收。Cursor ACP 角色不是团队成员，不给它们分配 AgentTeams 任务。
+                7. 验收失败 → 把失败摘要写入团队修复任务，修复后重新测试、再调用 Cursor reviewer。活动任务转派使用 agent_teams_reassign_task；消息和进度使用 agent_teams_send_message / agent_teams_status。
+                8. 连续失败且无法推进时报告阻塞，禁止死循环。只有任务通过验收、成员空闲后才汇总并归档团队。
+
+                —— 角色与后端 ——
+                进程内 spawn，可续聊：subagent（gpt-gateway / gpt-6-luna）、subagent_coder（gpt-gateway / gpt-6-luna）、subagent_tester（gpt-gateway / gpt-6-luna）、subagent_front_designer（gpt-gateway / gpt-6-luna）。
+                进程内 fork：subagent_fork，继承当前对话与模型。
+                claude-agent-acp，one-shot：subagent_acp。子进程不继承对话。
+                Cursor ACP，one-shot，不继承对话：subagent_cursor、subagent_explore、subagent_architect、subagent_reviewer、subagent_research。信息只能放进这一次 task。
+                所有 Cursor ACP 工具只由 Captain 直接调用。团队成员、任务和成员消息统一通过 agent_teams_* 管理。不要调用 spawn_teammate；不要同时用 subagent_coder/subagent_tester 等另起一套进程来执行同一团队任务。独立 subagent 工具仅用于用户明确要求的单次委派。
+
+                —— 生成任务包（每次调用 explore / architect / reviewer / research / coder / front_designer / tester 前必做）——
+                先粘贴对应人设块（完整，原文一字不改），再写 [TASK]。
+                [TASK] 必须根据「用户需求 + research 结论 + explore 事实 + architect 契约」现场编写，禁止空洞套话。
+
+                [TASK] 必须含：
+                - 目标：本轮要完成什么（从用户需求改写成可验收的一句话）
+                - 依据：引用 explore/research/architect 的关键结论（路径、符号、约束）
+                - cwd：绝对路径
+                - 允许改的路径 / 禁止动的路径
+                - 输入契约：接口、组件边界、props/emits、错误处理（无则写「以仓库现状为准」并点名文件）
+                - 验收：具体命令与期望输出
+                - 非目标：明确不要做什么
+                - 若是返工：上次失败摘要与必须修的点
+
+                —— cursor 角色人设块（调用时完整粘贴，禁止修改）——
+
+                [coder 人设块]
+                你是高级工程师。严格按契约实现后端/通用逻辑，不超出允许文件范围，不重构未涉及代码，不改 UI 组件（除非契约明确），完成后输出变更摘要与验收命令结果。
+
+                [front-designer 人设块]
+                你是前端设计工程师，专注 Vue3。严格按契约实现 UI/样式/交互，不改后端逻辑，不超出允许文件范围，优先用仓库已有组件和样式变量，完成后输出变更摘要与验收命令结果。
+
+                [tester 人设块]
+                你是测试工程师。只写测试、跑测试、做最小修复（仅修复测试本身的问题，不改业务逻辑）。不超出允许文件范围，完成后输出测试结果与失败摘要。
+
+                —— 路由 ——
+                - 调研 → subagent_research（Cursor ACP，只读）
+                - 探索仓库 → subagent_explore（Cursor ACP，one-shot）
+                - 规划/契约 → subagent_architect（Cursor ACP）
+                - 实现非 UI → coder 人设块 + [TASK]（AgentTeams coder 成员）
+                - UI/样式/交互 → front-designer 人设块 + [TASK]（AgentTeams front-designer 成员）
+                - 测试 → tester 人设块 + [TASK]（AgentTeams tester 成员）
+                - 审查 → subagent_reviewer（Cursor ACP）
+                - 需要 Claude 独立进程 → subagent_acp
+                - 需要 Cursor 通用委派 → subagent_cursor
+
+                禁止：
+                - 自己用 read、grep、glob 或 bash 调研当前实现
+                - 把用户原始需求当唯一 task
+                - 改写人设块
+                - 在人设与任务包之外再加第二套性格
+                - 并行两个会写同一文件的 cursor 角色
+
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          # ── shell ───────────────────────────────────────────────────────────────────
+
+          # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
+          # publish `DSH_WEB_URL`/`DSH_WEB_MODE`, and a host row that injects a service is
+          # the criterion for host-plane ownership — injection resolves before any session
+          # exists, so there is no agent to key by. Behind a preset realm those variables
+          # never reached the model's shell at all. Both shell tools consume the host
+          # registry from here; their executors (`bash-sandbox`/`pwsh-sandbox`) are
+          # host-plane too.
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+          # ── filesystem ──────────────────────────────────────────────────────────────
+
+          # Both register into the host `tools` registry and provide nothing, so
+          # they need no realm. The `fs` service and its policy stay in the host.
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          # ── background jobs ────────────────────────────────────────────────────────
+
+          # Only the model-facing controls. The task REGISTRY stays on the host plane:
+          # its producers sit outside any realm this file could put it in — `tool-bash`
+          # above resolves it with `ctx.get`, and an entry-local realm here is invisible
+          # to every sibling row, so `run_in_background` would answer "background jobs
+          # unavailable" while these controls sat in the catalog. The registry is keyed by
+          # owning agent anyway, so one host instance serves every session. What a preset
+          # chooses is whether its agent can collect and stop background work at all.
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+
+          # ── skills ──────────────────────────────────────────────────────────────────
+
+          # The skill REGISTRY lives in the host composition and is layered per scope:
+          # these rows register into THIS preset's layer of it, so they need no realm.
+          # `skill-filesystem` contributes local-root discovery for agents on this preset, and
+          # `tool-skill` gives them the catalog and loader; the merged catalog also
+          # carries whatever the deployment registered globally (repository plugins).
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── goals ───────────────────────────────────────────────────────────────────
+
+          # The goal service and session driver stay on the host plane, where the Gateway
+          # can resolve them. The human command and model-facing tool register into this
+          # preset's scoped layers.
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+
+          # ── plan mode ───────────────────────────────────────────────────────────────
+
+          # Plan state is per-agent by nature, so an entry-local realm is not a
+          # workaround here — it is the correct lifetime.
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Ground the plan in the repository by calling subagent_explore first. Do not use read, grep, glob, or bash yourself to discover the current implementation. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve how the current code works by calling subagent_explore, not by inspecting it yourself. Use ask_user_question only for user-owned choices or material ambiguity that the explore result cannot answer. Do not ask the user where code lives or how current behavior works when subagent_explore can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+          # ── compaction ──────────────────────────────────────────────────────────────
+
+          # `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner must
+          # share this realm rather than sit outside it.
+          #
+          # `tokenMeter` is deliberately NOT in this realm: the meter stays on the HOST
+          # plane, and the rows here resolve that one instance. It takes no configuration,
+          # keys every fold by Session, and owns the context-meter projection units the
+          # browser reads for every session — behind a realm those units would come and go
+          # with whichever presets happen to be mounted. What a preset chooses is whether
+          # its agent compacts at all, which is `compaction-basic` below.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+
+          # ── delegation and workflows ────────────────────────────────────────────────
+
+          # The `subagents` registry and its spawn/fork backends live in the HOST
+          # composition: the registry is a process singleton whose cross-session queries
+          # the api-proxy serves to the browser, and a provider name may only be
+          # registered once. This preset contributes the delegation TOOLS, which resolve
+          # that host registry.
+          #
+          # `workflows` is different — nothing outside an agent reads it — so every row
+          # that reaches it shares one entry-local realm here, and a consumer left
+          # outside would resolve a host registry this preset does not populate.
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelectionSettings: true
+                  backgroundMode: continuable
+                  agentOptions:
+                    provider: gpt-gateway
+                    model: gpt-6-luna
+                    reasoningEffort: high
+
+              # Fork omits model selection so provider/model stay equal to the parent and
+              # the inherited history remains eligible for KV Cache reuse. This preset
+              # keeps fork continuable; parent and child inherit the same messaging tool,
+              # while the parent id and return guidance follow the inherited history.
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+                  backgroundMode: continuable
+
+              # Out-of-process ACP delegation. The host `ccacp` provider (profile
+              # cordis.patch.yml, row `subagent-acp`) spawns
+              # /opt/example/bin/claude-agent-acp once per run, so this child shares
+              # nothing with the parent beyond the task text and the working directory:
+              # its own runtime, session, model, and tools, and none of the parent
+              # conversation.
+              #
+              # This provider advertises no optional start-time capabilities
+              # (`agentOptions`, `outputSchema`, `depthLimit`, `toolFilter`, `persona` are
+              # all false), so this row asks for none. In particular `modelSelectionSettings`
+              # would need `agentOptions`, a numeric `maxDepth` would need `depthLimit`, and
+              # `continuable` would need `prepareContinuable` — hence `one-shot` plus
+              # `maxDepth: provider-managed`, which sends no cap and leaves the recursion
+              # budget to the child.
+              # 通用 Claude ACP 委派入口
+              - id: tool-subagent-acp
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: ccacp
+                  toolName: subagent_acp
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+
+              # Cursor CLI over the same ACP backend — a second named instance of the host
+              # provider (`providerName: cursoracp`, profile cordis.patch.yml row
+              # `subagent-acp-cursor`). Same capability story as above, so the same row
+              # shape; only `provider` and `toolName` differ, and each loaded instance
+              # must use a distinct tool name.
+              # 通用 Cursor ACP 委派入口
+              - id: tool-subagent-cursor
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: cursoracp
+                  toolName: subagent_cursor
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+
+              # ── Specialized subagent tools ──────────────────────────────────────────
+
+              # Explorer: read-only code exploration, runs in-process (spawn supports
+              # persona and toolFilter; continuable keeps the child alive for follow-ups).
+              - id: tool-subagent-explore
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: cursoracp
+                  toolName: subagent_explore
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+                # config:
+                #   provider: spawn
+                #   toolName: subagent_explore
+                #   backgroundMode: continuable
+                #   maxDepth: 1
+                #   agentOptions:
+                #     provider: deepseek-official
+                #     model: glm-5.3
+                #     reasoningEffort: high
+                #   persona: |
+                #     你是代码探索员。只读仓库，定位实现、调用链、配置入口与风险点。
+
+                #     必须输出：
+                #     - 相关文件与符号（路径 + 符号名）
+                #     - 数据流/控制流（短）
+                #     - 改动风险与未知点
+
+                #     禁止：改文件、装依赖、跑会写磁盘的命令、调用其他 subagent。
+                #     不确定就标「未知」，不要编造。
+                #   toolFilter:
+                #     allow: [read, glob, grep]
+
+                # Architect: design contracts and solutions — uses Cursor CLI (`cursoracp`,
+                # profile cordis.patch.yml row `subagent-acp-cursor`).
+                # cursoracp advertises no depthLimit / toolFilter / persona / prepareContinuable,
+                # so one-shot + provider-managed only (no numeric maxDepth, no persona/toolFilter).
+              - id: tool-subagent-architect
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: cursoracp
+                  toolName: subagent_architect
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+                  # cursoracp advertises persona:false — role instructions go in the task prompt
+
+                  # Reviewer: code review against contract — uses claude-agent-acp.
+                  # Same capability constraints as architect above.
+              - id: tool-subagent-reviewer
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: cursoracp
+                  toolName: subagent_reviewer
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+                  # ccacp advertises persona:false — role instructions go in the task prompt
+
+                  # Coder: implementation — uses cursor agent ACP backend.
+                  # cursoracp provider has the same one-shot / provider-managed shape as ccacp.
+              - id: tool-subagent-coder
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent_coder
+                  backgroundMode: continuable
+                  agentOptions:
+                    provider: gpt-gateway
+                    model: gpt-6-luna
+                    reasoningEffort: max
+                #  agentOptions:
+                #    provider: deepseek-official
+                #    model: kr-gpt-6-luna
+                #    reasoningEffort: max
+                # ------
+                # config:
+                #   provider: cursoracp
+                #   toolName: subagent_coder
+                #   backgroundMode: one-shot
+                #   maxDepth: provider-managed
+                #   # cursoracp advertises persona:false — coder人设块 is prepended in the task prompt
+
+                # Tester: testing — uses cursor agent ACP backend.
+              - id: tool-subagent-tester
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent_tester
+                  backgroundMode: continuable
+                  agentOptions:
+                    provider: gpt-gateway
+                    model: gpt-6-luna
+                    reasoningEffort: max
+                # config:
+                #   provider: cursoracp
+                #   toolName: subagent_tester
+                #   backgroundMode: one-shot
+                #   maxDepth: provider-managed
+
+                # Front-end designer: UI/UX design — uses cursor agent ACP backend.
+              - id: tool-subagent-front-designer
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent_front_designer
+                  backgroundMode: continuable
+                  agentOptions:
+                    provider: gpt-gateway
+                    model: gpt-6-luna
+                    reasoningEffort: high
+                # config:
+                #   provider: cursoracp
+                #   toolName: subagent_front_designer
+                #   backgroundMode: one-shot
+                #   maxDepth: provider-managed
+
+
+                # Research: investigation and analysis — uses cursor agent ACP backend.
+              - id: tool-subagent-research
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: cursoracp
+                  toolName: subagent_research
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+
+              # Production dsh does not install these optional providers. Install the
+              # matching Bundle in this Profile and restart the Host, then copy this
+              # preset and remove `disabled` from the matching tool row. Host availability
+              # alone grants no tool.
+              - id: tool-subagent-codex
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: codex
+                  toolName: subagent_codex
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+
+              - id: tool-subagent-claude-code
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: claude-code
+                  toolName: subagent_claude_code
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+
+              - id: tool-ralph
+                name: '@deepseek-ai/dsh-tool-ralph'
+                disabled: true
+                config:
+                  subagentProvider: spawn
+                  maxRounds: 64
+
+          # ── remaining model-facing rows ─────────────────────────────────────────────
+
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+
+          # The `web` service and its search provider stay in the host composition; only
+          # the model-facing tool is per-session.
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+          - id: tool-plugin-manager
+            name: '@deepseek-ai/dsh-plugin-manager/tools'
+            disabled: true
+
+# @nanmicoder/dsh-agent-teams. memberProvider is the in-process subagent
+# backend, not an ACP command. Team routes are independent of standalone
+# subagent tool defaults; Cursor ACP roles remain captain-owned external calls.
+- id: agent-teams
+  name: '@nanmicoder/dsh-agent-teams'
+  config:
+    stateDir: .agent-teams
+    memberProvider: spawn
+    memberMaxDepth: 0
+    maxMembers: 8
+    profiles:
+      standard-acp:
+        description: 默认协作团队：实现、测试与通用任务由 AgentTeams 管理，调研、探索、规划和审查由 Captain 调用 Cursor ACP。
+        taskPlanning: captain
+        protocol: |
+          用户要求团队协作或任务需要多角色实现与测试时，默认使用本 profile；也支持 /agent-teams --profile standard-acp。纯问答和单次只读调研不必创建团队。
+          优先续用当前团队；新团队以 approval="required" 暂存计划，用户批准后才调度。实现和测试由团队成员执行，不用独立 subagent 重复派发。
+          目标依赖当前仓库实现时，Captain 在 agent_teams_create 之前必须先调用 subagent_explore。禁止自己用 read、grep、glob 或 bash 摸清实现后再写计划。
+          点名后按花名册创建成员，不要改掉他们的 provider、model 和 reasoning_effort。
+          explore、architect、reviewer、research 走 Cursor ACP，没有 DSH 模型 id，不要放进这个团队。
+        members:
+          - name: claude
+            provider: gusu-gateway
+            model: claude-opus-5-5
+            reasoning_effort: high
+            role: 对应 subagent_acp。使用与 claude-agent-acp 相同的模型 id，在进程内续聊。
+          - name: coder
+            provider: gusu-gateway
+            model: claude-opus-5-5
+            reasoning_effort: high
+            role: 你是团队 coder。直接按契约实现非 UI 代码，不改未点名的路径，不调用子代理。以当前 attempt_id 更新任务并向 Captain
+              报告。
+          - name: tester
+            provider: gpt-gateway
+            model: gpt-6-luna
+            reasoning_effort: max
+            role: 你是团队 tester。直接写测试、跑测试，只修复测试本身的问题，不改业务逻辑，不调用子代理。非必要不跑全量测试，Python 禁止
+              --reload。以当前 attempt_id 更新任务并报告结果。
+          - name: front-designer
+            provider: gusu-gateway
+            model: claude-opus-5-5
+            reasoning_effort: high
+            role: 你是团队 front-designer。直接实现 UI、样式和交互，不改后端逻辑，不调用子代理。以当前 attempt_id 更新任务并向
+              Captain 报告。
+          - name: generalist
+            provider: gpt-gateway
+            model: gpt-6-luna
+            reasoning_effort: max
+            role: 你是团队 generalist。直接处理未指派给专用角色的工作，不调用子代理。以当前 attempt_id 更新任务并向 Captain 报告。
+  value:
+  op: add
+  path:
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: system
+- id: subagent-model-selection-settings
+  name: "@deepseek-ai/dsh-tool-subagent/model-selection-settings"
+  config:
+    enabled: true
+    allowedModels:
+      - provider: gusu-gateway
+        model: claude-opus-5-5
+      - provider: gusu-gateway
+        model: claude-sonnet-5
+      - provider: deepseek-official
+        model: deepseek-flash

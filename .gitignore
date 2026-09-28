@@ -1,0 +1,11 @@
+node_modules/
+lib/
+dist/
+*.log
+.DS_Store
+*.tsbuildinfo
+coverage/
+.vscode/
+.idea/
+tmp/
+test/e2e/

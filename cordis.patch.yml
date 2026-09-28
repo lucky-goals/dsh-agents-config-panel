@@ -1,0 +1,3 @@
+- insert:
+    - id: wuyou-agent
+      name: '@nanmicoder/dsh-wuyou-agent'
