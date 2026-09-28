@@ -8,6 +8,10 @@ import type {
   StateResponse,
   SubagentsMutationRequest,
   MembersMutationRequest,
+  AcpsMutationRequest,
+  SubagentImportRequest,
+  SubagentImportResponse,
+  AcpTestResponse,
   MutationSuccessResponse,
   ErrorResponse,
 } from './api-types';
@@ -21,6 +25,12 @@ export interface ApiClient {
   getState(profile: string): Promise<StateResponse>;
   mutateSubagents(body: SubagentsMutationRequest): Promise<MutationSuccessResponse>;
   mutateMembers(body: MembersMutationRequest): Promise<MutationSuccessResponse>;
+  /** v2.3: ACP registration CRUD. */
+  mutateAcps(body: AcpsMutationRequest, profile?: string): Promise<MutationSuccessResponse>;
+  /** v2.3: one-revision import of an exported Panel A bundle (ACPs + subagent tools). */
+  importSubagentBundle(body: SubagentImportRequest, profile?: string): Promise<SubagentImportResponse>;
+  /** v2.4: test a saved ACP row (static checks; `handshake` also starts it). Read-only. */
+  testAcp(body: { id: string; handshake?: boolean }): Promise<AcpTestResponse>;
 }
 
 /**
@@ -110,5 +120,28 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         body: JSON.stringify(body),
       });
     },
+
+    async mutateAcps(body: AcpsMutationRequest, profile?: string): Promise<MutationSuccessResponse> {
+      return request<MutationSuccessResponse>(`/acps${profileQuery(profile)}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    async testAcp(body: { id: string; handshake?: boolean }): Promise<AcpTestResponse> {
+      return request<AcpTestResponse>('/acps/test', { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async importSubagentBundle(body: SubagentImportRequest, profile?: string): Promise<SubagentImportResponse> {
+      return request<SubagentImportResponse>(`/subagents/import${profileQuery(profile)}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
   };
+}
+
+/** Team profile for the state a write returns (Host default when absent). */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : '';
 }

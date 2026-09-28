@@ -58,9 +58,15 @@ export interface StateResponse {
   teamProfiles: string[];
   profile: string;
   members: TeamMember[];
+  /** v2.3: list of ACP configurations */
+  /** v2.3: ACP provider registrations (root inserts); absent on older Hosts. */
+  acps?: AcpRow[];
+  /** v2.3: the DSH profile this Host instance edits (web, desktop, cli, ...). */
+  dshProfile?: { name: string; patchPath: string };
   errors: {
     subagents?: string;
     members?: string;
+    acps?: string;
   };
   /** Host runtime diagnostics (atomic-write loading, catalog source). */
   diagnostics?: StateDiagnostics;
@@ -150,6 +156,100 @@ export interface MembersMutationRequest {
   name?: string;
   member?: TeamMember;
   patch?: MemberPatch;
+}
+
+// ============================================================================
+// ACP Mutation (POST /api/acps)
+// ============================================================================
+
+/** `@deepseek-ai/dsh-subagent-acp` config (package schema). */
+export interface AcpConfig {
+  providerName: string;
+  command: string;
+  args: string[];
+  cwd?: string;
+  permission: 'allow' | 'reject';
+  env: Record<string, string>;
+}
+
+export interface AcpRow {
+  id: string;
+  disabled: boolean;
+  config: AcpConfig;
+  /** toolNames of subagent rows using this provider. */
+  usedBy: string[];
+}
+
+/** providerName is fixed after creation; `cwd: null` removes it. */
+export interface AcpPatch {
+  command?: string;
+  args?: string[];
+  cwd?: string | null;
+  permission?: 'allow' | 'reject';
+  env?: Record<string, string>;
+}
+
+export interface AcpsMutationRequest {
+  expectedRevision: string;
+  action: 'create' | 'update' | 'remove';
+  input?: AcpConfig;
+  id?: string;
+  patch?: AcpPatch;
+}
+
+// ============================================================================
+// Panel A bundle import (POST /api/subagents/import)
+// ============================================================================
+
+export interface SubagentBundleInput {
+  toolName: string;
+  provider: string;
+  backgroundMode?: 'continuable' | 'one-shot';
+  agentOptions?: { provider: string; model: string; reasoningEffort?: string };
+}
+
+export interface SubagentBundle {
+  acps: AcpConfig[];
+  subagents: SubagentBundleInput[];
+}
+
+export interface SubagentImportRequest {
+  expectedRevision: string;
+  bundle: SubagentBundle;
+}
+
+export interface BundleImportReport {
+  created: { acps: string[]; subagents: string[] };
+  skipped: Array<{ kind: 'acp' | 'subagent'; name: string; reason: string }>;
+}
+
+export interface SubagentImportResponse extends MutationSuccessResponse {
+  importReport: BundleImportReport;
+}
+
+// ============================================================================
+// ACP test (POST /api/acps/test, v2.4)
+// ============================================================================
+
+export type AcpProbeStatus = 'pass' | 'fail' | 'warn' | 'skip';
+
+export interface AcpProbeCheck {
+  key: 'command' | 'interpreter' | 'cwd' | 'handshake';
+  label: string;
+  status: AcpProbeStatus;
+  detail: string;
+}
+
+export interface AcpTestResponse {
+  id: string;
+  providerName: string;
+  ok: boolean;
+  handshake: boolean;
+  checks: AcpProbeCheck[];
+  resolvedCommand?: string;
+  agent?: { protocolVersion?: number; name?: string; title?: string; version?: string; authMethods?: string[] };
+  stderrTail?: string;
+  durationMs: number;
 }
 
 // ============================================================================

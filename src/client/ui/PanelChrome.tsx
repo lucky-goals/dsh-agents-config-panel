@@ -16,15 +16,26 @@ export interface PanelHeaderProps {
   children?: React.ReactNode;
   /** Host-provided settings close (settings.section props); the button is hidden when absent. */
   close?: () => void;
+  /** v2.2: download the panel's config as YAML; the button is hidden when absent. */
+  onExport?: () => void;
+  /** v2.2: a chosen .yaml/.yml file; the button is hidden when absent. */
+  onImport?: (file: File) => void;
+  /** v2.2: disables import (writes unavailable). */
+  importDisabled?: boolean;
+  importTitle?: string;
 }
 
-export function PanelHeader({ title, loading, onRefresh, children, close }: PanelHeaderProps) {
+export function PanelHeader({ title, loading, onRefresh, children, close, onExport, onImport, importDisabled, importTitle }: PanelHeaderProps) {
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 500 }}>{title}</h3>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           {children}
+          {onExport && <Button onClick={onExport} disabled={loading}>导出</Button>}
+          {onImport && (
+            <ImportFileButton onFile={onImport} disabled={loading || importDisabled} title={importTitle} />
+          )}
           <Button onClick={onRefresh} disabled={loading}>刷新</Button>
           {close && <Button onClick={close}>关闭</Button>}
         </div>
@@ -32,6 +43,40 @@ export function PanelHeader({ title, loading, onRefresh, children, close }: Pane
       <p style={{ margin: '6px 0 14px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }}>
         保存后新建会话生效
       </p>
+    </>
+  );
+}
+
+export interface ImportFileButtonProps {
+  onFile: (file: File) => void;
+  disabled?: boolean;
+  title?: string;
+  label?: string;
+}
+
+/**
+ * "导入" button backed by a hidden file input (.yaml/.yml). A component of its
+ * own so PanelHeader stays hook-free; the input is reset after each pick so
+ * choosing the same file again still fires.
+ */
+export function ImportFileButton({ onFile, disabled, title, label = '导入' }: ImportFileButtonProps) {
+  const input = React.useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <Button onClick={() => input.current?.click()} disabled={disabled} title={title}>{label}</Button>
+      <input
+        ref={input}
+        type="file"
+        accept=".yaml,.yml,application/yaml,text/yaml"
+        aria-label={`${label}配置文件`}
+        tabIndex={-1}
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) onFile(file);
+        }}
+      />
     </>
   );
 }
