@@ -3,7 +3,7 @@
  */
 
 import { realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createPatchIO } from './host/patch-file.js';
@@ -49,6 +49,8 @@ interface LoggerService extends Logger {
 }
 
 interface ProfileContext {
+  /** DSH profile name (web, desktop, cli, ...); older hosts may omit it. */
+  name?: string;
   patchPath: string;
   dir: string;
 }
@@ -143,6 +145,12 @@ export function apply(ctx: Context, config?: Config) {
       // so a service that binds after these routes is picked up on the next
       // request without restarting the plugin.
       getSubagentsService: () => ctx.get('subagents'),
+      // This instance edits exactly one DSH profile's patch; name it for the
+      // panel and for export files (v2.3).
+      dshProfile: {
+        name: profileContext.name || basename(profileContext.dir),
+        patchPath: profileContext.patchPath || join(profileContext.dir, 'cordis.patch.yml'),
+      },
       logger: ctx.logger,
     });
 

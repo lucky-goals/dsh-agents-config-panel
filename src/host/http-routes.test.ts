@@ -11,6 +11,7 @@ import type { ModelCatalog } from './catalog.js';
 import { computeRevision } from './patch-io.js';
 import { listSubagents } from './subagent-manager.js';
 import { listMembers } from './members-editor.js';
+import { listAcps } from './acp-manager.js';
 
 interface MockResponse {
   statusCode: number;
@@ -689,5 +690,162 @@ describe('write request validation (F22-INPUT)', () => {
     expect(status).toBe(400);
     expect(data).toEqual({ code: 'INVALID', message: '字段 name 不能清空' });
     expect(tracked.text()).toBe(REAL_FIXTURE);
+  });
+});
+
+describe('v2.3 ACP routes (real fixture)', () => {
+  let store: ReturnType<typeof memoryIO>;
+  let routes: ReturnType<typeof createRoutes>;
+
+  beforeEach(() => {
+    store = memoryIO(REAL_FIXTURE);
+    routes = createRoutes({
+      io: store.io,
+      profileDefault: 'standard-acp',
+      getCatalog: asyncCatalog(),
+      getAtomicWriteDiagnostics: () => ({ loaded: true }),
+      dshProfile: { name: 'desktop', patchPath: '/home/u/.dsh/profiles/desktop/cordis.patch.yml' },
+    });
+  });
+
+  const post = (suffix: string, body: Record<string, unknown>) =>
+    call(routes, suffix, createMockReq('POST', `/plugins/dsh-wuyou-agent/api${suffix}`, body));
+  const rev = () => computeRevision(store.text());
+  const GEMINI = { providerName: 'geminiacp', command: '/opt/example/bin/gemini', args: ['--experimental-acp'], permission: 'reject' };
+
+  it('GET state carries the ACP rows and the bound DSH profile', async () => {
+    const { status, data } = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state'));
+    expect(status).toBe(200);
+    expect(data.dshProfile).toEqual({ name: 'desktop', patchPath: '/home/u/.dsh/profiles/desktop/cordis.patch.yml' });
+    expect(data.acps.map((a: any) => a.id)).toEqual(['subagent-acp', 'subagent-acp-cursor', 'subagent-acp-kiro', 'subagent-acp-kiro-gpt']);
+    expect(data.errors.acps).toBeUndefined();
+  });
+
+  it('create → update → remove through POST /acps, each with the restart notice', async () => {
+    const created = await post('/acps', { expectedRevision: rev(), action: 'create', input: GEMINI });
+    expect(created.status).toBe(200);
+    expect(created.data.notice).toBe('已保存。ACP 变更需重启 DSH 后生效');
+    expect(created.data.acps.at(-1).config.providerName).toBe('geminiacp');
+
+    const updated = await post('/acps', { expectedRevision: rev(), action: 'update', id: 'subagent-acp-geminiacp', patch: { permission: 'allow' } });
+    expect(updated.status).toBe(200);
+    expect(updated.data.acps.at(-1).config.permission).toBe('allow');
+
+    const removed = await post('/acps', { expectedRevision: rev(), action: 'remove', id: 'subagent-acp-geminiacp' });
+    expect(removed.status).toBe(200);
+    expect(listAcpsNames(store.text())).toEqual(['ccacp', 'cursoracp', 'kiroopsuacp', 'kirogptacp']);
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('removing an ACP still used by a subagent is 409 IN_USE and writes nothing', async () => {
+    const { status, data } = await post('/acps', { expectedRevision: rev(), action: 'remove', id: 'subagent-acp' });
+    expect(status).toBe(409);
+    expect(data.code).toBe('IN_USE');
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it.each([
+    [{ action: 'create', input: { ...GEMINI, extra: 1 } }, 'input.extra'],
+    [{ action: 'create', input: { ...GEMINI, args: 'acp' } }, 'input.args'],
+    [{ action: 'create', input: { ...GEMINI, env: { A: 1 } } }, 'input.env'],
+    [{ action: 'update', id: 'subagent-acp', patch: { providerName: 'x' } }, 'patch.providerName'],
+    [{ action: 'update', patch: { command: '/x' } }, 'id'],
+  ])('rejects malformed body %j naming %s', async (body, field) => {
+    const { status, data } = await post('/acps', { expectedRevision: rev(), ...body });
+    expect(status).toBe(400);
+    expect(data.message).toContain(field);
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('POST /subagents/import writes ACPs and subagents in one revision and reports skips', async () => {
+    const { status, data } = await post('/subagents/import', {
+      expectedRevision: rev(),
+      bundle: {
+        acps: [GEMINI],
+        subagents: [
+          { toolName: 'subagent_gemini', provider: 'geminiacp', backgroundMode: 'one-shot' },
+          { toolName: 'subagent_coder', provider: 'spawn', backgroundMode: 'continuable', agentOptions: { provider: 'gpt-gateway', model: 'gpt-6-luna' } },
+        ],
+      },
+    });
+    expect(status).toBe(200);
+    expect(data.revision).toBe(rev());
+    expect(data.notice).toBe('已保存。ACP 变更需重启 DSH 后生效');
+    expect(data.importReport.created).toEqual({ acps: ['geminiacp'], subagents: ['subagent_gemini'] });
+    expect(data.importReport.skipped).toEqual([expect.objectContaining({ kind: 'subagent', name: 'subagent_coder' })]);
+    expect(listSubagents(store.text()).some((r) => r.config.toolName === 'subagent_gemini')).toBe(true);
+  });
+
+  it('POST /subagents/import rejects a stale revision and a non-array list', async () => {
+    const stale = await post('/subagents/import', { expectedRevision: '0'.repeat(64), bundle: { acps: [GEMINI] } });
+    expect(stale.status).toBe(409);
+    const bad = await post('/subagents/import', { expectedRevision: rev(), bundle: { acps: {} } });
+    expect(bad.status).toBe(400);
+    expect(bad.data.message).toContain('bundle.acps');
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+});
+
+function listAcpsNames(text: string): string[] {
+  return listAcps(text).map((a) => a.config.providerName);
+}
+
+describe('v2.4 POST /acps/test (real fixture)', () => {
+  function routesWith(probe: RouteContext['probeAcp']) {
+    const store = memoryIO(REAL_FIXTURE);
+    return createRoutes({ io: store.io, profileDefault: 'standard-acp', getCatalog: asyncCatalog(), probeAcp: probe });
+  }
+  const post = (routes: ReturnType<typeof createRoutes>, body: Record<string, unknown>) =>
+    call(routes, '/acps/test', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/acps/test', body));
+
+  it('tests the saved config of the named row; handshake only when asked', async () => {
+    const calls: Array<[unknown, unknown]> = [];
+    const routes = routesWith(async (config, options) => {
+      calls.push([config, options]);
+      return { ok: true, handshake: !!options?.handshake, checks: [], durationMs: 1 };
+    });
+    const { status, data } = await post(routes, { id: 'subagent-acp-kiro' });
+    expect(status).toBe(200);
+    expect(data).toMatchObject({ id: 'subagent-acp-kiro', providerName: 'kiroopsuacp', ok: true, handshake: false });
+    expect(calls[0][0]).toEqual(listAcps(REAL_FIXTURE)[2].config);
+    expect(calls[0][1]).toEqual({ handshake: false });
+    await post(routes, { id: 'subagent-acp-kiro', handshake: true });
+    expect(calls[1][1]).toEqual({ handshake: true });
+  });
+
+  it('rejects an unknown id, a missing id or a bad flag, ignores a command in the body, and refuses a concurrent test', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const running = new Promise<void>((r) => { started = r; });
+    const seen: unknown[] = [];
+    const routes = routesWith((config) => {
+      seen.push(config);
+      started();
+      return new Promise((done) => { release = () => done({ ok: true, handshake: true, checks: [], durationMs: 1 }); });
+    });
+    expect((await post(routes, { id: 'nope' })).status).toBe(404);
+    expect((await post(routes, {})).status).toBe(400);
+    expect((await post(routes, { id: 'subagent-acp', handshake: 'yes' })).status).toBe(400);
+
+    // The body cannot choose what runs: an injected command is ignored.
+    const first = post(routes, { id: 'subagent-acp', handshake: true, command: '/bin/rm', args: ['-rf', '/'] });
+    await running;
+    expect(seen[0]).toEqual(listAcps(REAL_FIXTURE)[0].config);
+    const second = await post(routes, { id: 'subagent-acp', handshake: true });
+    expect(second.status).toBe(409);
+    expect(second.data.code).toBe('BUSY');
+    release();
+    expect((await first).status).toBe(200);
+  });
+
+  it('with the real probe, the fixture command paths (/opt/example/...) fail the executable check', async () => {
+    const routes = createRoutes({ io: memoryIO(REAL_FIXTURE).io, profileDefault: 'standard-acp', getCatalog: asyncCatalog() });
+    const { status, data } = await post(routes, { id: 'subagent-acp', handshake: true });
+    expect(status).toBe(200);
+    expect(data.ok).toBe(false);
+    expect(data.checks.map((c: any) => [c.key, c.status])).toEqual([
+      ['command', 'fail'], ['interpreter', 'skip'], ['cwd', 'skip'], ['handshake', 'skip'],
+    ]);
+    expect(data.checks[0].detail).toBe('/opt/example/bin/claude-agent-acp 不存在');
   });
 });

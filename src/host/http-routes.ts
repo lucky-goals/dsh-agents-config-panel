@@ -12,6 +12,8 @@ import { computeRevision } from './patch-io.js';
 import { listSubagents, createSubagent, updateSubagent, removeSubagent } from './subagent-manager.js';
 import { subagentProviderDirectory, type SubagentProviderDirectory } from './subagent-providers.js';
 import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } from './members-editor.js';
+import { listAcps, createAcp, updateAcp, removeAcp, importSubagentBundle, ACP_EDITABLE_FIELDS } from './acp-manager.js';
+import { probeAcp } from './acp-probe.js';
 
 /** Maximum accepted request body, in bytes. */
 export const MAX_BODY_BYTES = 1024 * 1024;
@@ -51,8 +53,20 @@ export interface RouteContext {
    * cached). Absent or undefined means the provider list falls back to the patch.
    */
   getSubagentsService?: () => unknown;
+  /**
+   * The DSH profile this plugin instance is bound to (web, desktop, cli, ...)
+   * and the patch it edits. Reported in state so the panel and export files
+   * name the source profile; each DSH profile runs its own plugin instance.
+   */
+  dshProfile?: { name: string; patchPath: string };
+  /** ACP test runner (v2.4); tests inject a fake or a short timeout. */
+  probeAcp?: typeof probeAcp;
   logger?: { error(msg: string): void };
 }
+
+/** Notice after ACP writes: providers are registered when DSH loads plugins. */
+export const ACP_SAVED_NOTICE = '已保存。ACP 变更需重启 DSH 后生效';
+const SAVED_NOTICE = '已保存，新建会话后生效';
 
 export interface RouteDescriptor {
   kind: 'exact';
@@ -74,6 +88,8 @@ const HTTP_STATUS_MAP: Record<string, number> = {
   PAYLOAD_TOO_LARGE: 413,
   READ_ONLY: 422,
   LAST_MEMBER: 422,
+  IN_USE: 409,
+  BUSY: 409,
   STRUCTURE: 500,
   INTERNAL: 500,
   DEPENDENCY_UNAVAILABLE: 503,
@@ -158,11 +174,13 @@ export function buildState(
   catalogInfo: CatalogResult,
   atomicWrite: AtomicWriteDiagnostics,
   providerDirectory: SubagentProviderDirectory = subagentProviderDirectory(yamlText, undefined),
+  dshProfile?: RouteContext['dshProfile'],
 ) {
   let subagents: unknown[] = [];
   let teamProfiles: string[] = [];
   let members: unknown[] = [];
-  const errors: { subagents?: string; members?: string } = {};
+  let acps: unknown[] = [];
+  const errors: { subagents?: string; members?: string; acps?: string } = {};
 
   try {
     subagents = listSubagents(yamlText, providerDirectory.providers);
@@ -184,6 +202,12 @@ export function buildState(
     }
   }
 
+  try {
+    acps = listAcps(yamlText);
+  } catch (err) {
+    errors.acps = errorMessage(err);
+  }
+
   const diagnostics: StateDiagnostics = {
     hostApi: HOST_API,
     atomicWrite,
@@ -201,6 +225,8 @@ export function buildState(
     teamProfiles,
     profile,
     members,
+    acps,
+    ...(dshProfile ? { dshProfile } : {}),
     errors,
     diagnostics,
   };
@@ -211,6 +237,7 @@ const REVISION_PATTERN = /^[0-9a-f]{64}$/;
 const WRITE_ACTIONS = {
   subagents: ['create', 'update', 'remove'],
   members: ['add', 'update', 'remove'],
+  acps: ['create', 'update', 'remove'],
 } as const;
 
 type WriteKind = keyof typeof WRITE_ACTIONS;
@@ -302,7 +329,7 @@ export function validateWriteBody(kind: WriteKind, body: Record<string, unknown>
   if (kind === 'members') result.profile = requireNonEmptyString(body, 'profile');
 
   if (action === 'update' || action === 'remove') {
-    result.target = requireNonEmptyString(body, kind === 'subagents' ? 'id' : 'name');
+    result.target = requireNonEmptyString(body, kind === 'members' ? 'name' : 'id');
   }
 
   const payloadField = action === 'create' ? 'input' : action === 'add' ? 'member' : action === 'update' ? 'patch' : undefined;
@@ -311,9 +338,49 @@ export function validateWriteBody(kind: WriteKind, body: Record<string, unknown>
     if (!isPlainObject(payload)) throw invalidField(payloadField, '必须是 JSON 对象');
     if (action === 'update' && Object.keys(payload).length === 0) throw invalidField(payloadField, '至少需要一个字段');
     if (kind === 'subagents') validateSubagentPayload(payloadField, payload);
+    if (kind === 'acps') validateAcpPayload(payloadField, payload, action === 'update');
     result.payload = payload;
   }
   return result;
+}
+
+const ACP_INPUT_FIELDS = ['providerName', ...ACP_EDITABLE_FIELDS] as const;
+
+/** Type-only checks for an ACP input/patch; value rules live in acp-manager. */
+function validateAcpPayload(payloadField: string, payload: Record<string, unknown>, isPatch: boolean): void {
+  const allowed: readonly string[] = isPatch ? ACP_EDITABLE_FIELDS : ACP_INPUT_FIELDS;
+  for (const key of Object.keys(payload)) {
+    if (!allowed.includes(key)) throw invalidField(`${payloadField}.${key}`, isPatch && key === 'providerName' ? '不能修改' : '不受支持');
+  }
+  const check = (key: string, ok: (v: unknown) => boolean, reason: string) => {
+    if (payload[key] !== undefined && !ok(payload[key])) throw invalidField(`${payloadField}.${key}`, reason);
+  };
+  const isString = (v: unknown) => typeof v === 'string';
+  check('providerName', isString, '必须是字符串');
+  check('command', isString, '必须是字符串');
+  check('permission', isString, '必须是字符串');
+  check('cwd', (v) => isString(v) || (isPatch && v === null), '必须是字符串');
+  check('args', (v) => Array.isArray(v) && v.every(isString), '必须是字符串数组');
+  check('env', (v) => isPlainObject(v) && Object.values(v).every(isString), '必须是字符串键值对象');
+}
+
+/** Upper bound per list in an import bundle; the body is already capped at 1MB. */
+const MAX_BUNDLE_ITEMS = 200;
+
+function validateBundleBody(body: Record<string, unknown>): { expectedRevision: string; bundle: { acps: unknown[]; subagents: unknown[] } } {
+  const revision = body.expectedRevision;
+  if (typeof revision !== 'string' || !REVISION_PATTERN.test(revision)) {
+    throw invalidField('expectedRevision', '必须是 64 位小写十六进制 revision');
+  }
+  const bundle = body.bundle;
+  if (!isPlainObject(bundle)) throw invalidField('bundle', '必须是 JSON 对象');
+  const list = (key: 'acps' | 'subagents'): unknown[] => {
+    const value = bundle[key] ?? [];
+    if (!Array.isArray(value)) throw invalidField(`bundle.${key}`, '必须是数组');
+    if (value.length > MAX_BUNDLE_ITEMS) throw invalidField(`bundle.${key}`, `最多 ${MAX_BUNDLE_ITEMS} 项`);
+    return value;
+  };
+  return { expectedRevision: revision, bundle: { acps: list('acps'), subagents: list('subagents') } };
 }
 
 function isCatalogResult(value: ModelCatalog | CatalogResult): value is CatalogResult {
@@ -388,12 +455,21 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
     return { catalog: used!, yamlText: written!, providers: directory!.source === 'runtime' ? directory! : loadProviders(written!) };
   };
 
-  const sendMutationState = (res: ServerResponse, profile: string, outcome: MutationOutcome) => {
+  const sendMutationState = (
+    res: ServerResponse,
+    profile: string,
+    outcome: MutationOutcome,
+    extra: Record<string, unknown> = {},
+  ) => {
     sendJson(res, 200, {
-      ...buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics(), outcome.providers),
-      notice: '已保存，新建会话后生效',
+      ...buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics(), outcome.providers, context.dshProfile),
+      notice: SAVED_NOTICE,
+      ...extra,
     });
   };
+
+  /** ACP ids with a test in flight; one handshake per ACP at a time. */
+  const probing = new Set<string>();
 
   const requirePost = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (req.method === 'POST') return true;
@@ -411,7 +487,7 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           const profile = queryProfile(req);
           const yamlText = await io.readPatch();
           const catalog = await loadCatalog(yamlText);
-          sendJson(res, 200, buildState(yamlText, profile, catalog, atomicWriteDiagnostics(), loadProviders(yamlText)));
+          sendJson(res, 200, buildState(yamlText, profile, catalog, atomicWriteDiagnostics(), loadProviders(yamlText), context.dshProfile));
         } catch (err) {
           errorResponse(res, err, logger);
         }
@@ -461,6 +537,84 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           });
 
           sendMutationState(res, profile, outcome);
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/acps',
+      async handler(req, res) {
+        try {
+          if (!requirePost(req, res)) return;
+
+          const body = await readJsonBody(req);
+          const write = validateWriteBody('acps', body);
+
+          const outcome = await mutate(write.expectedRevision, (yamlText) => {
+            if (write.action === 'create') return createAcp(yamlText, write.payload as any);
+            if (write.action === 'update') return updateAcp(yamlText, write.target!, write.payload as any);
+            return removeAcp(yamlText, write.target!);
+          });
+
+          sendMutationState(res, queryProfile(req), outcome, { notice: ACP_SAVED_NOTICE });
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/acps/test',
+      async handler(req, res) {
+        let id: string | undefined;
+        try {
+          if (!requirePost(req, res)) return;
+          const body = await readJsonBody(req);
+          id = requireNonEmptyString(body, 'id');
+          if (body.handshake !== undefined && typeof body.handshake !== 'boolean') throw invalidField('handshake', '必须是布尔值');
+          // Only a saved row is tested: the request names it, never a command.
+          const row = listAcps(await io.readPatch()).find((acp) => acp.id === id);
+          if (!row) throw new RouteError('NOT_FOUND', `未找到 ACP '${id}'`);
+          if (probing.has(id)) throw new RouteError('BUSY', `ACP '${row.config.providerName}' 正在测试，请稍候`);
+          probing.add(id);
+          try {
+            const result = await (context.probeAcp ?? probeAcp)(row.config, { handshake: body.handshake === true });
+            sendJson(res, 200, { id, providerName: row.config.providerName, ...result });
+          } finally {
+            probing.delete(id);
+          }
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/subagents/import',
+      async handler(req, res) {
+        try {
+          if (!requirePost(req, res)) return;
+
+          const body = await readJsonBody(req);
+          const { expectedRevision, bundle } = validateBundleBody(body);
+
+          let report: unknown;
+          const outcome = await mutate(expectedRevision, (yamlText, catalog, providers) => {
+            const result = importSubagentBundle(yamlText, bundle, catalog, providers.providers);
+            if (result.ok) report = result.report;
+            return result;
+          });
+
+          const created = (report as { created: { acps: string[] } }).created;
+          sendMutationState(res, queryProfile(req), outcome, {
+            notice: created.acps.length > 0 ? ACP_SAVED_NOTICE : SAVED_NOTICE,
+            importReport: report,
+          });
         } catch (err) {
           errorResponse(res, err, logger);
         }

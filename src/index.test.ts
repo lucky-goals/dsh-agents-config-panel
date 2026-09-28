@@ -121,7 +121,7 @@ describe('index', () => {
   it.each([
     ['undefined config', undefined],
     ['empty config', {}],
-  ])('registers three routes and defaults to standard-acp with %s', async (_label, config) => {
+  ])('registers six routes and defaults to standard-acp with %s', async (_label, config) => {
     const profileDir = await createFixtureProfile();
     const web = createWebServer();
     const connection = { requestRejection: vi.fn().mockReturnValue(undefined) };
@@ -137,8 +137,11 @@ describe('index', () => {
       '/plugins/dsh-wuyou-agent/api/state',
       '/plugins/dsh-wuyou-agent/api/subagents',
       '/plugins/dsh-wuyou-agent/api/members',
+      '/plugins/dsh-wuyou-agent/api/acps',
+      '/plugins/dsh-wuyou-agent/api/acps/test',
+      '/plugins/dsh-wuyou-agent/api/subagents/import',
     ]);
-    expect(harness.ctx.effect).toHaveBeenCalledTimes(3);
+    expect(harness.ctx.effect).toHaveBeenCalledTimes(6);
     expect(harness.effectDisposers).toEqual(web.disposers);
 
     const stateRoute = web.routes.find(
@@ -170,6 +173,9 @@ describe('index', () => {
       'kirogptacp',
     ]);
     expect(state.diagnostics.hostApi).toBe(2);
+    // v2.3: the bound DSH profile and its ACP registrations.
+    expect(state.dshProfile).toEqual({ name: 'wuyou-test', patchPath: join(profileDir, 'cordis.patch.yml') });
+    expect(state.acps.map((acp: any) => acp.config.providerName)).toEqual(['ccacp', 'cursoracp', 'kiroopsuacp', 'kirogptacp']);
   });
 
   it('registers once when webServer binds after apply', () => {
@@ -180,11 +186,11 @@ describe('index', () => {
     expect(web.register).not.toHaveBeenCalled();
 
     harness.setService('webServer', web.server);
-    expect(web.register).toHaveBeenCalledTimes(3);
+    expect(web.register).toHaveBeenCalledTimes(6);
 
     harness.setService('webServer', web.server);
     harness.setService('unrelated', {});
-    expect(web.register).toHaveBeenCalledTimes(3);
+    expect(web.register).toHaveBeenCalledTimes(6);
   });
 
   it('wraps handlers with the real connection service object shape', async () => {
@@ -219,7 +225,7 @@ describe('index', () => {
     });
 
     apply(harness.ctx as any, {});
-    expect(web.register).toHaveBeenCalledTimes(3);
+    expect(web.register).toHaveBeenCalledTimes(6);
 
     const stateRoute = web.routes.find(
       (route) => route.path === '/plugins/dsh-wuyou-agent/api/state'

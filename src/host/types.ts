@@ -15,7 +15,8 @@ export type ErrorCode =
   | 'DUPLICATE'
   | 'INVALID'
   | 'READ_ONLY'
-  | 'LAST_MEMBER';
+  | 'LAST_MEMBER'
+  | 'IN_USE';
 
 export interface MutationError {
   ok: false;
