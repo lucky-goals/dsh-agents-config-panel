@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.1
+版本：2.4（v2.2–v2.4 的变更见文末 K 节）
 插件包名：`@nanmicoder/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -452,8 +452,8 @@ window.__ModuleLoader__.load({
 注册两个 `settings.section`：
 
 ```ts
-{id:'wuyou-subagents', order:100, label:'无忧Agent · Subagent'}
-{id:'wuyou-members', order:101, label:'无忧Agent · 团队成员'}
+{id:'wuyou-subagents', order:100, label:'无忧Subagent'}
+{id:'wuyou-members', order:101, label:'无忧Teams'}
 ```
 
 两个 section 的组件 props 都是 `{ close }`。Panel A 对应 subagent 管理，Panel B 对应团队成员管理。
@@ -490,9 +490,9 @@ spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning E
 `validateForm` 中 provider 必须存在于 `subagentProviders`，否则提示 `provider '<name>' 未注册`；显示三级联动时沿用 agentOptions.provider/model 必填，不显示时不要求且 diff 不带 agentOptions。`continuable === false` 时表单值必须为 one-shot，只有与原行不同才写 patch；从 ACP/fork 切 spawn 时 diff 带完整 agentOptions。`openEdit`/`requestDelete` 对不可编辑行不发请求，展示 `readOnlyReason`。新建时所有已知 provider 可选；ACP 新建写入 provider、toolName、backgroundMode: one-shot、maxDepth: provider-managed，不写 agentOptions、modelSelectionSettings、persona、toolFilter、disabled。
 ### D5. Panel B 固定两行布局
 
-成员表固定两行，不做响应式一行/两行切换。每个成员一个 `<tbody>`，包含两行 `<tr>`；表头只有成员名、角色、操作三列。第一行放成员名和角色，操作单元格 `rowspan="2"` 且靠上；第二行以 `<dl>` 横排 Provider、Model、Reasoning Effort，空值显示 `-`。
+成员表固定两行，不做响应式一行/两行切换。每个成员一个 `<tbody>`，包含两行 `<tr>`；表头只有成员名、角色、操作三列。第一行放成员名和角色，操作单元格 `rowspan="2"` 且靠上；第二行（v2.3）为 `colSpan={3}` 横跨整个表格，以 `<dl>` 横排 Provider、Model、Reasoning Effort，空值显示 `-`。
 
-成员名 `white-space: nowrap`、`min-width: 9.5em`，禁止 `overflow-wrap: anywhere`；角色 `min-width: 12em`、允许正常断行；操作列 nowrap。成员两行之间无分隔线，不同成员以 `var(--dsw-alias-border-l1)` 分隔。第二行字号 12px，dt 使用 `var(--dsw-alias-label-secondary)`、dd 使用 `var(--dsw-alias-label-primary)`；按钮为普通 `<button>`，不设 tabIndex，第二行无可聚焦元素。空列表显示一行 `colSpan={3}`，文案「暂无成员」。样式只写在 `MembersPanel.tsx`，不修改共享 `PanelChrome.tsx` 的 tableStyles；Panel A 表格不变。
+成员名 `white-space: nowrap`、`min-width: 9.5em`，禁止 `overflow-wrap: anywhere`；角色 `min-width: 12em`、`white-space: pre-line`（保留多行角色的换行，v2.2）；操作列 nowrap。成员两行之间无分隔线，不同成员以 `var(--dsw-alias-border-l1)` 分隔。第二行字号 12px，dt 使用 `var(--dsw-alias-label-secondary)`、dd 使用 `var(--dsw-alias-label-primary)`；按钮为普通 `<button>`，不设 tabIndex，第二行无可聚焦元素。空列表显示一行 `colSpan={3}`，文案「暂无成员」。样式只写在 `MembersPanel.tsx`，不修改共享 `PanelChrome.tsx` 的 tableStyles；Panel A 表格不变。
 
 ### D6. 新 Client 配旧 Host
 
@@ -867,5 +867,75 @@ v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有�
   - 脚本默认写到 `test/e2e/artifacts-v2.1/`（t43），可以用 `E2E_ARTIFACTS_DIR` 改目录；
   - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
   - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
+
+## K. v2.2–v2.4 变更
+
+### K1. 菜单名（v2.2）
+
+settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 order 不变（见 D2）。
+
+### K2. 成员角色多行输入（v2.2）
+
+新建/编辑成员对话框的「角色 (role)」为 `<textarea rows=3>`：初始与最小高度 3 行，`resize: vertical` 可拖高到 6 行，超出后滚动。多行角色经现有 `setPairEdit` 写成 `|-` 块标量，Host 无需改动。成员表的角色单元格 `white-space: pre-line`。
+
+### K3. Members 表第二行（v2.3）
+
+见 D5：第二行 `colSpan={3}`，横跨成员名、角色、操作三列。
+
+### K4. ACP 注册管理（v2.3）
+
+**数据位置**：ACP provider 是根序列中 `- insert:` 下 `name: '@deepseek-ai/dsh-subagent-acp'` 的条目，不在 delegation 组内。config 字段按包 schema：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `providerName` | string | subagent 行 `provider` 引用的名字；创建后不可改 |
+| `command` | string，必填 | 子 ACP agent 可执行文件 |
+| `args` | string[]，默认 `[]` | 空时不写 |
+| `cwd` | string，可选 | 省略则继承发起委派的会话 cwd |
+| `permission` | `allow` \| `reject`，默认 `reject` | 自动回应子 agent 的权限请求 |
+| `env` | 字符串字典，默认 `{}` | 空时不写；明文存储 |
+
+**Host 纯函数**（`src/host/acp-manager.ts`）：`listAcps` 返回 `{ id, disabled, config, usedBy }`，`usedBy` 为 provider 等于该 providerName 的 subagent 工具名。`createAcp` 在最后一个 ACP 根项之后（没有则在根序列末尾）插入一个新的 `- insert:` 根项，id 为 `subagent-acp-<providerName>`（冲突时加 `-2`…），create 后 remove 可逐字节还原。`updateAcp` 只改 patch 中的键；清空的 `args`/`env`/`cwd` 删除该键；块序列 `args` 改写为键行上的 flow 列表。`removeAcp` 在 `usedBy` 非空时返回 `IN_USE`（HTTP 409）。错误码：`INVALID`（名称格式、内置名 spawn/fork、字段类型）、`DUPLICATE`、`NOT_FOUND`、`IN_USE`、`STRUCTURE`。
+
+**HTTP**：
+- `GET /state` 增加 `acps: AcpRow[]` 和 `dshProfile: { name, patchPath }`。缺少 `acps` 的旧 Host 由 Client 显示「当前 Host 版本不支持 ACP 管理，重启 DSH 后可用」。
+- `POST /acps`，body `{ expectedRevision, action: create|update|remove, input? , id?, patch? }`，patch 不接受 `providerName`。成功 notice：「已保存。ACP 变更需重启 DSH 后生效」。
+
+**Client**：ACP 与 subagent 行在同一个 patch，因此共用 Panel A store 与同一个 revision。ACP 区块位于 subagent 表格下方，列为 ACP 名称、命令（command + args）、权限、使用它的工具、操作；仍被使用的 ACP 删除按钮禁用并说明原因。对话框字段：providerName（编辑时只读）、command、args（每行一个）、cwd、permission、env（每行 `KEY=VALUE`）。
+
+### K5. 导入导出（v2.2 / v2.3）
+
+**端的区分**：每个 DSH profile（web、desktop、cli……）各自运行一个插件实例，只编辑自己的 `cordis.patch.yml`。Host 在 state 中报告 `dshProfile`，面板显示它，导出文件名和文件头带上它。导入总是写入当前面板所属的 profile。
+
+**Panel A 文件**（`wuyou-subagents-<dshProfile>-<YYYYMMDD-HHmmss>.yaml`）：`{ kind: wuyou-subagents, version: 3, dshProfile, acps: AcpConfig[], subagents: [{ toolName, provider, backgroundMode?, agentOptions? }] }`。不导出 maxDepth、modelSelectionSettings 等挂载派生键，导入时 Host 按 provider 能力重新推导。文件头提示 env 可能含密钥、command 是本机路径。也接受 v2.2 只有 `subagents` 的文件。
+
+**Panel A 导入**：Client 解析并预览（ACP 名称或工具名已存在、文件内重复、provider 未注册且文件中无对应 ACP → 跳过并给出原因），确认后一次 `POST /subagents/import { expectedRevision, bundle: { acps, subagents } }`。Host 在同一把锁、同一个 revision 内先建 ACP、再建工具；工具的 provider 可以是本文件新建的 ACP 或 patch 中已有的 ACP（按无能力 provider 处理：one-shot、maxDepth: provider-managed）。已存在或校验失败的条目跳过，不覆盖，结果在 `importReport: { created, skipped }` 中返回。每个列表最多 200 项，请求体上限 1MB。
+
+**Panel B 文件**（`wuyou-members-<teamProfile>-<时间>.yaml`）：`{ kind: wuyou-members, version: 3, profile, members }`，只含 name/role/provider/model/reasoning_effort。导入预览跳过已存在、文件内重复、provider 不在模型目录的成员；确认后逐个 `add`，每次带上一次响应的 revision，遇到 409 立即停止并提示已导入数量。
+
+**通用**：导入文件上限 1MB；写入不可用（atomic-write 未加载）时导入按钮禁用，导出仍可用。
+
+### K6. ACP 表格两行与测试（v2.4）
+
+**表格**：每个 ACP 一个 `<tbody>`，两行。第一行是 `<th scope="row">` 名称、权限、使用它的工具，以及操作（测试 / 编辑 / 删除）；第二行 `colSpan={4}`，左缩进 24px，显示 `命令 <code>command args…</code>`。同一 ACP 的两行之间不画线，不同 ACP 之间用 `var(--dsw-alias-border-l1)` 分隔。
+
+**测试**（`src/host/acp-probe.ts`，`POST /acps/test { id, handshake? }`）：只测试已保存的行，请求体不能携带命令。同一个 ACP 同时只能有一个测试，重复请求返回 409 `BUSY`；未知 id 返回 404。测试只读，写入不可用时也能测试。
+- 静态检查（不启动进程），规则同 DSH 0.1.7-rc.2（dsh-subprocess-local `resolveExecutable`、dsh-subagent-acp `assertUsableCwd`）：可执行文件、`#!` 解释器（含 `/usr/bin/env name`）、cwd。
+- 握手（`handshake: true`，且静态检查没有失败）：以 command、args、env（宿主 env 去掉 KEY/PASSWORD/SECRET/TOKEN 和 `DSH_*`，再叠加 config env）、cwd（未配置时用 home）启动，放在独立进程组；发送 `initialize { protocolVersion: 1, clientCapabilities: {} }`。收到 id=1 的响应即通过；协议版本不是 1 或 stdout 有非协议行时给出注意；进程退出、initialize 返回错误或 20 秒超时判为失败。结束时关闭 stdin，向进程组发 SIGTERM，1 秒后发 SIGKILL。stderr 末尾 2000 字符随结果返回，疑似密钥替换为 `***`。
+- 不检查 `session/new` 之后的阶段（登录状态、模型可用性）。
+
+### K7. 验收映射
+
+| 需求 | 自动化证据 |
+|---|---|
+| K1 菜单名 | `panels.test.tsx`「registers both sections … v2.2 short labels」；E2E 浏览器按新名称打开两个面板 |
+| K2 角色多行 | `panels.test.tsx`「role field is a 3-line textarea…」「multi-line roles keep their line breaks」；E2E 检查 textarea rows=3 |
+| K3 colSpan | `panels.test.tsx`「v2.1 §7: one tbody per member…」断言 `colSpan="3"` |
+| K4 ACP | `acp-manager.test.ts`（真实 fixture，逐字节）、`http-routes.test.ts`「v2.3 ACP routes」、`subagent-panel-acp.test.ts`、`panels.test.tsx`「v2.3 Panel A ACP section」；E2E `E2E_V23_ACP`、`E2E_V23_RESTART`（重启后 DSH 运行时注册了插件写入的 ACP） |
+| K5 导入导出 | `import-export.test.ts`、`subagent-panel-acp.test.ts`、`panels.test.tsx`（成员导入的 revision 链与冲突停止）；E2E `E2E_V23_IMPORT` |
+
+| K6 两行与测试 | `acp-probe.test.ts`（真实子进程：通过、退出、拒绝、超时、噪声、版本不符、进程已结束、env 清理）、`http-routes.test.ts`「v2.4 POST /acps/test」、`panels.test.tsx`「v2.4: two rows per ACP」「test dialog」、`subagent-panel-acp.test.ts`「v2.4 ACP test」；E2E `E2E_V24_ACP_TEST`、浏览器 `acp_test_dialog=1` |
+
+E2E 证据目录：`test/e2e/artifacts-v2.4/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.4 bash scripts/e2e-isolated-profile.sh`）。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
 
 **文档结束**

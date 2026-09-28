@@ -3,8 +3,11 @@
 本文的命令都来自已跑通的隔离 E2E（`scripts/e2e-isolated-profile.sh`，v2.1 最终证据在 `test/e2e/artifacts-v2.1-r2/`，见第 9 节），以及 `dsh --help`、`dsh plugin --profile <p> --help` 的实际输出。下文用 `DSH` 代指 dsh 可执行文件：
 
 ```bash
-DSH=/Users/jwyuan/.npm/_npx/c8633a242642d858/node_modules/.bin/dsh   # 或 PATH 中的 dsh
+DSH=/Users/jwyuan/.npm/_npx/4f4f47d9854f3c73/node_modules/.bin/dsh   # npx -y @deepseek-ai/dsh@0.1.7-rc.2 的缓存
+$DSH --version   # 必须是 0.1.7-rc.2
 ```
+
+> 不要用 `npx @deepseek-ai/dsh@next` 启动：`next` 现在是 0.2.0-rc.1，它会跳过 peer 版本不匹配的插件（本插件、dsh-agent-teams、dsh-subagent-acp 都在其中），设置里就看不到这两个页面。固定写版本号：`npx -y @deepseek-ai/dsh@0.1.7-rc.2 web`。
 
 ## 1. 前提
 
@@ -108,8 +111,8 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 
 3. 用启动日志里打印的 `http://127.0.0.1:<端口>/?token=...` 链接打开页面，已打开的页面要刷新。token 链接换取登录 cookie 后，插件的 API 才能访问。
 4. 打开一个工作区，点击 **Settings** 按钮，在设置对话框左侧找到：
-   - **无忧Agent · Subagent**（标题「Subagent 工具管理」）
-   - **无忧Agent · 团队成员**（标题「团队成员管理」）
+   - **无忧Subagent**（标题「Subagent 工具管理」）
+   - **无忧Teams**（标题「团队成员管理」）
 
 ### 升级后必须重启
 
@@ -132,7 +135,7 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 
 每次加载都会拿到当前文件的 `revision`（内容的 SHA-256）。每次保存都会带上它，文件在这期间被别处改过时，保存会被拒绝，见第 7 节。
 
-### Panel A：无忧Agent · Subagent
+### Panel A：无忧Subagent
 
 列表展示 `preset-standard-acp` → `delegation` 组里所有 `@deepseek-ai/dsh-tool-subagent` 行，列为工具名、Provider、Background Mode 和操作。只读行带「只读」标记。
 
@@ -181,14 +184,14 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 - **删除**：点「删除」，在「确认删除」对话框里确认。
 - **无改动时不发请求**：打开编辑后什么都没改就点保存，面板直接关闭表单并提示「没有改动」，不向服务端发请求。在 provider 之间切过去又切回来，也算没有改动。
 
-### Panel B：无忧Agent · 团队成员
+### Panel B：无忧Teams
 
 管理 `agent-teams` 项下 `config.profiles.<团队 profile>.members`。这里的「团队 profile」是 agent-teams 内部的 profile 名（例如 `standard-acp`），和 DSH 的 profile 目录（`web`）是两回事。
 
 成员表的列是「成员名 | 角色 | 操作」，每个成员固定占两行：
 
-- 第一行：成员名（不换行）和角色（较长时自动换行）；
-- 第二行：Provider、Model、Reasoning Effort 横向排列，没有值的显示 `-`；
+- 第一行：成员名（不换行）和角色（较长时自动换行，多行角色保留换行）；
+- 第二行：Provider、Model、Reasoning Effort 横向排列，横跨整个表格，没有值的显示 `-`；
 - 「编辑」「删除」按钮跨这两行，位于右侧。
 
 表格不随窄屏改变布局，因为设置对话框内容区只有约 530px。
@@ -197,6 +200,28 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 - **新增**：点「新建成员」。成员名以小写字母开头，只能用小写字母、数字和连字符，同一团队 profile 内不能重复。角色可选；Provider 和 Model 要么都填，要么都不填，填了就必须在模型目录里存在；Reasoning Effort 可选。
 - **编辑**：点「编辑」。成员上面板没有展示的其他键会原样保留。**清空可选字段**：把 Role、Provider、Model 或 Reasoning Effort 清空，保存后该字段从 YAML 中删除；Provider 和 Model 必须同时清空或同时填写，只清空一个会报错。打开编辑后不做任何更改直接保存，面板会提示「没有改动」，不发请求。
 - **删除**：点「删除」并确认。**团队至少保留一个成员**：只剩一个成员时，面板直接拦截，服务端也会返回 422 `LAST_MEMBER`（「团队至少需要保留一个成员」）。
+- **角色**：输入框默认 3 行高，拖动右下角可拉高到 6 行，多行内容以 `|-` 块写入 YAML。
+- **导出 / 导入**：导出当前团队 profile 的成员为 `wuyou-members-<团队 profile>-<时间>.yaml`。导入先显示预览，已存在、文件内重复、provider 不在模型目录中的成员会跳过；确认后逐个添加，途中文件被别处修改时立即停止，并提示已导入几个。
+
+### ACP 管理（无忧Subagent 下方）
+
+列出当前 DSH profile 的 `@deepseek-ai/dsh-subagent-acp` 注册（`cordis.patch.yml` 根序列里的 `- insert:` 项），列为 ACP 名称、命令、权限、使用它的工具和操作。
+
+- **新建 / 编辑**：providerName 小写字母开头，只能用小写字母、数字、`-`、`_`，不能是 spawn/fork，创建后不能改（subagent 工具按名字引用它）。args 每行一个；env 每行 `KEY=VALUE`，明文写入配置文件；permission 默认 `reject`，`allow` 会自动批准子 agent 的权限请求。
+- **表格**：每个 ACP 占两行：第一行是名称、权限、使用它的工具和操作；第二行缩进显示完整命令（command + args），横跨整行。
+- **测试**：点「测试」先做静态检查，不启动任何进程。检查规则与 DSH 启动 ACP 前的检查一致：
+  - command 是绝对路径时，必须是可执行文件；只写命令名时，在子进程 PATH 中查找（PATH 为 DSH 进程的 PATH 加 env 覆盖）；含 `/` 的相对路径会被拒绝；
+  - 脚本的 `#!` 解释器也要能找到，包括 `#!/usr/bin/env node` 这种写法；
+  - 配置了 cwd 时，它必须是可进入的绝对路径目录。
+
+  通过后可以点「握手测试」：用这条 ACP 的命令、参数和 env 实际启动进程，发送 ACP `initialize`，报告对方名称、版本和协议版本，然后结束整个进程组。握手测试不创建会话、不调用模型，最多等 20 秒。失败时会显示进程 stderr 的末尾，疑似密钥会隐藏。测试针对已保存的配置，请求里只带 ACP 的 id，不能指定要执行的命令。
+- **删除**：仍有 subagent 工具使用的 ACP 不能删除（服务端返回 409 `IN_USE`），先删除或改掉这些工具。
+- **生效**：ACP 变更写入后要**重启 DSH**。新 ACP 重启后才会出现在 subagent 的 Provider 下拉里。
+
+### 导出 / 导入（无忧Subagent）
+
+- **导出**：生成 `wuyou-subagents-<DSH profile>-<时间>.yaml`，包含全部 ACP 注册和 subagent 工具。每个 DSH profile（web、desktop、cli……）各自运行一份插件，编辑自己的 `cordis.patch.yml`，所以在哪个端打开面板，就导出哪个端的配置。文件里有 ACP 的 env 和本机命令路径，分享前请检查。
+- **导入**：选择 `.yaml` 文件后先显示预览：已存在的 ACP 或工具名、文件内重复、provider 既未注册也不在文件中的工具会跳过并说明原因。确认后在一次写入中先建 ACP 再建工具，不覆盖已有配置。导入到其他电脑后，确认 ACP 的 command 路径在本机存在，然后重启 DSH。
 
 ## 7. 排查
 
@@ -206,12 +231,14 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 | 保存时出现「配置已被其他地方修改，请刷新后重试」 | 服务端返回 409 `STALE_REVISION`：加载后 `cordis.patch.yml` 被其他地方改过，例如另一个浏览器标签页、手动编辑或 DSH 自己的配置编辑器。文件不会被改动，面板会自动重新拉取最新状态。确认列表后重新操作即可。 |
 | 保存时出现「工具名 'xxx' 已存在」或「id 'xxx' 已存在」 | 服务端返回 409 `DUPLICATE`：新建 subagent 时指定的 toolName 或生成的 id，与 delegation 序列中已有的行重复（面板列表只展示 dsh-tool-subagent 行，但 id 冲突会和所有行比对）。换一个不重复的工具名即可。 |
 | 保存时出现「请求不合法」类错误（400 INVALID） | 请求字段格式不符合要求。常见情况：toolName 格式不对（不匹配 `^subagent(_[a-z0-9]+)*$`）、成员名格式不对（必须以小写字母开头、只含小写字母/数字/连字符）、spawn provider 没填模型、成员 provider 和 model 只填了一个。按提示检查对应字段。 |
-| 设置对话框里没有两个「无忧Agent」页面 | 1）`package.json` 的 `dsh.profile.bundles` 里要有 `@nanmicoder/dsh-wuyou-agent`（第 4 节的核对命令）；2）符号链接要指向仓库，并且仓库里有 `lib/index.js` 和 `lib/client.js`，没有就执行 `npm run build`；3）装完要重启 DSH，并用新的 token 链接刷新页面；4）`$DSH --profile web --dump-config` 只打印合成后的配置并退出，检查里面有没有 `wuyou-agent`；5）检查启动日志里有没有 `wuyou-agent:` 开头的错误；6）服务运行时执行 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<端口>/plugins/dsh-wuyou-agent/api/state`：`401` 表示路由已注册，只是未登录；`404` 表示插件没有注册路由，通常是启动的 profile 不对或插件没有加载。 |
+| 设置对话框里没有「无忧Subagent」「无忧Teams」两个页面 | 1）`package.json` 的 `dsh.profile.bundles` 里要有 `@nanmicoder/dsh-wuyou-agent`（第 4 节的核对命令）；2）符号链接要指向仓库，并且仓库里有 `lib/index.js` 和 `lib/client.js`，没有就执行 `npm run build`；3）装完要重启 DSH，并用新的 token 链接刷新页面；4）`$DSH --profile web --dump-config` 只打印合成后的配置并退出，检查里面有没有 `wuyou-agent`；5）检查启动日志里有没有 `wuyou-agent:` 开头的错误；6）服务运行时执行 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<端口>/plugins/dsh-wuyou-agent/api/state`：`401` 表示路由已注册，只是未登录；`404` 表示插件没有注册路由，通常是启动的 profile 不对或插件没有加载。 |
 | 面板显示「请求失败（HTTP 4xx/5xx）」 | 这通常表示插件没有激活，或者网关出错（例如 404、502、504 等非插件错误）。排查步骤：（a）确认 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 里有 `@nanmicoder/dsh-wuyou-agent`；（b）重启 `dsh web` 后用新 token 链接刷新浏览器；（c）查看 DSH 启动日志里有没有 `wuyou-agent:` 开头的激活错误。服务端返回非 JSON 或格式异常时（如 HTML 错误页、空 body），面板统一显示这一提示，不会暴露原始英文异常。 |
 | 面板显示「未找到 preset-standard-acp 的 delegation 组…」或「未找到 agent-teams 配置…」 | 当前 profile 的 `cordis.patch.yml` 没有对应结构，这时 state 仍返回 200，并把原因放在 `errors` 里。Panel B 需要已安装 `@nanmicoder/dsh-agent-teams`，并在配置里有 `- id: agent-teams`。 |
 | 安装时 pnpm 报错，拒绝向 workspace 根添加依赖 | 安装命令漏了 `-w`。profile 目录是 pnpm workspace 根，请用 `$DSH plugin --profile web add -w <绝对路径>`。 |
 | 安装时提示版本不兼容 | DSH 会打印 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <ver> --accept-risk`。本插件只在 0.1.7-rc.2 上验证过，放行前先确认风险。 |
 | 保存返回 413 | 请求体超过 1MB（`PAYLOAD_TOO_LARGE`），通常是角色文本过长。 |
+| 删除 ACP 时提示「仍被 subagent 工具使用」 | 服务端返回 409 `IN_USE`：还有 subagent 工具的 provider 是这个 ACP。先在上方表格删除这些工具，或把它们的 provider 改成别的，再删除 ACP。 |
+| 新建的 ACP 不在 Provider 下拉里 | ACP 注册在 DSH 加载插件时生效。重启 DSH 并刷新页面后才会出现。 |
 | 某行显示「只读」，提示「provider 'xxx' 未注册，此行只读…」 | 这一行的 provider 没有在 DSH 运行时注册，例如 codex、claude-code 占位行。先安装提供该 provider 的插件，重启 DSH，刷新面板。在此之前，这一行不能编辑，也不能删除。 |
 | 保存时提示「provider 'xxx' 未注册」 | 选中的 provider 不在当前列表里，通常是提供它的插件已经卸载。点「刷新」重新拉取列表，再选择一个已注册的 provider。 |
 | Panel A 顶部显示「当前界面已更新，Subagent 的 ACP 编辑需要重启 DSH 后生效」，ACP 行不能编辑 | 插件升级后还没有重启 `dsh web`：新 Client 已经加载，Host 还是旧版本（state 中 `diagnostics.hostApi` 缺失或不等于 `2`）。按第 5 节重启并刷新。 |

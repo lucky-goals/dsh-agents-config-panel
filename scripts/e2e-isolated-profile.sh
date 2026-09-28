@@ -2,7 +2,9 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DSH_BIN="${DSH_BIN:-/Users/jwyuan/.npm/_npx/c8633a242642d858/node_modules/.bin/dsh}"
+# `npx -y @deepseek-ai/dsh@0.1.7-rc.2` cache; the @next cache (c8633a...) is 0.2.0-rc.1 now.
+DSH_BIN="${DSH_BIN:-/Users/jwyuan/.npm/_npx/4f4f47d9854f3c73/node_modules/.bin/dsh}"
+DSH_EXPECTED_VERSION="${DSH_EXPECTED_VERSION:-0.1.7-rc.2}"
 PROFILE="wuyou-test"
 PROFILE_DIR="${HOME}/.dsh/profiles/${PROFILE}"
 PATCH_PATH="${PROFILE_DIR}/cordis.patch.yml"
@@ -474,6 +476,9 @@ prove_dsh_mount_detector_rejects_bad_log
 
 [[ "${PROFILE}" == "wuyou-test" ]] || fail "E2E refuses to run outside wuyou-test"
 [[ -x "${DSH_BIN}" ]] || fail "DSH binary is not executable: ${DSH_BIN}"
+DSH_ACTUAL_VERSION="$("${DSH_BIN}" --version 2>/dev/null | tail -1)"
+[[ "${DSH_ACTUAL_VERSION}" == "${DSH_EXPECTED_VERSION}" ]] || fail "DSH ${DSH_BIN} is ${DSH_ACTUAL_VERSION}, expected ${DSH_EXPECTED_VERSION} (set DSH_BIN / DSH_EXPECTED_VERSION)"
+printf 'E2E_DSH version=%s bin=%s\n' "${DSH_ACTUAL_VERSION}" "${DSH_BIN}"
 [[ -f "${PATCH_PATH}" ]] || fail "isolated patch missing: ${PATCH_PATH}"
 [[ -f "${PATCH_TEMPLATE}" ]] || fail "clean patch template missing: ${PATCH_TEMPLATE}"
 [[ -f "${PACKAGE_PATH}" ]] || fail "isolated package missing: ${PACKAGE_PATH}"
@@ -705,12 +710,24 @@ with sync_playwright() as playwright:
         select_workspace(page)
         page.wait_for_timeout(1_000)
         page.get_by_role("button", name="Settings").click()
-        page.get_by_text("无忧Agent · Subagent", exact=True).click()
+        page.get_by_text("无忧Subagent", exact=True).click()
         subagents = page.get_by_text("Subagent 工具管理", exact=True)
         subagents.first.wait_for(state="visible", timeout=30_000)
         subagents_count = subagents.count()
+        page.get_by_role("heading", name="ACP 管理", exact=True).wait_for(state="visible", timeout=30_000)
+        page.get_by_text("e2eacp", exact=True).first.wait_for(state="visible", timeout=30_000)
+        for label in ("导出", "导入", "新建 ACP"):
+            page.get_by_role("button", name=label, exact=True).first.wait_for(state="visible", timeout=30_000)
         page.screenshot(path=screenshot_path, full_page=True)
-        page.get_by_text("无忧Agent · 团队成员", exact=True).click()
+        # v2.4: 测试 on the first ACP row opens the result dialog (static checks only).
+        page.get_by_role("button", name="测试", exact=True).first.click()
+        test_dialog = page.locator('[role="dialog"]:not([data-shortcut-modal])').filter(has_text="测试 ACP：e2eacp")
+        test_dialog.first.wait_for(state="visible", timeout=30_000)
+        test_dialog.first.get_by_text("可执行文件", exact=True).wait_for(state="visible", timeout=30_000)
+        test_dialog.first.get_by_role("button", name="握手测试", exact=True).wait_for(state="visible", timeout=30_000)
+        test_dialog.first.press("Escape")
+        test_dialog.first.wait_for(state="hidden", timeout=30_000)
+        page.get_by_text("无忧Teams", exact=True).click()
         members = page.get_by_text("团队成员管理", exact=True)
         members.first.wait_for(state="visible", timeout=30_000)
         members_count = members.count()
@@ -719,6 +736,11 @@ with sync_playwright() as playwright:
         page.get_by_role("button", name="新建成员", exact=True).click()
         member_dialog = page.locator('[role="dialog"]:not([data-shortcut-modal])').filter(has_text="新建成员")
         member_dialog.first.wait_for(state="visible", timeout=30_000)
+        role_box = member_dialog.first.locator("textarea")
+        role_box.wait_for(state="visible", timeout=30_000)
+        role_rows = role_box.get_attribute("rows")
+        if role_rows != "3":
+            raise RuntimeError(f"role textarea rows={role_rows}, expected 3")
         member_dialog.first.press("Escape")
         member_dialog.first.wait_for(state="hidden", timeout=30_000)
         escape_closed = True
@@ -729,10 +751,11 @@ with sync_playwright() as playwright:
         select_workspace(mobile_page)
         mobile_page.wait_for_timeout(1_000)
         mobile_page.get_by_role("button", name="Settings").click()
-        mobile_page.get_by_text("无忧Agent · Subagent", exact=True).click()
+        mobile_page.get_by_text("无忧Subagent", exact=True).click()
         mobile_page.get_by_text("Subagent 工具管理", exact=True).first.wait_for(state="visible", timeout=30_000)
-        mobile_page.get_by_text("无忧Agent · 团队成员", exact=True).click()
+        mobile_page.get_by_text("无忧Teams", exact=True).click()
         mobile_page.get_by_text("团队成员管理", exact=True).first.wait_for(state="visible", timeout=30_000)
+        print("E2E_BROWSER_V23 labels=无忧Subagent,无忧Teams acp_section=1 import_export=1 role_textarea_rows=3 acp_test_dialog=1")
         mobile_page.screenshot(path=mobile_screenshot_path, full_page=True)
         result = {
             "rpc": rpc,
@@ -1339,6 +1362,116 @@ if (!row || row.config?.provider !== 'spawn' || !row.config?.agentOptions?.model
   throw new Error(`ACP-to-spawn row was not loaded after restart: ${JSON.stringify(row)}`);
 }
 console.log(`E2E_R6_RESTART_AFTER_SPAWN provider=${row.config.provider} mount_check=passed`);
+NODE
+
+# ---------------------------------------------------------------------------
+# v2.3: ACP registrations and Panel A bundle import against the real DSH.
+# ---------------------------------------------------------------------------
+ACP3_CREATE_RESPONSE="${ARTIFACT_DIR}/v23-acp-create-response.json"
+ACP3_UPDATE_RESPONSE="${ARTIFACT_DIR}/v23-acp-update-response.json"
+BUNDLE_IMPORT_RESPONSE="${ARTIFACT_DIR}/v23-bundle-import-response.json"
+ACP3_IN_USE_RESPONSE="${ARTIFACT_DIR}/v23-acp-in-use-response.json"
+STATE_V23_RESTART="${ARTIFACT_DIR}/v23-state-restart.json"
+LOG_V23_RESTART="${ARTIFACT_DIR}/wuyou-v23-restart.log"
+PATCH_V23="${ARTIFACT_DIR}/cordis.patch.after-v23.yml"
+
+node - "${STATE_RESTART_AFTER_SPAWN}" "${PROFILE}" "${PATCH_PATH}" <<'NODE'
+const fs = require('node:fs');
+const [statePath, profile, patchPath] = process.argv.slice(2);
+const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+const names = (state.acps ?? []).map((a) => a.config.providerName);
+if (JSON.stringify(names) !== JSON.stringify(['e2eacp', 'e2eacp2'])) throw new Error(`state.acps: ${JSON.stringify(state.acps)}`);
+if (state.dshProfile?.name !== profile || fs.realpathSync(state.dshProfile.patchPath) !== fs.realpathSync(patchPath)) {
+  throw new Error(`state.dshProfile: ${JSON.stringify(state.dshProfile)}`);
+}
+const e2eacp = state.acps.find((a) => a.config.providerName === 'e2eacp');
+if (!e2eacp.usedBy.includes('subagent_e2e_acp')) throw new Error(`e2eacp.usedBy: ${JSON.stringify(e2eacp.usedBy)}`);
+console.log(`E2E_V23_STATE acps=${names.join(',')} dshProfile=${state.dshProfile.name}`);
+NODE
+
+v23_revision() {
+  node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).revision)' "$1"
+}
+
+REV="$(v23_revision "${STATE_RESTART_AFTER_SPAWN}")"
+STATUS="$(curl -sS --max-time 15 -o "${ACP3_CREATE_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data "{\"expectedRevision\":\"${REV}\",\"action\":\"create\",\"input\":{\"providerName\":\"e2eacp3\",\"command\":\"/usr/bin/true\",\"args\":[\"acp\"],\"permission\":\"reject\",\"env\":{\"E2E_FLAG\":\"1\"}}}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps")"
+assert_status "${STATUS}" "200" "v2.3 ACP create" "${ACP3_CREATE_RESPONSE}"
+
+REV="$(v23_revision "${ACP3_CREATE_RESPONSE}")"
+STATUS="$(curl -sS --max-time 15 -o "${ACP3_UPDATE_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data "{\"expectedRevision\":\"${REV}\",\"action\":\"update\",\"id\":\"subagent-acp-e2eacp3\",\"patch\":{\"permission\":\"allow\"}}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps")"
+assert_status "${STATUS}" "200" "v2.3 ACP update" "${ACP3_UPDATE_RESPONSE}"
+
+# The bundle's ACP already exists (skipped) and its tool uses the not-yet-mounted e2eacp3.
+REV="$(v23_revision "${ACP3_UPDATE_RESPONSE}")"
+STATUS="$(curl -sS --max-time 15 -o "${BUNDLE_IMPORT_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data "{\"expectedRevision\":\"${REV}\",\"bundle\":{\"acps\":[{\"providerName\":\"e2eacp\",\"command\":\"/usr/bin/true\"}],\"subagents\":[{\"toolName\":\"subagent_e2e_acp3\",\"provider\":\"e2eacp3\",\"backgroundMode\":\"one-shot\"}]}}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/subagents/import")"
+assert_status "${STATUS}" "200" "v2.3 bundle import" "${BUNDLE_IMPORT_RESPONSE}"
+node - "${BUNDLE_IMPORT_RESPONSE}" <<'NODE'
+const r = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
+const report = r.importReport;
+if (JSON.stringify(report.created) !== JSON.stringify({ acps: [], subagents: ['subagent_e2e_acp3'] })) throw new Error(`created: ${JSON.stringify(report.created)}`);
+if (report.skipped.length !== 1 || report.skipped[0].name !== 'e2eacp') throw new Error(`skipped: ${JSON.stringify(report.skipped)}`);
+const row = r.subagents.find((s) => s.config.toolName === 'subagent_e2e_acp3');
+if (row?.config.maxDepth !== 'provider-managed' || row.config.backgroundMode !== 'one-shot') throw new Error(`row: ${JSON.stringify(row)}`);
+console.log('E2E_V23_IMPORT created=subagent_e2e_acp3 skipped=e2eacp');
+NODE
+
+REV="$(v23_revision "${BUNDLE_IMPORT_RESPONSE}")"
+STATUS="$(curl -sS --max-time 15 -o "${ACP3_IN_USE_RESPONSE}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data "{\"expectedRevision\":\"${REV}\",\"action\":\"remove\",\"id\":\"subagent-acp-e2eacp3\"}" \
+  "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps")"
+assert_status "${STATUS}" "409" "v2.3 remove in-use ACP" "${ACP3_IN_USE_RESPONSE}"
+grep -q '"IN_USE"' "${ACP3_IN_USE_RESPONSE}" || fail "v2.3 in-use remove did not return IN_USE"
+cp "${PATCH_PATH}" "${PATCH_V23}"
+printf 'E2E_V23_ACP create=200 update=200 in_use_remove=409\n'
+
+# Restart: DSH itself must mount the ACP row this plugin wrote.
+stop_server
+assert_clean_profile_patch
+start_server "${LOG_V23_RESTART}"
+exchange_token_and_fetch_state "${STATE_V23_RESTART}"
+assert_no_dsh_mount_errors "${LOG_V23_RESTART}" "v2.3 restart"
+node - "${STATE_V23_RESTART}" <<'NODE'
+const s = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
+if (s.diagnostics.subagentProvidersSource !== 'runtime') throw new Error(`provider source: ${s.diagnostics.subagentProvidersSource}`);
+const acp3 = s.subagentProviders.find((p) => p.name === 'e2eacp3');
+if (!acp3 || acp3.kind !== 'acp' || acp3.source !== 'runtime') throw new Error(`e2eacp3 not mounted by DSH: ${JSON.stringify(s.subagentProviders)}`);
+const row = s.acps.find((a) => a.config.providerName === 'e2eacp3');
+if (row?.config.permission !== 'allow' || row.config.env.E2E_FLAG !== '1' || JSON.stringify(row.usedBy) !== '["subagent_e2e_acp3"]') {
+  throw new Error(`e2eacp3 row: ${JSON.stringify(row)}`);
+}
+const tool = s.subagents.find((r) => r.config.toolName === 'subagent_e2e_acp3');
+if (!tool?.editable) throw new Error(`subagent_e2e_acp3 not editable after restart: ${JSON.stringify(tool)}`);
+console.log('E2E_V23_RESTART e2eacp3=runtime-registered tool=editable');
+NODE
+
+# v2.4: ACP test route against the real Host. e2eacp runs /usr/bin/true: the
+# executable exists (static pass) but exits without answering initialize.
+ACP_TEST_STATIC="${ARTIFACT_DIR}/v24-acp-test-static.json"
+ACP_TEST_HANDSHAKE="${ARTIFACT_DIR}/v24-acp-test-handshake.json"
+ACP_TEST_MISSING="${ARTIFACT_DIR}/v24-acp-test-missing.json"
+STATUS="$(curl -sS --max-time 15 -o "${ACP_TEST_STATIC}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data '{"id":"subagent-acp-e2e"}' "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps/test")"
+assert_status "${STATUS}" "200" "v2.4 ACP static test" "${ACP_TEST_STATIC}"
+STATUS="$(curl -sS --max-time 40 -o "${ACP_TEST_HANDSHAKE}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data '{"id":"subagent-acp-e2e","handshake":true}' "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps/test")"
+assert_status "${STATUS}" "200" "v2.4 ACP handshake test" "${ACP_TEST_HANDSHAKE}"
+STATUS="$(curl -sS --max-time 15 -o "${ACP_TEST_MISSING}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' \
+  --data '{"id":"subagent-acp-nope"}' "${BASE_URL}/plugins/dsh-wuyou-agent/api/acps/test")"
+assert_status "${STATUS}" "404" "v2.4 ACP test unknown id" "${ACP_TEST_MISSING}"
+node - "${ACP_TEST_STATIC}" "${ACP_TEST_HANDSHAKE}" <<'NODE'
+const fs = require('node:fs');
+const [st, hs] = process.argv.slice(2).map((p) => JSON.parse(fs.readFileSync(p, 'utf8')));
+const cmd = st.checks.find((c) => c.key === 'command');
+if (!st.ok || st.handshake || cmd?.status !== 'pass' || st.resolvedCommand !== '/usr/bin/true') throw new Error(`static: ${JSON.stringify(st)}`);
+const h = hs.checks.find((c) => c.key === 'handshake');
+if (hs.ok || h?.status !== 'fail' || !h.detail.includes('退出')) throw new Error(`handshake: ${JSON.stringify(hs)}`);
+console.log(`E2E_V24_ACP_TEST static=pass handshake=fail(${h.detail.split('。')[0]}) unknown=404`);
 NODE
 stop_server
 
