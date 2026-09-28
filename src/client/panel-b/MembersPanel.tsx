@@ -7,9 +7,11 @@ import type { MembersPanelStore } from './members-panel-store';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { FormField } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
+import { ImportPreviewModal } from '../ui/ImportPreviewModal';
 import {
   DiagnosticsBanner,
   PanelHeader,
@@ -61,7 +63,8 @@ const memberTable = {
   role: {
     ...cellBase,
     minWidth: '12em',
-    whiteSpace: 'normal',
+    // v2.2: roles may be multi-line; keep the author's line breaks.
+    whiteSpace: 'pre-line',
     overflowWrap: 'break-word',
   } as React.CSSProperties,
   actions: { ...cellBase, padding: '8px', whiteSpace: 'nowrap' } as React.CSSProperties,
@@ -85,7 +88,7 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
   const busy = state.loading;
   const writeTitle = writeDisabledTitle(blocked);
   const { values, errors, mode } = state.form;
-  const modalOpen = mode !== null || state.confirmDelete.name !== null;
+  const modalOpen = mode !== null || state.confirmDelete.name !== null || state.importPreview !== null;
   const hasProfiles = state.teamProfiles.length > 0;
 
   // provider → model → reasoning_effort cascade from the Host catalog.
@@ -112,7 +115,16 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
 
   return (
     <div style={{ padding: '16px', color: 'var(--dsw-alias-label-primary)' }}>
-      <PanelHeader title="团队成员管理" loading={busy} onRefresh={() => void store.load()} close={close}>
+      <PanelHeader
+        title="团队成员管理"
+        loading={busy}
+        onRefresh={() => void store.load()}
+        onExport={hasProfiles ? () => store.exportConfig() : undefined}
+        onImport={hasProfiles ? (file) => void store.importConfig(file) : undefined}
+        importDisabled={blocked}
+        importTitle={writeTitle}
+        close={close}
+      >
         {profilePicker}
       </PanelHeader>
       <DiagnosticsBanner diagnostics={state.diagnostics} />
@@ -166,7 +178,7 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
               </td>
             </tr>
             <tr>
-              <td colSpan={2} style={memberTable.details}>
+              <td colSpan={3} style={memberTable.details}>
                 <dl style={memberTable.dl}>
                   {MEMBER_DETAILS.map(([label, key]) => (
                     <div key={key} style={memberTable.pair}>
@@ -204,13 +216,15 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
           />
         </FormField>
 
-        <FormField label="角色 (role)" error={errors.role}>
-          <Input
+        <FormField label="角色 (role)" error={errors.role} hint="可选，支持多行；可拖动右下角调整高度">
+          <Textarea
             value={values.role}
             onChange={(v) => store.setField('role', v)}
             placeholder="可选"
             error={!!errors.role}
             disabled={busy}
+            rows={3}
+            maxRows={6}
           />
         </FormField>
 
@@ -270,6 +284,30 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
           </Button>
         </div>
       </Modal>
+
+      {state.importPreview && (
+        <ImportPreviewModal
+          isOpen
+          summary={`文件：${state.importPreview.fileName}，导入到团队 profile：${state.profile}`}
+          sections={[{
+            title: '成员',
+            entries: state.importPreview.members.map(({ item, skip }) => ({
+              label: item.name || '(无成员名)',
+              details: [
+                item.role && `角色：${String(item.role).split('\n')[0]}`,
+                item.provider && `${item.provider}/${item.model ?? '-'}`,
+                item.reasoning_effort && `Reasoning Effort: ${item.reasoning_effort}`,
+              ].filter(Boolean).join('，'),
+              skip,
+            })),
+          }]}
+          busy={busy}
+          blocked={blocked}
+          error={state.error}
+          onClose={() => store.cancelImport()}
+          onConfirm={() => void store.confirmImport()}
+        />
+      )}
     </div>
   );
 }

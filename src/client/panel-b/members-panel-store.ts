@@ -21,6 +21,15 @@ import {
   pickTeamProfile,
 } from '../ui/host-state';
 import { MSG } from '../ui/messages';
+import {
+  downloadYaml,
+  exportMembers,
+  membersExportFilename,
+  parseMembersFile,
+  previewMembersImport,
+  readImportFile,
+  type PreviewItem,
+} from '../shared/import-export';
 
 // ============================================================================
 // State Types
@@ -68,6 +77,8 @@ export interface MembersPanelState {
   confirmDelete: {
     name: string | null;
   };
+  /** v2.2: parsed import file awaiting confirmation, for the selected team profile. */
+  importPreview: { fileName: string; members: PreviewItem<TeamMember>[] } | null;
 }
 
 // ============================================================================
@@ -96,6 +107,12 @@ export interface MembersPanelStore {
   requestDelete(name: string): void;
   confirmDelete(): Promise<void>;
   cancel(): void;
+
+  // v2.2 import / export of the selected team profile's members
+  exportConfig(): void;
+  importConfig(file: File): Promise<void>;
+  cancelImport(): void;
+  confirmImport(): Promise<void>;
 }
 
 function emptyFormData(): MemberFormData {
@@ -128,6 +145,7 @@ function initialState(profile: string): MembersPanelState {
     confirmDelete: {
       name: null,
     },
+    importPreview: null,
   };
 }
 
@@ -348,6 +366,7 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
         ...state,
         form: closedForm(),
         confirmDelete: { name: null },
+        importPreview: null,
       };
       await store.load(profile);
     },
@@ -494,11 +513,81 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
         ...state,
         form: closedForm(),
         confirmDelete: { name: null },
+        importPreview: null,
         error: null,
         conflict: null,
         notice: null,
       };
       notify();
+    },
+
+    exportConfig() {
+      try {
+        downloadYaml(membersExportFilename(state.profile), exportMembers(state.members, state.profile));
+        setState({ error: null, notice: `已导出团队 profile ${state.profile} 的 ${state.members.length} 个成员` });
+      } catch (err: any) {
+        setState({ error: `导出失败：${err.message}` });
+      }
+    },
+
+    async importConfig(file: File) {
+      setState({ error: null, conflict: null, notice: null });
+      try {
+        const members = parseMembersFile(await readImportFile(file));
+        const preview = previewMembersImport(members, state.members, state.catalog.providers.map((p) => p.id));
+        state = { ...state, form: closedForm(), confirmDelete: { name: null }, importPreview: { fileName: file.name, members: preview } };
+        notify();
+      } catch (err: any) {
+        setState({ error: `无法导入 ${file.name}：${err.message}` });
+      }
+    },
+
+    cancelImport() {
+      setState({ importPreview: null });
+    },
+
+    /**
+     * Add the importable members one by one. Each add carries the revision
+     * returned by the previous one, so a change made elsewhere mid-import
+     * stops the import (409) instead of being overwritten.
+     */
+    async confirmImport() {
+      const preview = state.importPreview;
+      if (!preview) return;
+      const todo = preview.members.filter((p) => !p.skip).map((p) => p.item);
+      if (todo.length === 0) { setState({ importPreview: null }); return; }
+      if (writeBlocked()) return;
+
+      requestSeq++;
+      setState({ loading: true, error: null, conflict: null });
+      const added: string[] = [];
+      const failed: string[] = [];
+      let last: StateResponse | null = null;
+      for (const member of todo) {
+        try {
+          last = await api.mutateMembers({
+            expectedRevision: last?.revision ?? state.revision,
+            profile: state.profile,
+            action: 'add',
+            member,
+          });
+          added.push(member.name);
+        } catch (err: any) {
+          if (err.code === 'STALE_REVISION') {
+            await refreshAfterConflict(`${err.message}。已导入 ${added.length}/${todo.length} 个成员，其余未导入`, { importPreview: null });
+            return;
+          }
+          failed.push(`${member.name}：${err.message}`);
+        }
+      }
+      requestSeq++;
+      setState({
+        loading: false,
+        ...(last ? fromResponse(last) : {}),
+        importPreview: null,
+        notice: `已导入 ${added.length}/${todo.length} 个成员，新建会话后生效`,
+        error: failed.length > 0 ? `${failed.length} 个成员导入失败：${failed.join('；')}` : null,
+      });
     },
   };
   return store;

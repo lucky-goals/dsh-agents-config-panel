@@ -28,8 +28,8 @@ export interface SectionProps {
 
 /** settings.section registration options, verbatim from requirements D2. */
 export const SECTIONS = {
-  subagents: { name: 'settings.section', id: 'wuyou-subagents', order: 100, label: '无忧Agent · Subagent' },
-  members: { name: 'settings.section', id: 'wuyou-members', order: 101, label: '无忧Agent · 团队成员' },
+  subagents: { name: 'settings.section', id: 'wuyou-subagents', order: 100, label: '无忧Subagent' },
+  members: { name: 'settings.section', id: 'wuyou-members', order: 101, label: '无忧Teams' },
 } as const;
 
 export function apply(ctx: any) {

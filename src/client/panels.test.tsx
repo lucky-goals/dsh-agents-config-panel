@@ -16,6 +16,7 @@ import { listSubagents } from '../host/subagent-manager';
 import { resolveSubagentProviders } from '../host/subagent-providers';
 import { listMembers, listTeamProfiles } from '../host/members-editor';
 import { readCatalog } from '../host/catalog';
+import { listAcps } from '../host/acp-manager';
 import { SubagentPanel } from './panel-a/SubagentPanel';
 import { MembersPanel } from './panel-b/MembersPanel';
 import { createSubagentStore } from './panel-a/subagent-panel-store';
@@ -56,6 +57,8 @@ function fixtureState(profile = 'standard-acp', diagnostics: StateDiagnostics = 
     teamProfiles: listTeamProfiles(FIXTURE),
     profile,
     members: listMembers(FIXTURE, profile) as TeamMember[],
+    acps: listAcps(FIXTURE),
+    dshProfile: { name: 'desktop', patchPath: '/profiles/desktop/cordis.patch.yml' },
     errors: {},
     diagnostics,
   };
@@ -66,6 +69,8 @@ function fixtureApi(state: (profile: string) => StateResponse = (p) => fixtureSt
     getState: vi.fn(async (profile: string) => state(profile)),
     mutateSubagents: vi.fn(),
     mutateMembers: vi.fn(async (body) => ({ ...state(body.profile), notice: '已保存，新建会话后生效' })),
+    mutateAcps: vi.fn(),
+    importSubagentBundle: vi.fn(),
   };
 }
 
@@ -268,8 +273,9 @@ describe('MembersPanel render (real fixture)', () => {
       expect(rows[0]).toMatch(/<td style="[^"]*min-width:12em[^"]*"/);
       // React SSR serialises rowSpan as lowercase `rowspan`.
       expect(rows[0]).toMatch(/<td rowspan="2"[^>]*>[\s\S]*编辑[\s\S]*删除/);
-      // Row 2: colSpan=2 with a labelled Provider / Model / Reasoning Effort list, no focusable elements.
-      expect(rows[1]).toMatch(/^<td colSpan="2"[^>]*><dl/);
+      // Row 2 (v2.3): colSpan=3, spanning the actions column too, with a labelled
+      // Provider / Model / Reasoning Effort list and no focusable elements.
+      expect(rows[1]).toMatch(/^<td colSpan="3"[^>]*><dl/);
       expect([...rows[1].matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((m) => m[1])).toEqual(['Provider', 'Model', 'Reasoning Effort']);
       const values = [...rows[1].matchAll(/<dd[^>]*>([^<]*)<\/dd>/g)].map((m) => m[1]);
       expect(values, member.name).toEqual([member.provider, member.model, member.reasoning_effort].map((v) => (v ? String(v) : '-')));
@@ -374,6 +380,229 @@ describe('MembersPanel render (real fixture)', () => {
   });
 });
 
+/** The v2.3 ACP <section> of Panel A. */
+function acpSection(html: string): string {
+  const start = html.indexOf('aria-labelledby="wuyou-acp-heading"');
+  expect(start, 'ACP section').toBeGreaterThan(-1);
+  return html.slice(start, html.indexOf('</section>', start));
+}
+
+function textFile(name: string, text: string): File {
+  return { name, size: text.length, text: async () => text } as unknown as File;
+}
+
+describe('v2.3 Panel A ACP section and import/export (real fixture)', () => {
+  it('lists the real ACP registrations below the tools, with the bound DSH profile', async () => {
+    const store = createSubagentStore(fixtureApi());
+    await store.load();
+    const html = renderToString(<SubagentPanel store={store} />);
+    const section = acpSection(html);
+
+    expect(html.indexOf('<table')).toBeLessThan(html.indexOf('aria-labelledby="wuyou-acp-heading"'));
+    expect(section).toContain('DSH profile：<!-- -->desktop');
+    expect(section).toContain('title="/profiles/desktop/cordis.patch.yml"');
+    expect(section).toContain('/opt/example/bin/kiro-cli acp --trust-all-tools --model claude-opus-5 --effort xhigh --agent kiro_default');
+  });
+
+  it('v2.4: two rows per ACP — facts and actions, then the command across all 4 columns, indented', async () => {
+    const store = createSubagentStore(fixtureApi());
+    await store.load();
+    const section = acpSection(renderToString(<SubagentPanel store={store} />));
+
+    const thead = section.match(/<thead>([\s\S]*?)<\/thead>/)![1];
+    expect([...thead.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1])).toEqual(['ACP 名称', '权限', '使用它的工具', '操作']);
+
+    const bodies = [...section.matchAll(/<tbody[^>]*>([\s\S]*?)<\/tbody>/g)].map((m) => m[1]);
+    const acps = listAcps(FIXTURE);
+    expect(bodies).toHaveLength(acps.length);
+    acps.forEach((acp, i) => {
+      const rows = [...bodies[i].matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((m) => m[1]);
+      expect(rows, acp.id).toHaveLength(2);
+      // Row 1: name header, permission, users, actions (测试 / 编辑 / 删除).
+      expect(rows[0]).toMatch(new RegExp(`^<th scope="row"[^>]*>${acp.config.providerName}</th>`));
+      expect(rows[0]).toContain(`>${acp.config.permission}</td>`);
+      expect(rows[0]).toContain(acp.usedBy.length > 0 ? acp.usedBy.join(', ') : '>-<');
+      for (const label of ['测试', '编辑', '删除']) expect(buttonTags(rows[0], label), `${acp.id} ${label}`).toHaveLength(1);
+      expect(buttonTags(rows[0], '测试')[0]).not.toContain('disabled');
+      const [del] = buttonTags(rows[0], '删除');
+      if (acp.usedBy.length > 0) expect(del).toContain(`title="仍被 ${acp.usedBy.join('、')} 使用，不能删除"`);
+      else expect(del).not.toContain('disabled');
+      // Row 2: the whole command line, colSpan=4, indented, no command text in row 1.
+      expect(rows[1]).toMatch(/^<td colSpan="4" style="[^"]*padding:2px 8px 8px 24px/);
+      expect(rows[1]).toContain(`>${[acp.config.command, ...acp.config.args].join(' ')}</code>`);
+      expect(rows[0]).not.toContain(acp.config.command);
+    });
+    expect(listAcps(FIXTURE).map((a) => a.usedBy.length > 0)).toEqual([true, true, false, false]);
+  });
+
+  it('v2.4: the test dialog lists each check, the agent facts and stderr; handshake is a separate step', async () => {
+    const api = fixtureApi();
+    const staticResult = {
+      id: 'subagent-acp', providerName: 'ccacp', ok: true, handshake: false, durationMs: 3,
+      checks: [
+        { key: 'command', label: '可执行文件', status: 'pass', detail: '/opt/homebrew/bin/claude-agent-acp' },
+        { key: 'interpreter', label: '解释器（#!）', status: 'pass', detail: 'node → /opt/homebrew/bin/node' },
+        { key: 'cwd', label: '工作目录', status: 'skip', detail: '未配置：运行时使用发起委派的会话的工作目录' },
+      ],
+    };
+    (api as any).testAcp = vi.fn(async ({ handshake }: { handshake?: boolean }) => handshake
+      ? { ...staticResult, handshake: true, ok: false, checks: [...staticResult.checks, { key: 'handshake', label: 'ACP 握手', status: 'fail', detail: '进程在响应 initialize 前退出（exit code 1）。见下方 stderr' }], stderrTail: 'Error: not logged in' }
+      : staticResult);
+    const store = createSubagentStore(api);
+    await store.load();
+
+    await store.testAcp('subagent-acp');
+    expect((api as any).testAcp).toHaveBeenCalledWith({ id: 'subagent-acp', handshake: false });
+    let html = renderToString(<SubagentPanel store={store} />);
+    expect(html).toContain('测试 ACP：ccacp');
+    expect(html).toContain('静态检查通过');
+    expect(html).toMatch(/>通过<\/span><span[^>]*>可执行文件<\/span><span[^>]*>\/opt\/homebrew\/bin\/claude-agent-acp</);
+    expect(html).toContain('不创建会话、不调用模型');
+    expect(buttonTags(html, '握手测试')[0]).not.toContain('disabled');
+
+    await store.runAcpHandshake();
+    expect((api as any).testAcp).toHaveBeenLastCalledWith({ id: 'subagent-acp', handshake: true });
+    html = renderToString(<SubagentPanel store={store} />);
+    expect(html).toContain('有检查未通过');
+    expect(html).toContain('进程在响应 initialize 前退出（exit code 1）');
+    expect(html).toMatch(/<details open=""[^>]*>[\s\S]*Error: not logged in/);
+    expect(buttonTags(html, '重新握手测试')).toHaveLength(1);
+
+    store.closeAcpTest();
+    expect(renderToString(<SubagentPanel store={store} />)).not.toContain('测试 ACP：');
+  });
+
+  it('v2.4: a failed command check disables the handshake; an old Host explains the missing route', async () => {
+    const api = fixtureApi();
+    (api as any).testAcp = vi.fn(async () => ({
+      id: 'subagent-acp', providerName: 'ccacp', ok: false, handshake: false, durationMs: 1,
+      checks: [{ key: 'command', label: '可执行文件', status: 'fail', detail: '/opt/example/bin/claude-agent-acp 不存在' }],
+    }));
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.testAcp('subagent-acp');
+    const html = renderToString(<SubagentPanel store={store} />);
+    expect(html).toMatch(/>失败<\/span>[\s\S]*不存在/);
+    expect(buttonTags(html, '握手测试')[0]).toContain('disabled');
+
+    (api as any).testAcp = vi.fn(async () => { throw Object.assign(new Error('请求失败（HTTP 404）'), { status: 404 }); });
+    await store.testAcp('subagent-acp');
+    expect(renderToString(<SubagentPanel store={store} />)).toContain('当前 Host 不支持 ACP 测试，重启 DSH 后可用');
+  });
+
+  it('header has 导出 and 导入; both panels disable 导入 (not 导出) when writes are unavailable', async () => {
+    const ok = createSubagentStore(fixtureApi());
+    await ok.load();
+    const okHtml = renderToString(<SubagentPanel store={ok} />);
+    expect(buttonTags(okHtml, '导出')[0]).not.toContain('disabled');
+    expect(buttonTags(okHtml, '导入')[0]).not.toContain('disabled');
+    expect(okHtml).toMatch(/<input[^>]*type="file"[^>]*accept=".yaml,.yml/);
+
+    const blockedA = createSubagentStore(fixtureApi((p) => fixtureState(p, BLOCKED)));
+    await blockedA.load();
+    const blockedB = createMembersStore(fixtureApi((p) => fixtureState(p, BLOCKED)));
+    await blockedB.load();
+    for (const html of [renderToString(<SubagentPanel store={blockedA} />), renderToString(<MembersPanel store={blockedB} />)]) {
+      expect(buttonTags(html, '导出')[0]).not.toContain('disabled');
+      expect(buttonTags(html, '导入')[0]).toContain('disabled');
+    }
+    expect(buttonTags(acpSection(renderToString(<SubagentPanel store={blockedA} />)), '新建 ACP')[0]).toContain('disabled');
+  });
+
+  it('an old Host (no acps in state) shows the restart note instead of an empty table', async () => {
+    const store = createSubagentStore(fixtureApi((p) => ({ ...fixtureState(p), acps: undefined, dshProfile: undefined })));
+    await store.load();
+    const section = acpSection(renderToString(<SubagentPanel store={store} />));
+    expect(section).toContain('当前 Host 版本不支持 ACP 管理，重启 DSH 后可用');
+    expect(section).not.toContain('<table');
+    expect(buttonTags(section, '新建 ACP')).toHaveLength(0);
+  });
+
+  it('the ACP edit dialog is prefilled from the real kiro row; providerName is locked', async () => {
+    const store = createSubagentStore(fixtureApi());
+    await store.load();
+    store.openEditAcp('subagent-acp-kiro');
+    const html = renderToString(<SubagentPanel store={store} />);
+    expect(html).toContain('编辑 ACP');
+    const nameInput = html.match(/<input[^>]*value="kiroopsuacp"[^>]*>/)?.[0];
+    expect(nameInput).toContain('disabled=""');
+    expect(html).toContain('value="/opt/example/bin/kiro-cli"');
+    expect(html).toContain('acp\n--trust-all-tools\n--model\nclaude-opus-5');
+    expect(html).toContain('value="allow" selected=""');
+  });
+
+  it('the import preview names the source file/profile, the target profile, and each entry', async () => {
+    const store = createSubagentStore(fixtureApi((p) => ({ ...fixtureState(p), acps: listAcps(FIXTURE).slice(1) })));
+    await store.load();
+    const { exportSubagentBundle } = await import('./shared/import-export');
+    await store.importConfig(textFile('from-web.yaml', exportSubagentBundle(listAcps(FIXTURE), [], 'web')));
+    const html = renderToString(<SubagentPanel store={store} />);
+    expect(html).toContain('导入预览');
+    expect(html).toContain('文件：from-web.yaml（来自 DSH profile web），导入到：desktop');
+    expect(html).toContain('将导入 <!-- -->1<!-- --> 项，跳过 <!-- -->3<!-- --> 项');
+    expect(html).toContain('原因：<!-- -->ACP &#x27;cursoracp&#x27; 已存在');
+    expect(html).toContain('导入后请确认路径在本机存在');
+    expect(buttonTags(html, '确认导入')[0]).not.toContain('disabled');
+  });
+});
+
+describe('v2.2 Panel B role textarea and member import (real fixture)', () => {
+  it('the role field is a 3-line textarea resizable up to 6 lines', async () => {
+    const store = createMembersStore(fixtureApi());
+    await store.load();
+    store.openEdit('claude');
+    const html = renderToString(<MembersPanel store={store} />);
+    const textarea = html.match(/<textarea([^>]*)>/)?.[1];
+    expect(textarea).toBeDefined();
+    expect(textarea).toContain('rows="3"');
+    expect(textarea).toMatch(/height:74px;min-height:74px;max-height:134px;resize:vertical/);
+    const role = String(listMembers(FIXTURE, 'standard-acp').find((m) => m.name === 'claude')!.role);
+    expect(html).toContain(`>${role}</textarea>`);
+  });
+
+  it('multi-line roles keep their line breaks in the table', async () => {
+    const store = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [{ name: 'multi', role: '第一行\n第二行' }] })));
+    await store.load();
+    const body = memberGroup(renderToString(<MembersPanel store={store} />), 'multi')!;
+    expect(body).toMatch(/<td style="[^"]*white-space:pre-line[^"]*">第一行\n第二行<\/td>/);
+  });
+
+  it('imports members through a preview, chaining the revision of each add', async () => {
+    const api = fixtureApi();
+    let n = 0;
+    vi.mocked(api.mutateMembers).mockImplementation(async (body) => ({ ...fixtureState(body.profile), revision: `rev-${++n}`, notice: '' }));
+    const store = createMembersStore(api);
+    await store.load();
+    const { exportMembers } = await import('./shared/import-export');
+    await store.importConfig(textFile('team.yaml', exportMembers([{ name: 'claude' }, { name: 'alpha', role: '甲\n乙' }, { name: 'beta' }], 'standard-acp')));
+
+    const html = renderToString(<MembersPanel store={store} />);
+    expect(html).toContain('文件：team.yaml，导入到团队 profile：standard-acp');
+    expect(html).toContain('原因：<!-- -->成员 &#x27;claude&#x27; 已存在');
+
+    await store.confirmImport();
+    const calls = vi.mocked(api.mutateMembers).mock.calls.map(([body]) => [body.member?.name, body.expectedRevision]);
+    expect(calls).toEqual([['alpha', 'fixture-rev'], ['beta', 'rev-1']]);
+    expect(vi.mocked(api.mutateMembers).mock.calls[0][0].member).toEqual({ name: 'alpha', role: '甲\n乙' });
+    expect(store.getSnapshot()).toMatchObject({ importPreview: null, revision: 'rev-2', notice: '已导入 2/2 个成员，新建会话后生效' });
+  });
+
+  it('a conflict mid-import stops and says how many were imported', async () => {
+    const api = fixtureApi();
+    vi.mocked(api.mutateMembers)
+      .mockResolvedValueOnce({ ...fixtureState(), revision: 'rev-1', notice: '' })
+      .mockRejectedValueOnce(Object.assign(new Error('配置已被其他地方修改，请刷新后重试'), { code: 'STALE_REVISION' }));
+    const store = createMembersStore(api);
+    await store.load();
+    const { exportMembers } = await import('./shared/import-export');
+    await store.importConfig(textFile('t.yaml', exportMembers([{ name: 'a1' }, { name: 'a2' }, { name: 'a3' }], 'standard-acp')));
+    await store.confirmImport();
+    expect(vi.mocked(api.mutateMembers)).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot().conflict).toBe('配置已被其他地方修改，请刷新后重试。已导入 1/3 个成员，其余未导入');
+    expect(store.getSnapshot().importPreview).toBeNull();
+  });
+});
+
 describe('settings.section registration', () => {
   function fakeCtx() {
     const registered: Array<{ options: Record<string, unknown>; component: (props: { close?: () => void }) => React.ReactElement }> = [];
@@ -393,9 +622,9 @@ describe('settings.section registration', () => {
     return { ctx, registered, disposers };
   }
 
-  it('registers both sections with the D2 id/order/label verbatim', () => {
-    expect(SECTIONS.subagents).toEqual({ name: 'settings.section', id: 'wuyou-subagents', order: 100, label: '无忧Agent · Subagent' });
-    expect(SECTIONS.members).toEqual({ name: 'settings.section', id: 'wuyou-members', order: 101, label: '无忧Agent · 团队成员' });
+  it('registers both sections with the D2 id/order and the v2.2 short labels', () => {
+    expect(SECTIONS.subagents).toEqual({ name: 'settings.section', id: 'wuyou-subagents', order: 100, label: '无忧Subagent' });
+    expect(SECTIONS.members).toEqual({ name: 'settings.section', id: 'wuyou-members', order: 101, label: '无忧Teams' });
 
     const { ctx, registered, disposers } = fakeCtx();
     apply(ctx);
