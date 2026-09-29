@@ -14,7 +14,6 @@ import type {
   SubagentBundle,
   SubagentBundleInput,
   SubagentRow,
-  TeamMember,
 } from './api-types';
 
 export const MAX_IMPORT_BYTES = 1024 * 1024;
@@ -226,47 +225,118 @@ export function importableBundle(preview: SubagentImportPreview): SubagentBundle
 }
 
 // ----------------------------------------------------------------------------
-// Panel B: team members
+// Panel B: all agent-teams team profiles (v2.6)
 // ----------------------------------------------------------------------------
 
-const MEMBER_FIELDS = ['name', 'role', 'provider', 'model', 'reasoning_effort'] as const;
+/** Keys agent-teams accepts in a team profile; anything else is dropped on export/import. */
+const TEAM_PROFILE_KEYS = ['description', 'protocol', 'executionPrompt', 'fallback', 'members', 'tasks', 'taskPlanning', 'reviewPolicy'];
+const TEAM_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
-function memberFields(member: Record<string, unknown>): TeamMember {
-  const out: Record<string, unknown> = {};
-  for (const key of MEMBER_FIELDS) {
-    if (member[key] !== undefined && member[key] !== null && member[key] !== '') out[key] = member[key];
-  }
-  return out as TeamMember;
+export type TeamProfile = Record<string, unknown>;
+
+export interface TeamFileEntry {
+  name: string;
+  profile: TeamProfile;
+  /** `members`: from a v2.2–v2.5 file that carried one team's members only. */
+  scope: 'full' | 'members';
 }
 
-export function exportMembers(members: readonly TeamMember[], teamProfile: string, date = new Date()): string {
-  const text = header('无忧Teams 配置导出', [`团队 profile: ${teamProfile}`, `导出时间: ${date.toISOString()}`]);
+export interface TeamPreview extends TeamFileEntry {
+  status: 'new' | 'conflict' | 'invalid';
+  fileMembers: number;
+  /** Members of the existing team with this name (conflict only). */
+  currentMembers?: number;
+  /** Why an invalid entry is skipped. */
+  reason?: string;
+  warnings: string[];
+}
+
+function knownProfileKeys(profile: unknown): TeamProfile {
+  const source = isObject(profile) ? profile : {};
+  return Object.fromEntries(TEAM_PROFILE_KEYS.filter((k) => source[k] !== undefined).map((k) => [k, source[k]]));
+}
+
+export function teamsExportFilename(dshProfile: string | undefined, date = new Date()): string {
+  return `wuyou-teams-${fileSafe(dshProfile ?? 'profile')}-${exportTimestamp(date)}.yaml`;
+}
+
+/** Every team profile with its full config (description, protocol, members, ...). */
+export function exportTeams(profiles: Record<string, TeamProfile>, dshProfile: string | undefined, date = new Date()): string {
+  const names = Object.keys(profiles);
+  const text = header('无忧Teams 配置导出', [
+    `来源 DSH profile: ${dshProfile ?? '未知'}`,
+    `团队 profile: ${names.join(', ')}`,
+    `导出时间: ${date.toISOString()}`,
+  ]);
   return text + stringify(
-    { kind: 'wuyou-members', version: EXPORT_FORMAT_VERSION, profile: teamProfile, members: members.map((m) => memberFields(m)) },
+    {
+      kind: 'wuyou-teams',
+      version: 4,
+      dshProfile: dshProfile ?? null,
+      profiles: Object.fromEntries(names.map((name) => [name, knownProfileKeys(profiles[name])])),
+    },
     { lineWidth: 0 },
   );
 }
 
-export function parseMembersFile(yamlText: string): TeamMember[] {
+/** v2.6 files (`profiles` map) and v2.2–v2.5 files (`members` of one team). */
+export function parseTeamsFile(yamlText: string): { sourceProfile?: string; teams: TeamFileEntry[] } {
   const data = parseRoot(yamlText);
-  if (!Array.isArray(data.members)) throw new Error('文件中没有 members 列表，不是无忧Teams 导出文件');
-  return data.members.map((raw) => memberFields(isObject(raw) ? raw : {}));
+  const sourceProfile = typeof data.dshProfile === 'string' ? data.dshProfile : undefined;
+  if (data.profiles !== undefined) {
+    if (!isObject(data.profiles)) throw new Error('profiles 必须是映射（团队名 → 配置）');
+    const teams = Object.entries(data.profiles).map(([name, profile]): TeamFileEntry => ({ name, profile: knownProfileKeys(profile), scope: 'full' }));
+    return { ...(sourceProfile ? { sourceProfile } : {}), teams };
+  }
+  if (Array.isArray(data.members)) {
+    const name = typeof data.profile === 'string' && data.profile !== '' ? data.profile : 'imported';
+    return { teams: [{ name, profile: { members: data.members }, scope: 'members' }] };
+  }
+  throw new Error('文件中没有 profiles 或 members，不是无忧Teams 导出文件');
 }
 
-export function previewMembersImport(
-  members: readonly TeamMember[],
-  existing: readonly TeamMember[],
+/** Client-side classification for the preview; the Host re-validates inside its lock. */
+export function previewTeamsImport(
+  file: { teams: TeamFileEntry[] },
+  existing: Record<string, TeamProfile>,
   catalogProviders: readonly string[],
-): PreviewItem<TeamMember>[] {
-  const names = new Set(existing.map((m) => m.name));
-  const seen = new Set<string>();
+): TeamPreview[] {
   const providers = new Set(catalogProviders);
-  return members.map((item) => {
-    if (typeof item.name !== 'string' || item.name === '') return { item, skip: '缺少 name' };
-    if (names.has(item.name)) return { item, skip: `成员 '${item.name}' 已存在` };
-    if (seen.has(item.name)) return { item, skip: '文件中重复' };
-    if (item.provider && !providers.has(String(item.provider))) return { item, skip: `provider '${item.provider}' 不在模型目录中` };
-    seen.add(item.name);
-    return { item };
+  const seen = new Set<string>();
+  return file.teams.map((team) => {
+    const members = Array.isArray(team.profile.members) ? team.profile.members : [];
+    const base = { ...team, fileMembers: members.length, warnings: [] as string[] };
+    const invalid = (reason: string): TeamPreview => ({ ...base, status: 'invalid', reason });
+    if (!TEAM_NAME.test(team.name)) return invalid(`团队名 '${team.name}' 格式不合法`);
+    if (seen.has(team.name)) return invalid('文件中重复');
+    seen.add(team.name);
+    if (members.length === 0) return invalid('团队至少需要一个成员');
+    if (!members.every((m) => isObject(m) && typeof m.name === 'string' && m.name !== '')) return invalid('有成员缺少 name');
+    for (const member of members as Array<Record<string, unknown>>) {
+      if (typeof member.provider === 'string' && providers.size > 0 && !providers.has(member.provider)) {
+        base.warnings.push(`成员 ${member.name} 的 provider '${member.provider}' 不在本机模型目录中`);
+      }
+    }
+    if (team.scope === 'members') base.warnings.push('旧版文件只含成员：覆盖时只替换成员，保留描述与协议');
+    const current = existing[team.name];
+    if (current === undefined) return { ...base, status: 'new' };
+    const currentMembers = Array.isArray(current.members) ? current.members.length : 0;
+    return { ...base, status: 'conflict', currentMembers };
   });
+}
+
+export interface TeamsImportRequestBody {
+  expectedRevision: string;
+  teams: TeamFileEntry[];
+  overwrite: string[];
+}
+
+/** New teams and conflicts are sent; the Host only replaces names in `overwrite`. */
+export function teamsImportRequest(preview: readonly TeamPreview[], overwrite: ReadonlySet<string>, revision: string): TeamsImportRequestBody {
+  const sent = preview.filter((p) => p.status !== 'invalid');
+  return {
+    expectedRevision: revision,
+    teams: sent.map(({ name, profile, scope }) => ({ name, profile, scope })),
+    overwrite: sent.filter((p) => p.status === 'conflict' && overwrite.has(p.name)).map((p) => p.name),
+  };
 }

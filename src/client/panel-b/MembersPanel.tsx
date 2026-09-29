@@ -11,10 +11,14 @@ import { Textarea } from '../ui/Textarea';
 import { Select } from '../ui/Select';
 import { FormField } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
-import { ImportPreviewModal } from '../ui/ImportPreviewModal';
+import { TeamCreateDialog, TeamDeleteDialog, TeamsImportDialog } from './TeamsDialogs';
+import { LAST_TEAM_MESSAGE } from './members-panel-store';
 import {
   DiagnosticsBanner,
+  LoadingAnnouncer,
   PanelHeader,
+  panelRootStyle,
+  busyTableStyle,
   StatusAlerts,
   formActionsStyle,
   tableStyles,
@@ -28,6 +32,17 @@ export interface MembersPanelProps {
   close?: () => void;
 }
 
+const TEAM_PROFILE_SELECT_ID = 'wuyou-team-profile';
+
+/** v2.5: 新建成员 on the left, the team profile picker on the right. */
+const toolbarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '12px',
+  flexWrap: 'wrap',
+};
+
 /** Second-row fields, in contract §7 order. */
 const MEMBER_DETAILS = [
   ['Provider', 'provider'],
@@ -39,7 +54,14 @@ const MEMBER_DETAILS = [
  * Panel-local table styles (contract §7). The shared tableStyles.td sets
  * `overflowWrap: 'anywhere'`, which shredded member names; these cells
  * override it without touching PanelChrome.
+ *
+ * v2.9: fixed columns (`table-layout: fixed` + <colgroup>). With auto layout
+ * a longer member name widened the name column, the role column shrank, roles
+ * wrapped onto more lines and the table grew — enough, for some teams, to cross
+ * the fold and pop a scrollbar. Now the widths never depend on the content; a
+ * name that does not fit is cut with an ellipsis and shown in full as a tooltip.
  */
+const MEMBER_COLUMNS = { name: '30%', actions: '136px' } as const;
 const cellBase: React.CSSProperties = {
   padding: '8px 8px 2px',
   fontSize: '13px',
@@ -49,20 +71,22 @@ const cellBase: React.CSSProperties = {
 };
 
 const memberTable = {
-  nameHead: { ...tableStyles.th, minWidth: '9.5em' } as React.CSSProperties,
+  // Floor for very narrow settings panels (mobile): below it the panel scrolls
+  // sideways instead of crushing name and role to zero width.
+  table: { ...tableStyles.table, minWidth: '420px', tableLayout: 'fixed' } as React.CSSProperties,
   /** Separator between members; the two rows of one member share no line. */
   group: { borderBottom: '1px solid var(--dsw-alias-border-l1)' } as React.CSSProperties,
   name: {
     ...cellBase,
     fontWeight: 500,
     whiteSpace: 'nowrap',
-    minWidth: '9.5em',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
     overflowWrap: 'normal',
     color: 'var(--dsw-alias-label-primary)',
   } as React.CSSProperties,
   role: {
     ...cellBase,
-    minWidth: '12em',
     // v2.2: roles may be multi-line; keep the author's line breaks.
     whiteSpace: 'pre-line',
     overflowWrap: 'break-word',
@@ -88,7 +112,9 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
   const busy = state.loading;
   const writeTitle = writeDisabledTitle(blocked);
   const { values, errors, mode } = state.form;
-  const modalOpen = mode !== null || state.confirmDelete.name !== null || state.importPreview !== null;
+  const modalOpen = mode !== null || state.confirmDelete.name !== null || state.teamImport !== null || state.teamCreate.open ||
+    state.teamDelete.name !== null;
+  const lastTeam = state.teamProfiles.length <= 1;
   const hasProfiles = state.teamProfiles.length > 0;
 
   // provider → model → reasoning_effort cascade from the Host catalog.
@@ -98,35 +124,38 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
   const selectedModel = selectedProvider?.models.find((m) => m.id === values.model);
   const effortOptions = selectedModel?.reasoningEfforts.map((e) => ({ value: e, label: e })) ?? [];
 
-  const profilePicker = state.teamProfiles.length > 1 ? (
-    <Select
-      aria-label="团队 profile"
-      value={state.profile}
-      onChange={(v) => void store.setProfile(v)}
-      options={state.teamProfiles.map((p) => ({ value: p, label: p }))}
-      disabled={busy}
-      style={{ width: 'auto', minWidth: '140px' }}
-    />
-  ) : hasProfiles ? (
-    <span style={{ fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }}>
-      团队 profile：{state.profile}
-    </span>
+  // v2.5: always a drop-down (even with one team profile), next to 新建成员.
+  // Choosing only switches which team profile this panel shows and edits;
+  // agent-teams has no "active profile" setting — a team picks one at create.
+  const profilePicker = hasProfiles ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <label htmlFor={TEAM_PROFILE_SELECT_ID} style={{ fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' }}>
+        团队 profile
+      </label>
+      <Select
+        id={TEAM_PROFILE_SELECT_ID}
+        aria-label="团队 profile"
+        value={state.profile}
+        onChange={(v) => void store.setProfile(v)}
+        options={state.teamProfiles.map((p) => ({ value: p, label: p }))}
+        disabled={state.writing}
+        style={{ width: 'auto', minWidth: '140px' }}
+      />
+    </div>
   ) : null;
 
   return (
-    <div style={{ padding: '16px', color: 'var(--dsw-alias-label-primary)' }}>
+    <div data-panel="members" style={panelRootStyle}>
       <PanelHeader
         title="团队成员管理"
         loading={busy}
         onRefresh={() => void store.load()}
-        onExport={hasProfiles ? () => store.exportConfig() : undefined}
+        onExport={hasProfiles ? () => void store.exportConfig() : undefined}
         onImport={hasProfiles ? (file) => void store.importConfig(file) : undefined}
         importDisabled={blocked}
         importTitle={writeTitle}
         close={close}
-      >
-        {profilePicker}
-      </PanelHeader>
+      />
       <DiagnosticsBanner diagnostics={state.diagnostics} />
       {!modalOpen && (
         <StatusAlerts
@@ -137,21 +166,40 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
         />
       )}
 
-      <Button onClick={() => store.openCreate()} disabled={busy || blocked || !hasProfiles} title={writeTitle}>
-        新建成员
-      </Button>
-
-      {busy && (
-        <div role="status" style={{ marginTop: '12px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }}>
-          加载中...
+      <div data-toolbar="members" style={toolbarStyle}>
+        <Button onClick={() => store.openCreate()} disabled={busy || blocked || !hasProfiles} title={writeTitle}>
+          新建成员
+        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {profilePicker}
+          {hasProfiles && (
+            <Button onClick={() => store.openCreateTeam()} disabled={busy || blocked} title={writeTitle ?? '新建空白团队，或克隆已有团队'}>
+              新建团队
+            </Button>
+          )}
+          {hasProfiles && (
+            <Button
+              onClick={() => store.openDeleteTeam()}
+              disabled={busy || blocked || lastTeam}
+              title={lastTeam ? LAST_TEAM_MESSAGE : writeTitle ?? `删除团队「${state.profile}」`}
+              variant="danger"
+            >
+              删除团队
+            </Button>
+          )}
         </div>
-      )}
+        {/* Test marker only; display:none keeps it out of the flex layout. */}
+        <span data-toolbar-end="true" style={{ display: 'none' }} />
+      </div>
+
+      <LoadingAnnouncer loading={busy} />
 
       {/* v2.1 §7: fixed two-row layout, one <tbody> per member. */}
-      <table style={tableStyles.table}>
+      <table style={{ ...busyTableStyle(busy && state.members.length > 0), ...memberTable.table }} aria-busy={busy && state.members.length > 0 ? true : undefined}>
+        <colgroup><col style={{ width: MEMBER_COLUMNS.name }} /><col /><col style={{ width: MEMBER_COLUMNS.actions }} /></colgroup>
         <thead>
           <tr>
-            <th scope="col" style={memberTable.nameHead}>成员名</th>
+            <th scope="col" style={tableStyles.th}>成员名</th>
             <th scope="col" style={tableStyles.th}>角色</th>
             <th scope="col" style={tableStyles.th}>操作</th>
           </tr>
@@ -159,7 +207,7 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
         {state.members.map((member) => (
           <tbody key={member.name} style={memberTable.group}>
             <tr>
-              <th scope="row" style={memberTable.name}>{member.name}</th>
+              <th scope="row" style={memberTable.name} title={member.name}>{member.name}</th>
               <td style={memberTable.role}>{member.role || '-'}</td>
               <td rowSpan={2} style={memberTable.actions}>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -191,11 +239,11 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
             </tr>
           </tbody>
         ))}
-        {state.members.length === 0 && !busy && (
+        {state.members.length === 0 && (
           <tbody>
             <tr>
               <td style={{ ...tableStyles.td, color: 'var(--dsw-alias-label-secondary)' }} colSpan={3}>
-                暂无成员
+                {busy ? '加载中...' : '暂无成员'}
               </td>
             </tr>
           </tbody>
@@ -285,29 +333,9 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
         </div>
       </Modal>
 
-      {state.importPreview && (
-        <ImportPreviewModal
-          isOpen
-          summary={`文件：${state.importPreview.fileName}，导入到团队 profile：${state.profile}`}
-          sections={[{
-            title: '成员',
-            entries: state.importPreview.members.map(({ item, skip }) => ({
-              label: item.name || '(无成员名)',
-              details: [
-                item.role && `角色：${String(item.role).split('\n')[0]}`,
-                item.provider && `${item.provider}/${item.model ?? '-'}`,
-                item.reasoning_effort && `Reasoning Effort: ${item.reasoning_effort}`,
-              ].filter(Boolean).join('，'),
-              skip,
-            })),
-          }]}
-          busy={busy}
-          blocked={blocked}
-          error={state.error}
-          onClose={() => store.cancelImport()}
-          onConfirm={() => void store.confirmImport()}
-        />
-      )}
+      <TeamCreateDialog state={state} store={store} busy={busy} blocked={blocked} writeTitle={writeTitle} />
+      <TeamsImportDialog state={state} store={store} busy={busy} blocked={blocked} writeTitle={writeTitle} />
+      <TeamDeleteDialog state={state} store={store} busy={busy} blocked={blocked} writeTitle={writeTitle} />
     </div>
   );
 }

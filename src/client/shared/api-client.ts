@@ -12,6 +12,11 @@ import type {
   SubagentImportRequest,
   SubagentImportResponse,
   AcpTestResponse,
+  TeamsResponse,
+  TeamCreateRequest,
+  TeamRemoveRequest,
+  TeamsImportRequest,
+  TeamsImportResponse,
   MutationSuccessResponse,
   ErrorResponse,
 } from './api-types';
@@ -31,6 +36,14 @@ export interface ApiClient {
   importSubagentBundle(body: SubagentImportRequest, profile?: string): Promise<SubagentImportResponse>;
   /** v2.4: test a saved ACP row (static checks; `handshake` also starts it). Read-only. */
   testAcp(body: { id: string; handshake?: boolean }): Promise<AcpTestResponse>;
+  /** v2.6: every team profile with its full config. */
+  getTeams(): Promise<TeamsResponse>;
+  /** v2.6: create a blank team or clone one; the returned state is for the new team. */
+  createTeam(body: TeamCreateRequest): Promise<MutationSuccessResponse>;
+  /** v2.6: import several team profiles in one revision. */
+  importTeams(body: TeamsImportRequest, profile?: string): Promise<TeamsImportResponse>;
+  /** v2.7: delete a team profile; `profile` is the team being viewed (kept unless removed). */
+  removeTeam(body: TeamRemoveRequest, profile?: string): Promise<MutationSuccessResponse>;
 }
 
 /**
@@ -126,6 +139,22 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+
+    async getTeams(): Promise<TeamsResponse> {
+      return request<TeamsResponse>('/teams');
+    },
+
+    async createTeam(body: TeamCreateRequest): Promise<MutationSuccessResponse> {
+      return request<MutationSuccessResponse>('/teams', { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async removeTeam(body: TeamRemoveRequest, profile?: string): Promise<MutationSuccessResponse> {
+      return request<MutationSuccessResponse>(`/teams${profileQuery(profile)}`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async importTeams(body: TeamsImportRequest, profile?: string): Promise<TeamsImportResponse> {
+      return request<TeamsImportResponse>(`/teams/import${profileQuery(profile)}`, { method: 'POST', body: JSON.stringify(body) });
     },
 
     async testAcp(body: { id: string; handshake?: boolean }): Promise<AcpTestResponse> {

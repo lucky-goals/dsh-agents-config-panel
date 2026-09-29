@@ -228,6 +228,45 @@ export interface SubagentImportResponse extends MutationSuccessResponse {
 }
 
 // ============================================================================
+// Team profiles (v2.6): GET/POST /api/teams, POST /api/teams/import
+// ============================================================================
+
+export interface TeamsResponse {
+  revision: string;
+  /** Every agent-teams team profile, full config, in file order. */
+  profiles: Record<string, Record<string, unknown>>;
+  dshProfile?: { name: string; patchPath: string };
+}
+
+export interface TeamCreateRequest {
+  expectedRevision: string;
+  action: 'create';
+  name: string;
+  /** Clone this team; absent = a new team with `firstMember`. */
+  from?: string;
+  firstMember?: string;
+  description?: string;
+}
+
+/** v2.7: `confirm` must be the word the user typed, `thinktwice`. */
+export interface TeamRemoveRequest {
+  expectedRevision: string;
+  action: 'remove';
+  name: string;
+  confirm: string;
+}
+
+export interface TeamsImportRequest {
+  expectedRevision: string;
+  teams: Array<{ name: string; profile: Record<string, unknown>; scope?: 'full' | 'members' }>;
+  overwrite: string[];
+}
+
+export interface TeamsImportResponse extends MutationSuccessResponse {
+  importReport: { created: string[]; overwritten: string[]; skipped: Array<{ name: string; reason: string }> };
+}
+
+// ============================================================================
 // ACP test (POST /api/acps/test, v2.4)
 // ============================================================================
 

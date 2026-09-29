@@ -17,12 +17,14 @@ import { resolveSubagentProviders } from '../host/subagent-providers';
 import { listMembers, listTeamProfiles } from '../host/members-editor';
 import { readCatalog } from '../host/catalog';
 import { listAcps } from '../host/acp-manager';
+import { listTeamProfileConfigs } from '../host/teams-editor';
 import { SubagentPanel } from './panel-a/SubagentPanel';
 import { MembersPanel } from './panel-b/MembersPanel';
 import { createSubagentStore } from './panel-a/subagent-panel-store';
 import { createMembersStore } from './panel-b/members-panel-store';
 import { SECTIONS, apply } from './index';
 import { PanelHeader } from './ui/PanelChrome';
+import { Button } from './ui/Button';
 import { nextFocusTarget } from './ui/focus-trap';
 import type { ApiClient } from './shared/api-client';
 import type { StateDiagnostics, StateResponse, TeamMember } from './shared/api-types';
@@ -245,7 +247,7 @@ describe('MembersPanel render (real fixture)', () => {
 
     expect(memberNames(html)).toEqual(['claude', 'coder', 'tester', 'front-designer', 'generalist']);
     expect(api.getState).toHaveBeenCalledWith('standard-acp');
-    expect(html).toMatch(/团队 profile：(<!-- -->)?standard-acp/);
+    expect(selectedOption(html, /aria-label="团队 profile"/)).toBe('standard-acp');
     for (const member of listMembers(FIXTURE, 'standard-acp')) {
       if (member.model) expect(memberGroup(html, member.name), member.name).toContain(String(member.model));
     }
@@ -267,10 +269,11 @@ describe('MembersPanel render (real fixture)', () => {
       expect(body, member.name).toBeDefined();
       const rows = [...body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((m) => m[1]);
       expect(rows, member.name).toHaveLength(2);
-      // Row 1: name header (nowrap, min 9.5em), role (min 12em), actions rowSpan=2.
-      expect(rows[0]).toMatch(/<th scope="row" style="[^"]*white-space:nowrap[^"]*min-width:9.5em/);
+      // Row 1 (v2.9 fixed columns): name header on one line, truncated with its full
+      // text as a tooltip; role wraps inside its column; actions rowSpan=2.
+      expect(rows[0]).toMatch(new RegExp(`<th scope="row" style="[^"]*white-space:nowrap[^"]*overflow:hidden[^"]*text-overflow:ellipsis[^"]*" title="${member.name}"`));
       expect(rows[0]).not.toContain('overflow-wrap:anywhere');
-      expect(rows[0]).toMatch(/<td style="[^"]*min-width:12em[^"]*"/);
+      expect(rows[0]).toMatch(/<td style="[^"]*white-space:pre-line;overflow-wrap:break-word[^"]*"/);
       // React SSR serialises rowSpan as lowercase `rowspan`.
       expect(rows[0]).toMatch(/<td rowspan="2"[^>]*>[\s\S]*编辑[\s\S]*删除/);
       // Row 2 (v2.3): colSpan=3, spanning the actions column too, with a labelled
@@ -287,7 +290,7 @@ describe('MembersPanel render (real fixture)', () => {
     const store = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [{ name: 'bare' }] })));
     await store.load();
     const body = memberGroup(renderToString(<MembersPanel store={store} />), 'bare')!;
-    expect(body).toMatch(/min-width:12em[^"]*">-<\/td>/);
+    expect(body).toMatch(/white-space:pre-line;overflow-wrap:break-word[^"]*">-<\/td>/);
     expect([...body.matchAll(/<dd[^>]*>([^<]*)<\/dd>/g)].map((m) => m[1])).toEqual(['-', '-', '-']);
 
     const empty = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [] })));
@@ -567,39 +570,352 @@ describe('v2.2 Panel B role textarea and member import (real fixture)', () => {
     expect(body).toMatch(/<td style="[^"]*white-space:pre-line[^"]*">第一行\n第二行<\/td>/);
   });
 
-  it('imports members through a preview, chaining the revision of each add', async () => {
-    const api = fixtureApi();
-    let n = 0;
-    vi.mocked(api.mutateMembers).mockImplementation(async (body) => ({ ...fixtureState(body.profile), revision: `rev-${++n}`, notice: '' }));
-    const store = createMembersStore(api);
+});
+
+describe('v2.5 Panel B team profile picker (real fixture)', () => {
+  /** The toolbar row that holds the 新建成员 button. */
+  function toolbar(html: string): string {
+    const m = html.match(/<div data-toolbar="members"[^>]*>[\s\S]*?<span data-toolbar-end="true" style="display:none"><\/span><\/div>/);
+    expect(m, 'members toolbar').not.toBeNull();
+    return m![0];
+  }
+
+  it('a single team profile is still a select (not plain text), on the right of 新建成员, below the header', async () => {
+    const store = createMembersStore(fixtureApi());
     await store.load();
-    const { exportMembers } = await import('./shared/import-export');
-    await store.importConfig(textFile('team.yaml', exportMembers([{ name: 'claude' }, { name: 'alpha', role: '甲\n乙' }, { name: 'beta' }], 'standard-acp')));
-
     const html = renderToString(<MembersPanel store={store} />);
-    expect(html).toContain('文件：team.yaml，导入到团队 profile：standard-acp');
-    expect(html).toContain('原因：<!-- -->成员 &#x27;claude&#x27; 已存在');
 
-    await store.confirmImport();
-    const calls = vi.mocked(api.mutateMembers).mock.calls.map(([body]) => [body.member?.name, body.expectedRevision]);
-    expect(calls).toEqual([['alpha', 'fixture-rev'], ['beta', 'rev-1']]);
-    expect(vi.mocked(api.mutateMembers).mock.calls[0][0].member).toEqual({ name: 'alpha', role: '甲\n乙' });
-    expect(store.getSnapshot()).toMatchObject({ importPreview: null, revision: 'rev-2', notice: '已导入 2/2 个成员，新建会话后生效' });
+    expect(html).not.toMatch(/团队 profile：(<!-- -->)?standard-acp/);
+    const bar = toolbar(html);
+    expect(bar).toMatch(/^<div data-toolbar="members" style="display:flex;align-items:center;justify-content:space-between/);
+    // 新建成员 first (left), then the labelled picker (right).
+    expect(bar.indexOf('新建成员')).toBeGreaterThan(-1);
+    expect(bar.indexOf('新建成员')).toBeLessThan(bar.indexOf('<select'));
+    // Exactly two visible flex children (新建成员 | picker + 新建团队), so space-between
+    // puts the picker group at the right edge.
+    const inner = bar.replace(/^<div data-toolbar="members"[^>]*>/, '').replace(/<span data-toolbar-end[\s\S]*$/, '');
+    expect(inner).toMatch(/^<button[^>]*>新建成员<\/button><div style="display:flex;align-items:center;gap:8px"><div[^>]*><label[\s\S]*<\/select><\/div><button[^>]*>新建团队<\/button><button[^>]*>删除团队<\/button><\/div>$/);
+    expect(bar).toMatch(/<label for="wuyou-team-profile"[^>]*>团队 profile<\/label><select id="wuyou-team-profile"/);
+    expect(selectedOption(bar, /aria-label="团队 profile"/)).toBe('standard-acp');
+    expect([...bar.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1])).toEqual(listTeamProfiles(FIXTURE));
+    // Below the header: the picker is no longer next to 刷新 / 关闭.
+    expect(html.indexOf('>刷新</button>')).toBeLessThan(html.indexOf('data-toolbar="members"'));
+    const header = html.slice(0, html.indexOf('data-toolbar="members"'));
+    expect(header).not.toContain('<select');
   });
 
-  it('a conflict mid-import stops and says how many were imported', async () => {
-    const api = fixtureApi();
-    vi.mocked(api.mutateMembers)
-      .mockResolvedValueOnce({ ...fixtureState(), revision: 'rev-1', notice: '' })
-      .mockRejectedValueOnce(Object.assign(new Error('配置已被其他地方修改，请刷新后重试'), { code: 'STALE_REVISION' }));
+  it('several team profiles: every one is an option, choosing one reloads its members', async () => {
+    const real = listMembers(FIXTURE, 'standard-acp') as TeamMember[];
+    const byProfile: Record<string, TeamMember[]> = { 'gpt-only': real.filter((m) => m.provider === 'gpt-gateway'), 'standard-acp': real };
+    const api = fixtureApi((profile) => ({ ...fixtureState(), teamProfiles: Object.keys(byProfile), profile, members: byProfile[profile] ?? [] }));
     const store = createMembersStore(api);
     await store.load();
-    const { exportMembers } = await import('./shared/import-export');
-    await store.importConfig(textFile('t.yaml', exportMembers([{ name: 'a1' }, { name: 'a2' }, { name: 'a3' }], 'standard-acp')));
-    await store.confirmImport();
-    expect(vi.mocked(api.mutateMembers)).toHaveBeenCalledTimes(2);
-    expect(store.getSnapshot().conflict).toBe('配置已被其他地方修改，请刷新后重试。已导入 1/3 个成员，其余未导入');
-    expect(store.getSnapshot().importPreview).toBeNull();
+    const bar = toolbar(renderToString(<MembersPanel store={store} />));
+    expect([...bar.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1])).toEqual(['gpt-only', 'standard-acp']);
+
+    await store.setProfile('gpt-only');
+    const html = renderToString(<MembersPanel store={store} />);
+    expect(selectedOption(toolbar(html), /aria-label="团队 profile"/)).toBe('gpt-only');
+    expect(memberNames(html)).toEqual(['tester', 'generalist']);
+  });
+
+  it('the picker stays usable when writes are blocked, but not while loading; hidden without team profiles', async () => {
+    const blocked = createMembersStore(fixtureApi((p) => fixtureState(p, BLOCKED)));
+    await blocked.load();
+    const blockedBar = toolbar(renderToString(<MembersPanel store={blocked} />));
+    expect(blockedBar.match(/<select[^>]*>/)![0]).not.toContain('disabled');
+    expect(buttonTags(blockedBar, '新建成员')[0]).toContain('disabled');
+
+    const none = createMembersStore(fixtureApi(() => ({ ...fixtureState(), teamProfiles: [], members: [] })));
+    await none.load();
+    const noneBar = toolbar(renderToString(<MembersPanel store={none} />));
+    expect(noneBar).not.toContain('<select');
+    expect(buttonTags(noneBar, '新建成员')[0]).toContain('disabled');
+  });
+});
+
+describe('v2.6 Panel B teams: new / clone dialog and multi-team import (real fixture)', () => {
+  const standard = () => listTeamProfileConfigs(FIXTURE)['standard-acp'];
+  function teamsApi() {
+    const api = fixtureApi() as any;
+    api.getTeams = vi.fn(async () => ({ revision: 'fixture-rev', profiles: { 'standard-acp': standard() }, dshProfile: { name: 'web', patchPath: '/p' } }));
+    api.createTeam = vi.fn();
+    api.importTeams = vi.fn();
+    return api;
+  }
+
+  it('新建团队 opens one drop-down with a blank option and every team as a clone source', async () => {
+    const store = createMembersStore(teamsApi());
+    await store.load();
+    expect(buttonTags(renderToString(<MembersPanel store={store} />), '新建团队')[0]).not.toContain('disabled');
+    store.openCreateTeam();
+    let html = renderToString(<MembersPanel store={store} />);
+    expect(html).toMatch(/role="dialog"[^>]*>[\s\S]*?<div id="[^"]+" style="[^"]*">新建团队<\/div>/);
+    const select = [...html.matchAll(/<select([^>]*)>([\s\S]*?)<\/select>/g)].find((m) => !m[1].includes('团队 profile'))!;
+    expect([...select[2].matchAll(/<option value="([^"]*)"[^>]*>([^<]*)</g)].map((m) => [m[1], m[2]])).toEqual([['', '新建空白团队'], ['standard-acp', '克隆：standard-acp']]);
+    expect(select[2]).toMatch(/value="standard-acp" selected=""/);
+    expect(html).toContain('将原样复制团队「<!-- -->standard-acp<!-- -->」');
+    expect(html).not.toContain('第一个成员名');
+    expect(buttonTags(html, '克隆')).toHaveLength(1);
+
+    store.setTeamField('from', '');
+    html = renderToString(<MembersPanel store={store} />);
+    expect(html).toContain('第一个成员名');
+    expect(html).toContain('agent-teams 要求团队至少有一个成员');
+    expect(buttonTags(html, '创建')).toHaveLength(1);
+  });
+
+  it('the import dialog lists every team; an existing one warns, offers a backup, and needs 覆盖 ticked', async () => {
+    const api = teamsApi();
+    const store = createMembersStore(api);
+    await store.load();
+    const { exportTeams } = await import('./shared/import-export');
+    await store.importConfig(textFile('teams.yaml', exportTeams({ 'standard-acp': { members: [{ name: 'solo' }] }, review: { description: '审查', members: [{ name: 'r' }] } }, 'desktop')));
+    let html = renderToString(<MembersPanel store={store} />);
+    expect(html).toContain('导入团队');
+    const text = html.replace(/<!-- -->/g, '');
+    expect(text).toContain('文件：teams.yaml（来自 DSH profile desktop），共 2 个团队');
+    expect(text).toContain('1 个团队已存在：勾选「覆盖」才会替换，不勾选则跳过。');
+    expect(html).toContain('整体替换该团队现有的描述、协议和全部成员');
+    expect(buttonTags(html, '先导出当前全部团队（备份）')).toHaveLength(1);
+    expect(text).toContain('现有 5 个成员 → 文件 1 个');
+    expect(html).toMatch(/<input id="wuyou-overwrite-standard-acp" type="checkbox"(?![^>]*checked)[^>]*>/);
+    let [confirm] = buttonTags(html, '确认导入');
+    expect(text).toContain('确认导入（新增 1）');
+    expect(confirm).not.toContain('disabled');
+
+    store.toggleTeamOverwrite('standard-acp');
+    html = renderToString(<MembersPanel store={store} />);
+    expect(html).toMatch(/<input id="wuyou-overwrite-standard-acp" type="checkbox" checked=""/);
+    expect(html.replace(/<!-- -->/g, '')).toContain('确认导入（新增 1，覆盖 1）');
+    [confirm] = buttonTags(html, '确认导入');
+    expect(confirm).toContain('state-error-primary');
+  });
+
+  it('nothing to import (all existing, none ticked) disables confirm', async () => {
+    const store = createMembersStore(teamsApi());
+    await store.load();
+    const { exportTeams } = await import('./shared/import-export');
+    await store.importConfig(textFile('same.yaml', exportTeams({ 'standard-acp': standard() }, 'web')));
+    expect(buttonTags(renderToString(<MembersPanel store={store} />), '确认导入')[0]).toContain('disabled');
+  });
+});
+
+describe('v2.7 Panel B delete team (real fixture)', () => {
+  function twoTeams() {
+    const real = listMembers(FIXTURE, 'standard-acp') as TeamMember[];
+    const api = fixtureApi((profile) => ({ ...fixtureState(), teamProfiles: ['standard-acp', 'copy'], profile, members: real })) as any;
+    api.removeTeam = vi.fn();
+    return api;
+  }
+
+  it('删除团队 sits after 新建团队 in the right-hand group; disabled with one team or when writes are blocked', async () => {
+    const store = createMembersStore(twoTeams());
+    await store.load();
+    const html = renderToString(<MembersPanel store={store} />);
+    const bar = html.match(/<div data-toolbar="members"[\s\S]*?<span data-toolbar-end/)![0];
+    expect(bar.indexOf('>新建团队<')).toBeLessThan(bar.indexOf('>删除团队<'));
+    const [del] = buttonTags(bar, '删除团队');
+    expect(del).not.toContain('disabled');
+    expect(del).toContain('state-error-primary');
+
+    const single = createMembersStore(fixtureApi());
+    await single.load();
+    const [lone] = buttonTags(renderToString(<MembersPanel store={single} />), '删除团队');
+    expect(lone).toContain('disabled');
+    expect(lone).toContain('title="至少需要保留一个团队 profile，不能删除最后一个团队"');
+
+    const blocked = createMembersStore(fixtureApi((p) => ({ ...fixtureState(p, BLOCKED), teamProfiles: ['standard-acp', 'copy'] })));
+    await blocked.load();
+    expect(buttonTags(renderToString(<MembersPanel store={blocked} />), '删除团队')[0]).toContain('disabled');
+  });
+
+  it('the dialog names the team, lists the risks, and asks for thinktwice; confirm unlocks only on the exact word', async () => {
+    const store = createMembersStore(twoTeams());
+    await store.load();
+    store.openDeleteTeam();
+    let html = renderToString(<MembersPanel store={store} />);
+    const text = html.replace(/<!-- -->/g, '');
+    expect(text).toMatch(/<div id="[^"]+" style="[^"]*">删除团队：standard-acp<\/div>/);
+    expect(text).toContain('将从 cordis.patch.yml 删除团队「standard-acp」的描述、协议、任务规划和全部 5 个成员');
+    expect(text).toContain('面板里无法撤销');
+    expect(text).toContain('/agent-teams --profile standard-acp');
+    expect(text).toContain('已经创建的团队不受影响');
+    expect(buttonTags(html, '先导出全部团队（备份）')).toHaveLength(1);
+    expect(text.replace(/<\/?code>/g, '')).toContain('请输入 thinktwice 以确认删除');
+    expect(html).toMatch(/<label for="wuyou-delete-team-confirm"[^>]*>[\s\S]*?<\/label>/);
+    const input = html.match(/<input id="wuyou-delete-team-confirm"[^>]*>/)?.[0] ?? '';
+    expect(input).toContain('placeholder="thinktwice"');
+    expect(input.toLowerCase()).toContain('autocomplete="off"');
+    expect(input).toContain('value=""');
+    expect(buttonTags(html, '确认删除')[0]).toContain('disabled');
+
+    store.setDeleteConfirm('ThinkTwice');
+    expect(buttonTags(renderToString(<MembersPanel store={store} />), '确认删除')[0]).toContain('disabled');
+    store.setDeleteConfirm('thinktwice');
+    html = renderToString(<MembersPanel store={store} />);
+    const [confirm] = buttonTags(html, '确认删除');
+    expect(confirm).not.toContain('disabled');
+    expect(confirm).toContain('state-error-primary');
+  });
+});
+
+describe('v2.8 no layout shift while loading (real fixture)', () => {
+  /** The absolutely positioned live region takes no space; its text may change. */
+  const LIVE = /<div role="status" aria-live="polite" style="([^"]*)">[^<]*<\/div>/;
+  /** HTML between `from` and the next <table>, with the live region's text blanked. */
+  function between(html: string, from: string): string {
+    const start = html.indexOf(from);
+    expect(start, from).toBeGreaterThan(-1);
+    const gap = html.slice(start, html.indexOf('<table', start));
+    const live = gap.match(LIVE);
+    if (live) expect(live[1]).toContain('position:absolute');
+    return gap.replace(LIVE, '<div role="status" aria-live="polite" style="$1"></div>');
+  }
+  function deferredTeams() {
+    const real = listMembers(FIXTURE, 'standard-acp') as TeamMember[];
+    let release: () => void = () => {};
+    const state = (profile: string) => ({ ...fixtureState(), teamProfiles: ['standard-acp', 'copy'], profile, members: real });
+    const api = fixtureApi() as any;
+    api.getState = vi.fn(async (profile: string) => state(profile));
+    return {
+      api,
+      hold() { api.getState.mockImplementationOnce((profile: string) => new Promise((r) => { release = () => r(state(profile)); })); },
+      release: () => release(),
+    };
+  }
+
+  it('switching teams keeps everything above the table identical; the old rows stay, marked busy', async () => {
+    const { api, hold, release } = deferredTeams();
+    const store = createMembersStore(api);
+    await store.load();
+    const idle = renderToString(<MembersPanel store={store} />);
+    hold();
+    const switching = store.setProfile('copy');
+    expect(store.getSnapshot().loading).toBe(true);
+    const busy = renderToString(<MembersPanel store={store} />);
+
+    // No 加载中 line is inserted between the toolbar and the table (that was the 29px jump).
+    const gap = (html: string) => between(html, 'data-toolbar-end').replace(/<select[\s\S]*?<\/select>/, '');
+    expect(gap(busy)).toBe(gap(idle));
+    expect(gap(busy)).not.toContain('加载中');
+    expect(memberNames(busy)).toEqual(memberNames(idle));
+    expect(busy).toMatch(/<table[^>]*aria-busy="true"/);
+    expect(idle).not.toMatch(/<table[^>]*aria-busy/);
+    // Screen readers still hear it, from a live region that takes no space.
+    expect(busy).toMatch(/<div role="status" aria-live="polite" style="[^"]*position:absolute[^"]*">加载中\.\.\.<\/div>/);
+    expect(idle).toMatch(/<div role="status" aria-live="polite" style="[^"]*position:absolute[^"]*"><\/div>/);
+    // The picker stays enabled (no focus loss); row actions wait for the new team.
+    expect(busy.match(/<select id="wuyou-team-profile"[^>]*>/)![0]).not.toContain('disabled');
+    expect(buttonTags(memberGroup(busy, 'claude')!, '编辑')[0]).toContain('disabled');
+
+    release();
+    await switching;
+    const done = renderToString(<MembersPanel store={store} />);
+    expect(selectedOption(done, /aria-label="团队 profile"/)).toBe('copy');
+    expect(done).not.toMatch(/<table[^>]*aria-busy/);
+  });
+
+  it('the first load shows 加载中 inside the table, in the row that later says 暂无成员', async () => {
+    let release: (v: StateResponse) => void = () => {};
+    const api = fixtureApi() as any;
+    api.getState = vi.fn(() => new Promise((r) => { release = r; }));
+    const store = createMembersStore(api);
+    const loading = store.load();
+    const html = renderToString(<MembersPanel store={store} />);
+    expect(between(html, 'data-toolbar-end')).not.toContain('加载中');
+    expect(html).toMatch(/<tbody><tr><td[^>]*colSpan="3"[^>]*>加载中\.\.\.<\/td><\/tr><\/tbody>/);
+    release({ ...fixtureState(), members: [] });
+    await loading;
+    expect(renderToString(<MembersPanel store={store} />)).toMatch(/<td[^>]*colSpan="3"[^>]*>暂无成员<\/td>/);
+  });
+
+  it('a member write locks the picker until it lands', async () => {
+    const api = fixtureApi() as any;
+    let done: () => void = () => {};
+    api.mutateMembers = vi.fn((body: any) => new Promise((r) => { done = () => r({ ...fixtureState(body.profile), notice: '' }); }));
+    const store = createMembersStore(api);
+    await store.load();
+    store.requestDelete('coder');
+    const deleting = store.confirmDelete();
+    expect(renderToString(<MembersPanel store={store} />).match(/<select id="wuyou-team-profile"[^>]*>/)![0]).toContain('disabled');
+    done();
+    await deleting;
+    expect(renderToString(<MembersPanel store={store} />).match(/<select id="wuyou-team-profile"[^>]*>/)![0]).not.toContain('disabled');
+  });
+
+  it('refreshing 无忧Subagent keeps the space above its tables identical too', async () => {
+    let release: (v: StateResponse) => void = () => {};
+    const api = fixtureApi();
+    const store = createSubagentStore(api);
+    await store.load();
+    const idle = renderToString(<SubagentPanel store={store} />);
+    vi.mocked(api.getState).mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    const refreshing = store.load();
+    const busy = renderToString(<SubagentPanel store={store} />);
+    const gap = (html: string) => between(html, '>新建 Subagent 工具</button>');
+    expect(gap(busy)).toBe(gap(idle));
+    expect(firstColumn(busy)).toEqual(firstColumn(idle));
+    expect(busy).toMatch(/<table[^>]*aria-busy="true"/);
+    release(fixtureState());
+    await refreshing;
+  });
+
+  it('disabled buttons dim after a short delay, so a quick reload does not flash', () => {
+    const on = renderToString(<Button onClick={() => {}}>A</Button>);
+    const off = renderToString(<Button onClick={() => {}} disabled>A</Button>);
+    expect(off).toContain('transition:opacity 120ms ease 150ms');
+    expect(on).toContain('transition:opacity 120ms ease 0ms');
+  });
+});
+
+describe('v2.9 fixed columns and a reserved scrollbar gutter (real fixture)', () => {
+  /** Opening tag of a panel root (the element carrying data-panel). */
+  const root = (html: string, name: string) => html.match(new RegExp(`<div data-panel="${name}"[^>]*>`))?.[0] ?? '';
+
+  it('both panels scroll themselves with the scrollbar space always reserved', async () => {
+    const members = createMembersStore(fixtureApi());
+    await members.load();
+    const subagents = createSubagentStore(fixtureApi());
+    await subagents.load();
+    for (const [name, html] of [
+      ['members', renderToString(<MembersPanel store={members} />)],
+      ['subagents', renderToString(<SubagentPanel store={subagents} />)],
+    ] as const) {
+      const tag = root(html, name);
+      expect(tag, name).not.toBe('');
+      // The host content area never scrolls, so its 5px scrollbar can no longer
+      // appear and squeeze the panel; our own gutter is there from the start.
+      for (const rule of ['height:100%', 'box-sizing:border-box', 'overflow-y:auto', 'scrollbar-gutter:stable']) {
+        expect(tag, `${name} ${rule}`).toContain(rule);
+      }
+    }
+  });
+
+  it('the members table has fixed columns: name 30%, role the rest, actions 136px', async () => {
+    const store = createMembersStore(fixtureApi());
+    await store.load();
+    const html = renderToString(<MembersPanel store={store} />);
+    expect(html).toMatch(/<table style="[^"]*table-layout:fixed[^"]*"/);
+    expect(html).toContain('<colgroup><col style="width:30%"/><col/><col style="width:136px"/></colgroup>');
+  });
+
+  it('on a very narrow panel the fixed table keeps a 420px floor and scrolls sideways instead of crushing name/role to 0', async () => {
+    const store = createMembersStore(fixtureApi());
+    await store.load();
+    expect(renderToString(<MembersPanel store={store} />)).toMatch(/<table style="[^"]*min-width:420px[^"]*table-layout:fixed[^"]*"/);
+  });
+
+  it('a long member name is cut with an ellipsis (full name in the tooltip) instead of widening its column', async () => {
+    const long = 'front-designer-monica-with-a-very-long-member-name';
+    const store = createMembersStore(fixtureApi(() => ({ ...fixtureState(), members: [{ name: long, role: '甲' }, { name: 'ok' }] })));
+    await store.load();
+    const html = renderToString(<MembersPanel store={store} />);
+    const [short, big] = ['ok', long].map((n) => html.match(new RegExp(`<th scope="row" style="([^"]*)" title="${n}">${n}</th>`))?.[1]);
+    expect(big).toBeDefined();
+    expect(big).toBe(short);
+    expect(big).toContain('text-overflow:ellipsis');
+    expect(big).not.toContain('min-width');
   });
 });
 

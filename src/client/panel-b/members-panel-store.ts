@@ -23,12 +23,13 @@ import {
 import { MSG } from '../ui/messages';
 import {
   downloadYaml,
-  exportMembers,
-  membersExportFilename,
-  parseMembersFile,
-  previewMembersImport,
+  exportTeams,
+  parseTeamsFile,
+  previewTeamsImport,
   readImportFile,
-  type PreviewItem,
+  teamsExportFilename,
+  teamsImportRequest,
+  type TeamPreview,
 } from '../shared/import-export';
 
 // ============================================================================
@@ -55,6 +56,12 @@ export type FormMode = 'add' | 'edit' | null;
 
 export interface MembersPanelState {
   loading: boolean;
+  /**
+   * v2.8: a write (or the refresh after its 409) is in flight. Only this locks
+   * the team picker; a plain load / team switch does not, so switching keeps
+   * focus on the picker and the last choice wins (stale reads are dropped).
+   */
+  writing: boolean;
   error: string | null;
   notice: string | null;
   conflict: string | null;
@@ -77,9 +84,39 @@ export interface MembersPanelState {
   confirmDelete: {
     name: string | null;
   };
-  /** v2.2: parsed import file awaiting confirmation, for the selected team profile. */
-  importPreview: { fileName: string; members: PreviewItem<TeamMember>[] } | null;
+  /**
+   * v2.6: parsed team file awaiting confirmation. Covers every team in the
+   * file; an existing team is replaced only if its name is in `overwrite`.
+   */
+  teamImport: {
+    fileName: string;
+    sourceProfile?: string;
+    /** Revision the preview was computed against; the import sends it. */
+    revision: string;
+    teams: TeamPreview[];
+    overwrite: ReadonlySet<string>;
+  } | null;
+  /** v2.6: new / clone team dialog. `from` '' = a new blank team. */
+  teamCreate: {
+    open: boolean;
+    name: string;
+    from: string;
+    description: string;
+    firstMember: string;
+    errors: Partial<Record<'name' | 'firstMember', string>>;
+  };
+  /** v2.7: delete-team dialog; `name` null = closed. */
+  teamDelete: { name: string | null; confirm: string; error: string | null };
 }
+
+/** The word typed to confirm a team deletion (the Host checks it too). */
+export const TEAM_DELETE_CONFIRMATION = 'thinktwice';
+export const LAST_TEAM_MESSAGE = '至少需要保留一个团队 profile，不能删除最后一个团队';
+const NO_TEAM_DELETE: MembersPanelState['teamDelete'] = { name: null, confirm: '', error: null };
+
+/** agent-teams MAX_TEAM_PROFILES. */
+export const MAX_TEAM_PROFILES = 16;
+const TEAM_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
 // ============================================================================
 // Store Implementation
@@ -108,11 +145,29 @@ export interface MembersPanelStore {
   confirmDelete(): Promise<void>;
   cancel(): void;
 
-  // v2.2 import / export of the selected team profile's members
-  exportConfig(): void;
+  // v2.6 import / export of ALL team profiles
+  exportConfig(): Promise<void>;
   importConfig(file: File): Promise<void>;
+  /** Tick / untick overwriting one existing team in the import preview. */
+  toggleTeamOverwrite(name: string): void;
   cancelImport(): void;
   confirmImport(): Promise<void>;
+
+  // v2.6 new / clone team
+  openCreateTeam(): void;
+  setTeamField(field: 'name' | 'from' | 'description' | 'firstMember', value: string): void;
+  submitTeam(): Promise<void>;
+  closeCreateTeam(): void;
+
+  // v2.7 delete the viewed team, confirmed by typing `thinktwice`
+  openDeleteTeam(): void;
+  setDeleteConfirm(value: string): void;
+  submitDeleteTeam(): Promise<void>;
+  closeDeleteTeam(): void;
+}
+
+function closedTeamCreate(): MembersPanelState['teamCreate'] {
+  return { open: false, name: '', from: '', description: '', firstMember: '', errors: {} };
 }
 
 function emptyFormData(): MemberFormData {
@@ -132,6 +187,7 @@ function closedForm(): MembersPanelState['form'] {
 function initialState(profile: string): MembersPanelState {
   return {
     loading: false,
+    writing: false,
     error: null,
     notice: null,
     conflict: null,
@@ -145,7 +201,9 @@ function initialState(profile: string): MembersPanelState {
     confirmDelete: {
       name: null,
     },
-    importPreview: null,
+    teamImport: null,
+    teamCreate: closedTeamCreate(),
+    teamDelete: NO_TEAM_DELETE,
   };
 }
 
@@ -228,7 +286,7 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
   }
 
   function setState(partial: Partial<MembersPanelState>) {
-    state = { ...state, ...partial };
+    state = { ...state, ...partial, ...(partial.loading === false ? { writing: false } : {}) };
     notify();
   }
 
@@ -312,7 +370,7 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
   async function mutate(request: MembersMutationRequest, onSuccess: Partial<MembersPanelState>, failure: string) {
     // Supersede any in-flight read issued before this write.
     requestSeq++;
-    setState({ loading: true, error: null, conflict: null });
+    setState({ loading: true, writing: true, error: null, conflict: null });
     try {
       const response = await api.mutateMembers(request);
       requestSeq++; // the write result is authoritative over older reads
@@ -366,7 +424,7 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
         ...state,
         form: closedForm(),
         confirmDelete: { name: null },
-        importPreview: null,
+        teamImport: null, teamCreate: closedTeamCreate(), teamDelete: NO_TEAM_DELETE,
       };
       await store.load(profile);
     },
@@ -513,7 +571,7 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
         ...state,
         form: closedForm(),
         confirmDelete: { name: null },
-        importPreview: null,
+        teamImport: null, teamCreate: closedTeamCreate(), teamDelete: NO_TEAM_DELETE,
         error: null,
         conflict: null,
         notice: null,
@@ -521,10 +579,13 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
       notify();
     },
 
-    exportConfig() {
+    async exportConfig() {
       try {
-        downloadYaml(membersExportFilename(state.profile), exportMembers(state.members, state.profile));
-        setState({ error: null, notice: `已导出团队 profile ${state.profile} 的 ${state.members.length} 个成员` });
+        const teams = await api.getTeams();
+        const names = Object.keys(teams.profiles);
+        const dsh = teams.dshProfile?.name;
+        downloadYaml(teamsExportFilename(dsh), exportTeams(teams.profiles, dsh));
+        setState({ error: null, notice: `已导出 ${names.length} 个团队：${names.join('、')}` });
       } catch (err: any) {
         setState({ error: `导出失败：${err.message}` });
       }
@@ -533,61 +594,190 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
     async importConfig(file: File) {
       setState({ error: null, conflict: null, notice: null });
       try {
-        const members = parseMembersFile(await readImportFile(file));
-        const preview = previewMembersImport(members, state.members, state.catalog.providers.map((p) => p.id));
-        state = { ...state, form: closedForm(), confirmDelete: { name: null }, importPreview: { fileName: file.name, members: preview } };
+        const parsed = parseTeamsFile(await readImportFile(file));
+        // Conflicts are judged against every current team, not just the selected one.
+        const current = await api.getTeams();
+        const teams = previewTeamsImport(parsed, current.profiles, state.catalog.providers.map((p) => p.id));
+        state = {
+          ...state,
+          form: closedForm(),
+          confirmDelete: { name: null },
+          teamCreate: closedTeamCreate(),
+          teamImport: {
+            fileName: file.name,
+            ...(parsed.sourceProfile ? { sourceProfile: parsed.sourceProfile } : {}),
+            revision: current.revision,
+            teams,
+            overwrite: new Set(),
+          },
+        };
         notify();
       } catch (err: any) {
         setState({ error: `无法导入 ${file.name}：${err.message}` });
       }
     },
 
-    cancelImport() {
-      setState({ importPreview: null });
+    toggleTeamOverwrite(name: string) {
+      const preview = state.teamImport;
+      if (!preview || !preview.teams.some((t) => t.name === name && t.status === 'conflict')) return;
+      const overwrite = new Set(preview.overwrite);
+      if (overwrite.has(name)) overwrite.delete(name); else overwrite.add(name);
+      setState({ teamImport: { ...preview, overwrite } });
     },
 
-    /**
-     * Add the importable members one by one. Each add carries the revision
-     * returned by the previous one, so a change made elsewhere mid-import
-     * stops the import (409) instead of being overwritten.
-     */
+    cancelImport() {
+      setState({ teamImport: null });
+    },
+
+    /** One locked write for all teams; a change made elsewhere since the preview is a 409. */
     async confirmImport() {
-      const preview = state.importPreview;
+      const preview = state.teamImport;
       if (!preview) return;
-      const todo = preview.members.filter((p) => !p.skip).map((p) => p.item);
-      if (todo.length === 0) { setState({ importPreview: null }); return; }
+      const body = teamsImportRequest(preview.teams, preview.overwrite, preview.revision);
+      const creates = preview.teams.filter((t) => t.status === 'new').length;
+      if (creates + body.overwrite.length === 0) { setState({ teamImport: null }); return; }
       if (writeBlocked()) return;
 
       requestSeq++;
-      setState({ loading: true, error: null, conflict: null });
-      const added: string[] = [];
-      const failed: string[] = [];
-      let last: StateResponse | null = null;
-      for (const member of todo) {
-        try {
-          last = await api.mutateMembers({
-            expectedRevision: last?.revision ?? state.revision,
-            profile: state.profile,
-            action: 'add',
-            member,
-          });
-          added.push(member.name);
-        } catch (err: any) {
-          if (err.code === 'STALE_REVISION') {
-            await refreshAfterConflict(`${err.message}。已导入 ${added.length}/${todo.length} 个成员，其余未导入`, { importPreview: null });
-            return;
-          }
-          failed.push(`${member.name}：${err.message}`);
-        }
+      setState({ loading: true, writing: true, error: null, conflict: null });
+      try {
+        const response = await api.importTeams(body, state.profile);
+        requestSeq++;
+        const { created, overwritten, skipped } = response.importReport;
+        const list = (items: string[]) => (items.length > 0 ? `（${items.join('、')}）` : '');
+        setState({
+          loading: false,
+          ...fromResponse(response),
+          teamImport: null,
+          notice: `新增 ${created.length} 个团队${list(created)}，覆盖 ${overwritten.length} 个${list(overwritten)}，跳过 ${skipped.length} 个。新建会话后生效`,
+          error: skipped.length > 0 ? `跳过：${skipped.map((s) => `${s.name}：${s.reason}`).join('；')}` : null,
+        });
+      } catch (err: any) {
+        if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message, { teamImport: null });
+        else setState({ loading: false, error: err.message || '导入失败' });
       }
+    },
+
+    openCreateTeam() {
+      state = {
+        ...state,
+        form: closedForm(),
+        confirmDelete: { name: null },
+        teamImport: null,
+        // Default: clone the team being viewed; the drop-down also offers a new blank team.
+        teamCreate: { ...closedTeamCreate(), open: true, from: state.teamProfiles.includes(state.profile) ? state.profile : '' },
+        error: null,
+        conflict: null,
+        notice: null,
+      };
+      notify();
+    },
+
+    setTeamField(field, value) {
+      const errors = { ...state.teamCreate.errors };
+      delete errors[field as 'name' | 'firstMember'];
+      setState({ teamCreate: { ...state.teamCreate, [field]: value, errors } });
+    },
+
+    openDeleteTeam() {
+      if (!state.teamProfiles.includes(state.profile)) return;
+      if (state.teamProfiles.length <= 1) { setState({ error: LAST_TEAM_MESSAGE }); return; }
+      state = {
+        ...state,
+        form: closedForm(),
+        confirmDelete: { name: null },
+        teamImport: null,
+        teamCreate: closedTeamCreate(),
+        teamDelete: { name: state.profile, confirm: '', error: null },
+        error: null,
+        conflict: null,
+        notice: null,
+      };
+      notify();
+    },
+
+    setDeleteConfirm(value: string) {
+      if (state.teamDelete.name === null) return;
+      setState({ teamDelete: { ...state.teamDelete, confirm: value, error: null } });
+    },
+
+    closeDeleteTeam() {
+      setState({ teamDelete: NO_TEAM_DELETE, error: null });
+    },
+
+    async submitDeleteTeam() {
+      const { name, confirm } = state.teamDelete;
+      if (name === null) return;
+      // Exact word, no trimming: the point is to make the user stop and type it.
+      if (confirm !== TEAM_DELETE_CONFIRMATION) {
+        setState({ teamDelete: { ...state.teamDelete, error: `请输入 ${TEAM_DELETE_CONFIRMATION} 以确认删除` } });
+        return;
+      }
+      if (writeBlocked()) return;
       requestSeq++;
-      setState({
-        loading: false,
-        ...(last ? fromResponse(last) : {}),
-        importPreview: null,
-        notice: `已导入 ${added.length}/${todo.length} 个成员，新建会话后生效`,
-        error: failed.length > 0 ? `${failed.length} 个成员导入失败：${failed.join('；')}` : null,
-      });
+      setState({ loading: true, writing: true, error: null, conflict: null });
+      try {
+        const response = await api.removeTeam(
+          { expectedRevision: state.revision, action: 'remove', name, confirm },
+          state.profile,
+        );
+        requestSeq++;
+        setState({
+          loading: false,
+          ...fromResponse(response),
+          teamDelete: NO_TEAM_DELETE,
+          notice: `已删除团队 '${name}'。新建会话后生效`,
+        });
+      } catch (err: any) {
+        if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message, { teamDelete: NO_TEAM_DELETE });
+        else setState({ loading: false, error: err.message || MSG.deleteFailed });
+      }
+    },
+
+    closeCreateTeam() {
+      setState({ teamCreate: closedTeamCreate(), error: null });
+    },
+
+    async submitTeam() {
+      const form = state.teamCreate;
+      if (!form.open) return;
+      const name = form.name.trim();
+      const errors: MembersPanelState['teamCreate']['errors'] = {};
+      if (!name) errors.name = '请填写团队名';
+      else if (!TEAM_NAME.test(name)) errors.name = `团队名 '${name}' 格式不合法：小写字母或数字开头，只能包含小写字母、数字、.、_、-`;
+      else if (state.teamProfiles.includes(name)) errors.name = `团队 '${name}' 已存在`;
+      else if (state.teamProfiles.length >= MAX_TEAM_PROFILES) errors.name = `agent-teams 最多 16 个团队 profile，当前已有 ${state.teamProfiles.length} 个`;
+      const cloning = form.from !== '';
+      const member = form.firstMember.trim();
+      if (!cloning) {
+        if (!member) errors.firstMember = 'agent-teams 要求团队至少有一个成员，请填写第一个成员名';
+        else if (member === 'captain') errors.firstMember = "'captain' 是 captain 保留名";
+        else if (!/^[a-z][a-z0-9-]*$/.test(member)) errors.firstMember = MSG.memberNameFormat(member);
+      }
+      if (Object.keys(errors).length > 0) { setState({ teamCreate: { ...form, errors } }); return; }
+      if (writeBlocked()) return;
+
+      const description = form.description.trim();
+      requestSeq++;
+      setState({ loading: true, writing: true, error: null, conflict: null });
+      try {
+        const response = await api.createTeam({
+          expectedRevision: state.revision,
+          action: 'create',
+          name,
+          ...(cloning ? { from: form.from } : { firstMember: member, ...(description ? { description } : {}) }),
+        });
+        requestSeq++;
+        setState({
+          loading: false,
+          ...fromResponse(response),
+          teamCreate: closedTeamCreate(),
+          notice: `已创建团队 '${name}'${cloning ? `（克隆自 ${form.from}）` : ''}。新建会话后生效`,
+        });
+      } catch (err: any) {
+        if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message, { teamCreate: closedTeamCreate() });
+        else setState({ loading: false, error: err.message || MSG.saveFailed });
+      }
     },
   };
   return store;
