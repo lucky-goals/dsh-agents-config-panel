@@ -18,7 +18,9 @@ import { Select } from '../ui/Select';
 import { FormField } from '../ui/FormField';
 import { Modal } from '../ui/Modal';
 import { ImportPreviewModal, type ImportPreviewSection } from '../ui/ImportPreviewModal';
+import { HelpTip } from '../ui/HelpTip';
 import { AcpSection } from './AcpSection';
+import { BackgroundModeHelp } from './BackgroundModeHelp';
 import type { SubagentImportPreview } from '../shared/import-export';
 import {
   DiagnosticsBanner,
@@ -275,8 +277,19 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
           </>
         )}
 
-        {/* Background Mode: read-only one-shot when provider has continuable=false */}
-        <FormField label="Background Mode">
+        {/* Background Mode: read-only one-shot when provider has continuable=false.
+            v2.10: the "?" explains both values; the drop-down itself is unchanged. */}
+        <FormField
+          label="Background Mode"
+          labelAddon={(
+            <HelpTip label="Background Mode 说明">
+              <BackgroundModeHelp
+                current={canBeContinuable ? values.backgroundMode : 'one-shot'}
+                continuableSupported={canBeContinuable}
+              />
+            </HelpTip>
+          )}
+        >
           {canBeContinuable ? (
             <Select
               value={values.backgroundMode}

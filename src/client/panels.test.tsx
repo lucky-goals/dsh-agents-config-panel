@@ -1031,3 +1031,42 @@ describe('client source', () => {
     expect(uiLiterals.map(({ file }) => file)).toEqual([]);
   });
 });
+
+describe('v2.10 Background Mode help button in the Subagent dialog (real fixture)', () => {
+  const HELP = 'aria-label="Background Mode 说明"';
+  /** From the Background Mode label to the next field (or the end). */
+  const field = (html: string) => {
+    const start = html.indexOf('>Background Mode</label>');
+    if (start < 0) return '';
+    const next = html.indexOf('<div style="margin-bottom:14px">', start);
+    return html.slice(start, next < 0 ? undefined : next);
+  };
+  const open = async (id?: string) => {
+    const store = createSubagentStore(fixtureApi());
+    await store.load();
+    if (id) store.openEdit(id); else store.openCreate();
+    return renderToString(<SubagentPanel store={store} />);
+  };
+
+  it('editing a spawn row: one "?" button right after the label, outside it, before the unchanged select', async () => {
+    const html = await open('tool-subagent-coder');
+    const bg = field(html);
+    expect(bg).toContain(HELP);
+    // The label keeps only its text; the button follows it on the same row.
+    expect(bg.indexOf(HELP)).toBeLessThan(bg.indexOf('<select'));
+    expect(html).not.toMatch(/<label[^>]*>[^<]*<button/);
+    // The drop-down is not changed: the same two values, the row's value selected.
+    const select = bg.match(/<select[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? '';
+    expect([...select.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1])).toEqual(['continuable', 'one-shot']);
+    expect(select).toContain('value="continuable" selected=""');
+    // Only Background Mode gets the button.
+    expect(html.split(HELP)).toHaveLength(2);
+  });
+
+  it('the new-tool dialog and a read-only one-shot ACP row get the same button', async () => {
+    expect(field(await open())).toContain(HELP);
+    const acp = field(await open('tool-subagent-acp'));
+    expect(acp).toContain(HELP);
+    expect(acp).toContain('aria-label="Background Mode: one-shot (read-only)"');
+  });
+});
