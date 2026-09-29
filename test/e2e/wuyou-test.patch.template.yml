@@ -1,0 +1,85 @@
+# Clean isolated E2E data stubs. Plugin bundle rows must come from the installed bundle.
+- insert:
+    - id: subagent-acp-e2e
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: e2eacp
+        command: /usr/bin/true
+        permission: allow
+- insert:
+    - id: subagent-acp-e2e-2
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: e2eacp2
+        command: /usr/bin/true
+        permission: allow
+- insert:
+    - id: preset-standard-acp
+      name: '@deepseek-ai/dsh-agent-preset'
+      disabled: true
+      config:
+        id: standard-acp
+        plugins:
+          - id: delegation
+            name: cordis:group
+            config:
+              - id: tool-subagent-seed
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: spawn
+                  toolName: subagent_seed
+                  backgroundMode: one-shot
+                  agentOptions:
+                    provider: deepseek-official
+                    model: deepseek-flash
+                    reasoningEffort: off
+              - id: tool-subagent-e2e-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_e2e_fork
+              - id: tool-subagent-acp
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: e2eacp
+                  toolName: subagent_acp
+                  backgroundMode: one-shot
+                  maxDepth: provider-managed
+              - id: tool-subagent-codex
+                name: '@deepseek-ai/dsh-tool-subagent'
+                disabled: true
+                config:
+                  provider: codex
+                  toolName: subagent_codex
+                  backgroundMode: one-shot
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+                disabled: true
+- id: agent-teams
+  name: '@nanmicoder/dsh-agent-teams'
+  disabled: true
+  config:
+    profiles:
+      standard-acp:
+        description: Clean isolated E2E profile
+        members:
+          - name: coder
+            provider: deepseek-official
+            model: deepseek-flash
+            reasoning_effort: off
+            role: Clean isolated E2E provider and model member for runtime catalog
+              validation.
+          - name: tester
+            provider: deepseek-official
+            model: deepseek-flash
+            reasoning_effort: off
+            role: This deliberately long clean-profile tester role exceeds one hundred
+              characters so byte-preserving member resaves are exercised against
+              realistic role text without any hand-added plugin rows.
+          - name: helper
+            role: Clean isolated E2E helper member
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-08-13.1
