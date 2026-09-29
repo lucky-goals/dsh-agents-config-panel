@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.4（v2.2–v2.4 的变更见文末 K 节）
+版本：2.10（v2.2–v2.10 的变更见文末 K 节）
 插件包名：`@nanmicoder/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -470,7 +470,7 @@ window.__ModuleLoader__.load({
   - `catalogSource === 'patch'` 时，显示提示「模型目录来自配置文件，可能不完整」，并列出 `catalogErrors`；
   - Host 返回的 503、413 等**结构化错误** `{ code, message }`，原样显示 `message`。
   - 服务端返回**非结构化响应**（HTML 错误页、纯文本、空 body、JSON 数组、JSON 字符串、JSON null 等无 `code`/`message` 字段的情况）时，统一回退为中文提示：`401`/`403` 显示「没有访问权限，请刷新页面后重新登录」；`503` 显示「服务暂时不可用，请稍后重试」；其他状态码显示「请求失败（HTTP <status>）」。不暴露原始英文异常或原始 body。
-- Panel B 的团队 profile：优先使用请求的 profile，其次 `standard-acp`，否则用 `teamProfiles[0]`。只有一个时显示为文字「团队 profile：<p>」，多个时显示为下拉框。Client 不硬编码 DSH profile 名 `web`。
+- Panel B 的团队 profile：优先使用请求的 profile，其次 `standard-acp`，否则用 `teamProfiles[0]`。团队 profile 始终显示为下拉框（v2.5，见 K8）。Client 不硬编码 DSH profile 名 `web`。
 
 ### D4. Panel A provider 能力表单
 
@@ -492,7 +492,7 @@ spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning E
 
 成员表固定两行，不做响应式一行/两行切换。每个成员一个 `<tbody>`，包含两行 `<tr>`；表头只有成员名、角色、操作三列。第一行放成员名和角色，操作单元格 `rowspan="2"` 且靠上；第二行（v2.3）为 `colSpan={3}` 横跨整个表格，以 `<dl>` 横排 Provider、Model、Reasoning Effort，空值显示 `-`。
 
-成员名 `white-space: nowrap`、`min-width: 9.5em`，禁止 `overflow-wrap: anywhere`；角色 `min-width: 12em`、`white-space: pre-line`（保留多行角色的换行，v2.2）；操作列 nowrap。成员两行之间无分隔线，不同成员以 `var(--dsw-alias-border-l1)` 分隔。第二行字号 12px，dt 使用 `var(--dsw-alias-label-secondary)`、dd 使用 `var(--dsw-alias-label-primary)`；按钮为普通 `<button>`，不设 tabIndex，第二行无可聚焦元素。空列表显示一行 `colSpan={3}`，文案「暂无成员」。样式只写在 `MembersPanel.tsx`，不修改共享 `PanelChrome.tsx` 的 tableStyles；Panel A 表格不变。
+列宽固定（v2.9，见 K12）：表格 `table-layout: fixed`、`min-width: 420px`，`<colgroup>` 为成员名 30%、角色自适应、操作 136px。成员名 `white-space: nowrap`，超出列宽时 `overflow: hidden; text-overflow: ellipsis`，`title` 为完整成员名，禁止 `overflow-wrap: anywhere`；角色 `white-space: pre-line`（保留多行角色的换行，v2.2）、`overflow-wrap: break-word`；操作列 nowrap。成员两行之间无分隔线，不同成员以 `var(--dsw-alias-border-l1)` 分隔。第二行字号 12px，dt 使用 `var(--dsw-alias-label-secondary)`、dd 使用 `var(--dsw-alias-label-primary)`；按钮为普通 `<button>`，不设 tabIndex，第二行无可聚焦元素。空列表显示一行 `colSpan={3}`，文案「暂无成员」。表格样式只写在 `MembersPanel.tsx`，不修改共享 `PanelChrome.tsx` 的 tableStyles；Panel A 表格不变（两个面板的根容器共用 `panelRootStyle`，见 K12）。
 
 ### D6. 新 Client 配旧 Host
 
@@ -868,7 +868,7 @@ v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有�
   - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
   - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
 
-## K. v2.2–v2.4 变更
+## K. v2.2–v2.10 变更
 
 ### K1. 菜单名（v2.2）
 
@@ -911,7 +911,7 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 **Panel A 导入**：Client 解析并预览（ACP 名称或工具名已存在、文件内重复、provider 未注册且文件中无对应 ACP → 跳过并给出原因），确认后一次 `POST /subagents/import { expectedRevision, bundle: { acps, subagents } }`。Host 在同一把锁、同一个 revision 内先建 ACP、再建工具；工具的 provider 可以是本文件新建的 ACP 或 patch 中已有的 ACP（按无能力 provider 处理：one-shot、maxDepth: provider-managed）。已存在或校验失败的条目跳过，不覆盖，结果在 `importReport: { created, skipped }` 中返回。每个列表最多 200 项，请求体上限 1MB。
 
-**Panel B 文件**（`wuyou-members-<teamProfile>-<时间>.yaml`）：`{ kind: wuyou-members, version: 3, profile, members }`，只含 name/role/provider/model/reasoning_effort。导入预览跳过已存在、文件内重复、provider 不在模型目录的成员；确认后逐个 `add`，每次带上一次响应的 revision，遇到 409 立即停止并提示已导入数量。
+**Panel B 文件（v2.2–v2.5，v2.6 起改为 K9 的全部团队格式，旧文件仍可导入）**（`wuyou-members-<teamProfile>-<时间>.yaml`）：`{ kind: wuyou-members, version: 3, profile, members }`，只含 name/role/provider/model/reasoning_effort。导入预览跳过已存在、文件内重复、provider 不在模型目录的成员；确认后逐个 `add`，每次带上一次响应的 revision，遇到 409 立即停止并提示已导入数量。
 
 **通用**：导入文件上限 1MB；写入不可用（atomic-write 未加载）时导入按钮禁用，导出仍可用。
 
@@ -923,6 +923,110 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 - 静态检查（不启动进程），规则同 DSH 0.1.7-rc.2（dsh-subprocess-local `resolveExecutable`、dsh-subagent-acp `assertUsableCwd`）：可执行文件、`#!` 解释器（含 `/usr/bin/env name`）、cwd。
 - 握手（`handshake: true`，且静态检查没有失败）：以 command、args、env（宿主 env 去掉 KEY/PASSWORD/SECRET/TOKEN 和 `DSH_*`，再叠加 config env）、cwd（未配置时用 home）启动，放在独立进程组；发送 `initialize { protocolVersion: 1, clientCapabilities: {} }`。收到 id=1 的响应即通过；协议版本不是 1 或 stdout 有非协议行时给出注意；进程退出、initialize 返回错误或 20 秒超时判为失败。结束时关闭 stdin，向进程组发 SIGTERM，1 秒后发 SIGKILL。stderr 末尾 2000 字符随结果返回，疑似密钥替换为 `***`。
 - 不检查 `session/new` 之后的阶段（登录状态、模型可用性）。
+
+### K9. 全部团队的导入导出、新建与克隆（v2.6）
+
+**Host**（`src/host/teams-editor.ts`）写入规则与 agent-teams 0.1.21 读取 `config.profiles` 时一致。任何一个 profile 不合法都会让**所有会话**的 captain 提示词构建失败，所以这些规则在写入前检查：
+- 最多 16 个团队 profile；
+- 只允许已知的团队键（description / protocol / executionPrompt / fallback / members / tasks / taskPlanning / reviewPolicy）和成员键（name / role / provider / model / reasoning_effort / executionPrompt / fallback）；
+- 成员 1–`maxMembers`（默认 8）个，成员名非空、不是 `captain`、规范化后不重名；provider 需要 model；taskPlanning 只能是 captain / seed。
+- 任务 DAG 的细节交给 agent-teams。E2E 会用 agent-teams 自己的 `resolveTeamProfile` 逐个校验写入后的团队。
+
+团队名：`^[a-z0-9][a-z0-9._-]*$`。
+
+- `GET /teams`：`{ revision, profiles: { <名称>: 完整配置 }, dshProfile }`，按文件顺序。
+- `POST /teams { expectedRevision, action: 'create', name, from? | firstMember, description? }`：
+  - `from`：把源团队的原文（含注释、块标量）复制到 profiles 末尾，只改键名；
+  - 否则：写 `description`（可选）和 `members: [{ name: firstMember }]`。
+  - 响应 state 的 `profile` 就是新团队。错误码：DUPLICATE、NOT_FOUND（源团队不存在）、INVALID（名称、成员名、超过 16 个）。
+- `POST /teams/import { expectedRevision, teams: [{ name, profile, scope? }], overwrite: string[] }`：同一 revision 内逐个处理。
+  - 不存在的团队：追加。
+  - 存在且在 `overwrite` 中：整体替换该团队（key 行到值末尾），其余字节不变。`scope: 'members'`（旧文件）只替换 `members`。
+  - 存在但不在 `overwrite` 中：跳过，原因「团队 'x' 已存在，未选择覆盖」。
+  - 校验失败或超过 16 个：跳过并给出原因。
+  - 返回 `importReport: { created, overwritten, skipped }`。
+
+**文件**（`wuyou-teams-<dshProfile>-<时间>.yaml`）：`{ kind: wuyou-teams, version: 4, dshProfile, profiles: { <名称>: 配置 } }`。只保留 agent-teams 支持的团队键。
+
+**Client**：
+- 导出：调用 `GET /teams`，导出全部团队。
+- 导入：先 `GET /teams` 取当前全部团队和 revision 用于预览。每个团队显示新增 / 已存在 / 跳过，已存在的附成员数对比（现有 N → 文件 M）。已存在的团队默认不勾选「覆盖」，并显示覆盖风险和「先导出当前全部团队（备份）」按钮。确认按钮在有覆盖时为 danger 样式，文字写明新增与覆盖数量。确认时发送预览时的 revision。
+- 新建团队：对话框里只有一个下拉框，选项为「新建空白团队」和「克隆：<团队>」…，默认克隆当前团队；选空白团队时要求填第一个成员名。创建成功后切到新团队。
+
+不包含删除团队（需要时手动编辑 `cordis.patch.yml`）。
+
+### K10. 删除团队（v2.7）
+
+**Host**：`removeTeamProfile(yamlText, name)` 删除该团队的 key 行到值末尾，其余字节不变；create 后 remove 可逐字节还原。
+- 最后一个团队不能删除，返回 `LAST_TEAM`（422）；不存在的团队返回 NOT_FOUND。
+- `POST /teams { expectedRevision, action: 'remove', name, confirm: 'thinktwice' }`：`confirm` 必须**完全等于** `thinktwice`，否则返回 400 且不写入。
+- 响应 state 的 `profile`：被删的不是当前查看的团队（`?profile=`）时保持不变；否则按 `standard-acp` → 第一个团队的顺序回落。
+
+**Client**：「删除团队」（danger 样式）排在「新建团队」之后，针对当前选中的团队；只剩一个团队或写入不可用时禁用。
+
+对话框标题为「删除团队：<名称>」，警告区写明：
+- 删除的内容（描述、协议、任务规划、全部 N 个成员）以及面板里无法撤销；
+- 之后 `/agent-teams --profile <名称>` 会失败；
+- 协议里写到该名称的地方需要自己改；
+- 已创建的团队不受影响（agent-teams 在创建时保存了当时的 profile 配置，见 tools.js `initializeProfileTeam`）；
+- 提供「先导出全部团队（备份）」按钮。
+
+输入框的 label 为「请输入 thinktwice 以确认删除」，`autocomplete="off"`。输入内容不做 trim：必须与 `thinktwice` 完全一致，「确认删除」才可点。提交时 store 也会再检查一次。
+
+### K11. 切换团队不抖动（v2.8）
+
+**原因**（`scripts/diagnose-team-switch.sh` 在真实浏览器里逐帧测量得出）：每次加载时会在工具栏和表格之间插入一行「加载中...」，导致：
+- 表格下移 29px，加载完再弹回；
+- 内容高度越过滚动区域，滚动条反复出现和消失（宽度变化 5px）；
+- 团队下拉框被 `disabled`，焦点掉到 body，所有按钮闪一下半透明。
+
+修复前，每次往返切换的 CLS 为 0.0208（接口延迟 300ms 时为 0.0416）。
+
+**规则**：
+- 加载时不在表格之外插入任何可见元素。可见的「加载中...」只出现在表格的空行里，也就是原来显示「暂无成员 / 暂无 subagent 工具」的那一行（首次加载时）。
+- 已有数据时，保留旧行，表格加 `aria-busy="true"`；超过 150ms 才变淡到 0.6，恢复时立即恢复。
+- 读屏由常驻的 `role="status" aria-live="polite"` 区域播报。它是绝对定位、1px 大小，不占布局。
+- 按钮禁用时同样延迟 150ms 再变淡，所以快速加载不会闪。
+- 团队下拉框只在写入期间禁用：store 新增 `writing` 标志，由写操作设置，409 后的刷新期间保持；`loading: false` 时一并清除。普通切换不禁用，所以焦点保留，连续切换时以最后一次选择为准（过期的读取会被丢弃）。行内编辑、删除等写操作按钮在加载期间仍然禁用，避免对旧团队的成员做操作。
+- 无忧Subagent 的刷新同样适用。
+
+修复后同一测量：工具栏和表格的位置、滚动条、焦点、下拉框状态在切换过程中都不变，CLS 0.0006。剩余的变化只是新团队的文字长度不同，引起列宽微调（v2.9 用固定列宽和预留滚动条消除，见 K12）。
+
+### K12. 固定列宽与预留滚动条（v2.9）
+
+**原因**（真实数据，1440×840，`default-team` ↔ `default-team21`）：
+- 滚动区域是宿主设置页的 `.options`（`overflow-y: auto`，没有 `scrollbar-gutter`）；DSH 主题滚动条宽 5px（`--dsh-scrollbar-width`）。
+- 成员表是自动列宽：成员名长度不同，列宽就不同，角色列的折行和表格高度随之变化。
+- 一个团队的内容放得下，另一个超出，切换时滚动条出现又消失。出现时内容宽度 564→559px，列宽跟着重新分配（表头 [140,265,128] ↔ [156,243,128]），整个面板被挤向左侧。
+
+**规则**：
+- 两个面板的根容器（`data-panel="subagents" | "members"`）使用 `panelRootStyle`：`height: 100%; box-sizing: border-box; overflow-y: auto; scrollbar-gutter: stable`。面板自己滚动，并且始终预留滚动条宽度，有没有滚动条宽度都不变；宿主的 `.options` 不再溢出。
+- 成员表固定列宽，规则见 D5：成员名 30%、角色自适应、操作 136px，长成员名以省略号截断并用 `title` 显示全名。
+- 表格最小宽度 420px：窄屏（390px）下列宽不会被压到 0，改为横向滚动。
+
+修复后同一测量（1440×840 与 1440×900）：面板宽 564、工具栏 527、表头 [158,233,136] 在切换中都不变，`.options` 从不溢出，面板滚动条槽位 5px 始终保留，CLS 0。390×844 下表头 [126,158,136]、表格 420px。
+
+### K13. Background Mode 说明（v2.10）
+
+**位置**：原生 `<option>` 里放不了图标，所以「?」按钮放在「Background Mode」标签右侧同一行，位于 `<label>` 之外（`FormField` 新增 `labelAddon`）。新建和编辑 Subagent 工具的对话框都有；ACP 这类只读 `one-shot` 的行也有。下拉框本身不变：仍是 `continuable` / `one-shot` 两个值，默认值和写入规则不变。
+
+**内容**：依据 `@deepseek-ai/dsh-tool-subagent` 0.1.7-rc.2（`resolveDelegationRun`、`startContinuable`、`jobs.start`），以及各 provider 是否实现 `prepareContinuable`：
+- `one-shot`：默认在前台等子代理完成，结果直接交回主代理，完成后不能再给它发消息。主代理传 `run_in_background: true` 时改为后台任务，用 `job_output` 取结果、`job_kill` 停止。
+- `continuable`：默认在后台运行，立即返回子代理 id，完成时通知主代理。之后可以用 `send_message` 在同一会话里追问、用 `interrupt_agent` 打断（这两个工具来自 `dsh-tool-subagent-control`，需要同一预设加载）。传 `run_in_background: false` 时改为前台等待，这次调用不能再追问。需要 provider 支持：spawn、fork 支持，ACP（`dsh-subagent-acp`）不支持。
+- 下拉框当前选中的值带「当前」标记，并随下拉框变化。当前 provider 不支持 continuable 时，标记固定在 one-shot，并提示「当前 Provider 不支持 continuable，只能使用 one-shot」。
+- 行上设置了 `enableRunInBackground: false` 时，两种模式都只在前台运行。面板不编辑这个键，说明里也不写。
+
+**交互**（`ui/HelpTip.tsx`，toggletip 模式）：
+- 按钮 `aria-label="Background Mode 说明"`，带 `aria-expanded` 和 `aria-controls`。说明放在始终存在的 `role="status"` 区域里，打开时读屏会朗读；焦点留在按钮上。
+- 气泡 `position: fixed`，不会被对话框的 `overflow: auto` 裁掉，对话框尺寸和滚动位置也不变。左边缘与按钮对齐，默认在按钮下方 6px；下方放不下时翻到上方；水平方向离视口边缘至少 8px；两侧都放不下时取空间大的一侧，限制高度，内容可滚动。
+- 关闭方式：再点一次「?」、Escape、在气泡外按下指针、焦点离开、对话框滚动。Escape 只关闭气泡，焦点回到「?」，对话框保持打开。实现上在 window 捕获阶段处理 Escape 并 `preventDefault`，对话框（`Modal.tsx`）和宿主设置对话框都会跳过已处理的事件。输入法组合中的按键不处理（同 `composition-guard.ts`）。
+- 点击区域 24×24，可见的圆圈 16px，不增加标签行的高度。颜色只用主题 token。主题没有阴影 token，阴影用 `--dsw-alias-bg-mask-2`。
+
+### K8. 团队 profile 下拉框（v2.5）
+
+「团队 profile」下拉框从标题栏移到「新建成员」同一行，行容器 `display:flex; justify-content:space-between`：「新建成员」在左，`<label for="wuyou-team-profile">团队 profile</label>` + `<select id="wuyou-team-profile">` 在右，位于刷新、关闭按钮下方且右边缘与它们对齐。只要 `teamProfiles` 非空就显示下拉框（只有一个 profile 时也是），选项为 `teamProfiles` 全部，默认规则不变（请求值 → `standard-acp` → 第一个）。写入进行中（含 409 后的刷新）禁用，普通加载与切换时保持可用（v2.8，见 K11）；写入不可用时仍可切换（只读查看）；没有团队 profile 时不显示。
+
+语义：选择只决定面板查看和编辑哪个团队 profile 的成员，不写配置。agent-teams 的配置 schema（`profiles` 字典）没有「当前生效 profile」字段，团队在 `agent_teams_create({ profile })` 或 `/agent-teams --profile <name>` 时选用 profile，因此插件无法、也不去设置一个全局默认。新增或删除团队 profile 不在本版范围。
 
 ### K7. 验收映射
 
@@ -936,6 +1040,18 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 | K6 两行与测试 | `acp-probe.test.ts`（真实子进程：通过、退出、拒绝、超时、噪声、版本不符、进程已结束、env 清理）、`http-routes.test.ts`「v2.4 POST /acps/test」、`panels.test.tsx`「v2.4: two rows per ACP」「test dialog」、`subagent-panel-acp.test.ts`「v2.4 ACP test」；E2E `E2E_V24_ACP_TEST`、浏览器 `acp_test_dialog=1` |
 
-E2E 证据目录：`test/e2e/artifacts-v2.4/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.4 bash scripts/e2e-isolated-profile.sh`）。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
+| K8 团队 profile 下拉框 | `panels.test.tsx`「v2.5 Panel B team profile picker」（单个 profile 也是下拉框、位于新建成员右侧且不在标题栏、多 profile 切换、写入不可用时可切换）、`t31-fixes.test.tsx`（409 刷新期间禁用）；E2E `E2E_BROWSER_V25`（真实浏览器按坐标断言：与新建成员同行、在其右侧、在刷新下方、右边缘与关闭按钮对齐） |
+
+| K9 全部团队 | `teams-editor.test.ts`（真实 fixture：克隆逐字节复制、空白新建、16 个上限、覆盖只动目标团队、旧文件只替换成员、无效团队跳过）、`http-routes.test.ts`「v2.6 team routes」、`import-export.test.ts`「Panel B teams file」、`members-panel-teams.test.ts`、`panels.test.tsx`「v2.6 Panel B teams」；E2E `E2E_V26_TEAMS`（含 agent-teams `resolveTeamProfile` 校验）、`E2E_BROWSER_V26` |
+
+| K10 删除团队 | `teams-editor.test.ts`「removeTeamProfile」（逐字节还原、只删目标块、最后一个团队 LAST_TEAM）、`http-routes.test.ts`「v2.7 POST /teams remove」（confirm 必须完全等于 thinktwice、删除后回落、422/404/409 不写入）、`members-panel-teams.test.ts`「delete team dialog」、`panels.test.tsx`「v2.7 Panel B delete team」；E2E `E2E_V27_TEAM_REMOVE`（错误确认词 400，删除后 agent-teams `resolveTeamProfile` 校验剩余团队）、`E2E_BROWSER_V27`（单团队时禁用、界面克隆后删除、输入 thinktwice 前确认按钮不可点） |
+
+| K11 切换不抖动 | `panels.test.tsx`「v2.8 no layout shift while loading」：切换中表格之上的 HTML 与空闲时逐字节相同、旧行保留且 `aria-busy`、下拉框可用、首次加载的「加载中」在表格空行、写入时锁定下拉框、Subagent 刷新同样不插入、按钮延迟变淡；`members-panel-teams.test.ts`「writing flag」；E2E `E2E_BROWSER_V28`：真实浏览器切换 4 次，逐帧记录，工具栏与表格位置不变、下拉框从未禁用、焦点保留、CLS≤0.002（开始记录前先关闭克隆产生的成功提示：它在工具栏上方占 54px，第一次切换会清除它，不关闭时第一帧能否看到它取决于约 8ms 的时序） |
+
+| K12 固定列宽与预留滚动条 | `panels.test.tsx`「v2.9 fixed columns and a reserved scrollbar gutter (real fixture)」（两个面板根容器的 `scrollbar-gutter: stable`、colgroup 30%/自适应/136px、`table-layout: fixed` 与 420px 下限、长成员名省略号与 title）；E2E `E2E_BROWSER_V29`：把克隆团队扩到 8 个成员（含一个超长成员名）使其超出面板高度，与 3 个成员的 standard-acp 来回切换 6 次，逐帧记录：面板有滚动和无滚动两种状态都出现，面板内宽、工具栏、表格、表头宽度始终不变，面板与对话框之间的滚动容器从不溢出，CLS≤0.002，长成员名被截断且 title 为全名。浏览器以真实滚动条运行（去掉 headless 默认的 `--hide-scrollbars`） |
+
+| K13 Background Mode 说明 | `help-tip.test.tsx`（`placeHelpBubble`：下方、翻到上方、两侧都不够时限高、1440 与 390 视口的水平夹取；关闭时的标记：`aria-expanded="false"`、`aria-controls` 指向空的 `role="status"`、24×24 点击区域）、`background-mode-help.test.tsx`（两种模式的说明、「当前」标记、不支持 continuable 的提示）、`panels.test.tsx`「v2.10 Background Mode help button」（「?」紧跟标签且在 `<label>` 之外、下拉框选项与选中值不变、只有这一个字段有、新建对话框与只读 ACP 行也有）；E2E `E2E_BROWSER_V210`：真实浏览器里对 fork 行和 ACP 行点「?」，气泡与按钮相距 6px、完整在视口内、各点 `elementFromPoint` 都落在气泡上、对话框 scrollHeight/scrollTop 不变；Escape 只关气泡且焦点回到按钮、点气泡外关闭且对话框不关、改下拉框后「当前」跟着变、ACP 行显示不支持提示、不保存直接关闭；`E2E_BROWSER_V210_MOBILE`：390×844 下气泡宽 340、在视口内 |
+
+E2E 证据目录：`test/e2e/artifacts-v2.10/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.10 bash scripts/e2e-isolated-profile.sh`），截图 `browser-background-mode-help.png`、`browser-members.png`、`browser-members-scroll.png`、`browser-delete-team.png`。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
 
 **文档结束**
