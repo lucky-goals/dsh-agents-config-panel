@@ -1,0 +1,90 @@
+src/index.ts
+  s_f7d78b88660516::t_91dd7b6fcc3477 11
+  s_f7d78b88660516::t_91fee5304d1816 143-147,154-167
+  s_f7d78b88660516::t_6a55b4614169c3 126-127
+  s_f7d78b88660516::t_30571b7725a4a5 104-107
+  s_798740c998e1c0::t_8efd90903a9e52 184
+  s_f7d78b88660516::t_b491dbc3ff2da3 185
+  s_f7d78b88660516::t_c5c28d2c21b59b 66-95
+src/host/preset-bootstrap.test.ts
+  s_f7d78b88660516::t_33db06a0be7571 2-51,53-181
+  s_f7d78b88660516::t_15a709f8ff8236 1
+  s_f7d78b88660516::t_473b0efa72e5be 52
+src/host/http-routes.ts
+  s_f7d78b88660516::t_4313b185ba6397 585-597
+  s_f7d78b88660516::t_2b54fd60c60f69 80-84
+  s_798740c998e1c0::t_370e30be44d28e 71-77
+  s_798740c998e1c0::t_219edbfb04d1ef 562
+  s_798740c998e1c0::t_897e17745b0fe5 497-521
+  s_798740c998e1c0::t_3a1e5a508d969c 745-778
+  s_798740c998e1c0::t_52f11e93ac1279 18-25
+scripts/verify-runtime-deps.mjs
+  s_798740c998e1c0::t_491f0eaef5f5f6 164-169,173-174,179,181
+src/client/shared/api-client.ts
+  s_798740c998e1c0::t_2b48b470e2e7b5 47-48
+  s_798740c998e1c0::t_dac39161d0cca9 158-164
+src/client/panel-a/subagent-panel-store.test.ts
+  s_f7d78b88660516::t_73dc9959277aea 510-521
+src/host/preset-bootstrap.ts
+  s_f7d78b88660516::t_2c8dc8baa7f03d 1-13,15-16,18-43,45-48,50-51,53-225,227-233,239-244,250-279,282-283,288-289,291-292,294,296-299,301-363
+  s_f7d78b88660516::t_7c9c80eaa808eb 284-287
+  s_f7d78b88660516::t_89b3ac205fce32 14,17,44,49,52,226,234-238,245-249,280-281,290,293,295,300
+src/host/agent-teams-bootstrap.ts
+  s_798740c998e1c0::t_46fcc0e6a73e65 204-213
+  s_798740c998e1c0::t_a8f40ab971bae8 226
+  s_798740c998e1c0::t_939211eab874b4 1-175,177-203,214-225,227-240
+  s_798740c998e1c0::t_c0427cd2ca6cfc 176
+src/host/teams-editor.ts
+  s_798740c998e1c0::t_a80a426c561a21 32
+  s_798740c998e1c0::t_624316d8ed236c 43
+src/client/shared/api-types.ts
+  s_798740c998e1c0::t_ab94ba426e895f 66-74
+  s_f7d78b88660516::t_2f0edfe5ea50a1 82-83
+src/host/members-editor.ts
+  s_798740c998e1c0::t_7a5f891afaf368 24
+src/host/http-routes.test.ts
+  s_798740c998e1c0::t_67c2097c5c75f7 966-985,987-1030
+  s_798740c998e1c0::t_2677bbe2ab4a60 986
+  s_f7d78b88660516::t_a495600462c359 1031-1060
+  s_f7d78b88660516::t_abd413a2f395ab 15
+src/index.test.ts
+  s_798740c998e1c0::t_bed5abb6bb07bd 124
+  s_798740c998e1c0::t_da2ffc26c3ef1d 192,196,231
+  s_798740c998e1c0::t_124e0bea1f6520 143,147
+src/host/agent-teams-bootstrap.test.ts
+  s_798740c998e1c0::t_fd35a13cda607e 60
+  s_798740c998e1c0::t_4b3c9b54a2ff14 1,6-7,44-49
+  s_798740c998e1c0::t_8ddd30ce41becf 2-5,8-43,50-59,61-101
+src/client/panel-b/members-panel-store.ts
+  s_798740c998e1c0::t_cf888384f447c9 283-284
+  s_798740c998e1c0::t_9d70fbd554d9a5 430-431,434-436
+  s_798740c998e1c0::t_6972807bd7f5b4 351-370
+src/client/panel-a/subagent-panel-store.ts
+  s_f7d78b88660516::t_9a7e53dca94f6a 515
+src/client/panel-b/members-panel-store.test.ts
+  s_798740c998e1c0::t_57dad15da99667 473-495
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.45-trip",
+  "base_commit_sha": "8c4f34afe8c19c67f45a01ac822cc323de1e3f14",
+  "prompts": {},
+  "sessions": {
+    "s_798740c998e1c0": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "1a167292-f5db-406c-8188-7d2a7088fe64",
+        "model": "grok-4.7"
+      },
+      "human_author": "Jiawen Yuan <jwyuan@trip.com>"
+    },
+    "s_f7d78b88660516": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "9dba3087-8659-42a4-a346-732670ae25f9",
+        "model": "grok-4.7"
+      },
+      "human_author": "Jiawen Yuan <jwyuan@trip.com>"
+    }
+  }
+}
