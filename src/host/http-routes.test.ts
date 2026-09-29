@@ -12,6 +12,7 @@ import { computeRevision } from './patch-io.js';
 import { listSubagents } from './subagent-manager.js';
 import { listMembers } from './members-editor.js';
 import { listAcps } from './acp-manager.js';
+import { ensureStandardAcpPreset, presetInitNotice } from './preset-bootstrap.js';
 
 interface MockResponse {
   statusCode: number;
@@ -960,5 +961,100 @@ describe('v2.7 POST /teams remove (real fixture)', () => {
     expect((await post({ expectedRevision: rev(), action: 'remove', name: 'nope', confirm: 'thinktwice' })).status).toBe(404);
     expect((await post({ expectedRevision: '0'.repeat(64), action: 'remove', name: 'standard-acp', confirm: 'thinktwice' })).status).toBe(409);
     expect(store.text()).toBe(REAL_FIXTURE);
+  });
+});
+
+describe('agent-teams bootstrap', () => {
+  const userPatch = `# user layer
+- id: locale
+  config:
+    preference: zh
+- id: wuyou-agent
+  disabled: false
+`;
+  const bundleConfig = { stateDir: '.agent-teams', memberProvider: 'spawn' };
+
+  it('reports an installed package and writes the basic profile once', async () => {
+    const store = memoryIO(userPatch);
+    const routes = createRoutes({
+      io: store.io,
+      profileDefault: 'standard-acp',
+      getCatalog: asyncCatalog(),
+      getAtomicWriteDiagnostics: () => ({ loaded: true }),
+      readInstalledAgentTeams: () => ({ version: '0.1.22-rc.1', config: bundleConfig }),
+    });
+    const before = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state?profile=standard-acp'));
+    expect(before.status).toBe(200);
+    expect(before.data.agentTeams).toEqual({ installed: true, seedable: true, version: '0.1.22-rc.1' });
+    expect(before.data.errors.members).toContain('已安装 @nanmicoder/dsh-agent-teams@0.1.22-rc.1');
+    expect(before.data.teamProfiles).toEqual([]);
+
+    const seeded = await call(routes, '/teams/bootstrap', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/teams/bootstrap?profile=standard-acp', {
+      expectedRevision: before.data.revision,
+    }));
+    expect(seeded.status).toBe(200);
+    expect(seeded.data.notice).toContain('generalist');
+    expect(seeded.data.teamProfiles).toEqual(['standard-acp']);
+    expect(seeded.data.members.map((member: { name: string }) => member.name)).toEqual(['generalist']);
+    expect(seeded.data.errors.members).toBeUndefined();
+    expect(store.text()).toContain('stateDir: .agent-teams');
+    expect(store.text()).toContain('memberProvider: spawn');
+    expect(store.text().startsWith(userPatch.trimEnd())).toBe(true);
+
+    const again = await call(routes, '/teams/bootstrap', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/teams/bootstrap?profile=standard-acp', {
+      expectedRevision: seeded.data.revision,
+    }));
+    expect(again.status).toBe(200);
+    expect(again.data.notice).toContain('无需初始化');
+    expect(again.data.revision).toBe(seeded.data.revision);
+  });
+
+  it('keeps the original missing-plugin message when the package is not installed', async () => {
+    const store = memoryIO(userPatch);
+    const routes = createRoutes({
+      io: store.io,
+      profileDefault: 'standard-acp',
+      getCatalog: asyncCatalog(),
+      readInstalledAgentTeams: () => undefined,
+    });
+    const { data } = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state'));
+    expect(data.agentTeams).toBeUndefined();
+    expect(data.errors.members).toBe('未找到 agent-teams 配置，请确认已安装 @nanmicoder/dsh-agent-teams');
+    const denied = await call(routes, '/teams/bootstrap', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/teams/bootstrap', {
+      expectedRevision: data.revision,
+    }));
+    expect(denied.status).toBe(500);
+    expect(denied.data.code).toBe('STRUCTURE');
+    expect(store.text()).toBe(userPatch);
+  });
+});
+
+describe('preset bootstrap on state', () => {
+  it('GET /state seeds a missing preset-standard-acp before listing subagents', async () => {
+    const bare = '- id: locale\n  name: locale\n';
+    const store = memoryIO(bare);
+    let notice: string | null = null;
+    const routes = createRoutes({
+      io: store.io,
+      profileDefault: 'standard-acp',
+      getCatalog: asyncCatalog(),
+      ensurePreset: async () => {
+        const result = await ensureStandardAcpPreset(store.io, undefined, { info() {}, warn() {}, error() {} });
+        if (result.notice) notice = result.notice;
+        return { yamlText: result.yamlText, notice };
+      },
+    });
+    const { status, data } = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state'));
+    expect(status).toBe(200);
+    expect(data.errors.subagents).toBeUndefined();
+    expect(data.subagents.map((row: { id: string }) => row.id)).toContain('tool-subagent');
+    expect(data.notice).toBe(presetInitNotice('minimal', false));
+    expect(store.text().startsWith(bare)).toBe(true);
+
+    const again = await call(routes, '/state', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/state'));
+    expect(again.status).toBe(200);
+    expect(again.data.notice).toBe(data.notice);
+    expect(again.data.revision).toBe(data.revision);
+    expect(store.text().match(/id: preset-standard-acp/g)).toHaveLength(1);
   });
 });

@@ -21,8 +21,7 @@ import {
 import { validateModelRoute, type ModelCatalog } from './catalog.js';
 import type { MutationResult } from './types.js';
 import { CLEARABLE_MEMBER_FIELDS, type TeamMember, type TeamMemberPatch } from './members-editor-types.js';
-
-const NO_AGENT_TEAMS = '未找到 agent-teams 配置，请确认已安装 @nanmicoder/dsh-agent-teams';
+import { AGENT_TEAMS_NOT_IN_PATCH as NO_AGENT_TEAMS } from './agent-teams-bootstrap.js';
 const memberProfileError = (profile: string) => `未找到团队 profile '${profile}'`;
 
 function error(code: Exclude<MutationResult, { ok: true }>['code'], message: string): MutationResult {

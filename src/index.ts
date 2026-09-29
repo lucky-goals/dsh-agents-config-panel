@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createPatchIO } from './host/patch-file.js';
 import { createRoutes } from './host/http-routes.js';
+import { ensureStandardAcpPreset, readInstalledStandardPreset } from './host/preset-bootstrap.js';
 import { loadAtomicWrite, buildCatalogWithSource } from './host/runtime-deps.js';
 import type { LLMService, AtomicWriteLoadSuccess } from './host/runtime-deps.js';
 import type { AtomicWriteDiagnostics } from './host/http-routes.js';
@@ -62,6 +63,36 @@ interface Context {
   on(event: 'internal/service', listener: (name: string, value: unknown) => void): unknown;
 }
 
+/** Module URLs used to resolve optional host packages (atomic-write, standard preset). */
+function resolutionAnchors(profileDir: string): string[] {
+  const anchors: string[] = [
+    import.meta.url,
+    pathToFileURL(join(profileDir, 'package.json')).href,
+  ];
+  const entry = process.argv[1];
+  if (typeof entry === 'string' && entry.length > 0) {
+    try {
+      anchors.push(pathToFileURL(realpathSync(entry)).href);
+    } catch {
+      // Entry script not on disk (e.g. `node -e`); skip this anchor.
+    }
+  }
+  try {
+    const runtimeRequire = createRequire(import.meta.url);
+    const cordisPath = runtimeRequire.resolve('@deepseek-ai/cordis/package.json');
+    anchors.push(pathToFileURL(cordisPath).href);
+  } catch {
+    // Cordis not resolvable from plugin location, skip this anchor.
+  }
+  return anchors;
+}
+
+function errorCode(caught: unknown): string | undefined {
+  if (!caught || typeof caught !== 'object' || !('code' in caught)) return undefined;
+  const code = (caught as { code: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 export function apply(ctx: Context, config?: Config) {
   const resolvedConfig = config ?? {};
   const profileDefault = resolvedConfig.profileDefault ?? 'standard-acp';
@@ -70,6 +101,10 @@ export function apply(ctx: Context, config?: Config) {
   // dsh web keeps plugin logs in an in-memory buffer only, so the load outcome
   // is also surfaced through state diagnostics.
   let atomicWriteDiagnostics: AtomicWriteDiagnostics = { loaded: false };
+  let standardTemplate: string | undefined;
+  let templateLoaded = false;
+  // Kept for the life of this process so a panel refresh still shows the restart hint.
+  let presetNotice: string | null = null;
 
   // Web services can bind after this plugin during concurrent activation.
   const tryRegisterWeb = () => {
@@ -88,35 +123,10 @@ export function apply(ctx: Context, config?: Config) {
       return;
     }
 
+    const anchors = resolutionAnchors(profileContext.dir);
+
     // Lazy load atomic-write with multiple anchors
     if (atomicWriteCache === undefined) {
-      const anchors: string[] = [
-        // 1. Plugin's own location (works for copied installation)
-        import.meta.url,
-        // 2. Profile directory (works for symlinked installation)
-        pathToFileURL(join(profileContext.dir, 'package.json')).href,
-      ];
-
-      // 3. DSH runtime location: the running `dsh` entry script (argv[1],
-      //    real path), whose node_modules hold the host's own dsh-atomic-write.
-      const entry = process.argv[1];
-      if (typeof entry === 'string' && entry.length > 0) {
-        try {
-          anchors.push(pathToFileURL(realpathSync(entry)).href);
-        } catch {
-          // Entry script not on disk (e.g. `node -e`); skip this anchor.
-        }
-      }
-
-      // 4. Wherever @deepseek-ai/cordis resolves from the plugin (last resort).
-      try {
-        const runtimeRequire = createRequire(import.meta.url);
-        const cordisPath = runtimeRequire.resolve('@deepseek-ai/cordis/package.json');
-        anchors.push(pathToFileURL(cordisPath).href);
-      } catch {
-        // Cordis not resolvable from plugin location, skip this anchor
-      }
-
       const result = loadAtomicWrite(anchors);
 
       if ('error' in result) {
@@ -130,11 +140,31 @@ export function apply(ctx: Context, config?: Config) {
       }
     }
 
+    if (!templateLoaded) {
+      templateLoaded = true;
+      standardTemplate = readInstalledStandardPreset(anchors);
+    }
+
     const io = createPatchIO(
       profileContext.dir,
       atomicWriteCache?.withFileLock,
       atomicWriteCache?.writeFileAtomic
     );
+
+    const ensurePreset = async () => {
+      const result = await ensureStandardAcpPreset(io, standardTemplate, ctx.logger);
+      if (result.notice) presetNotice = result.notice;
+      return { yamlText: result.yamlText, notice: presetNotice };
+    };
+    // Startup writes the preset even if the panel is never opened, so the next
+    // restart can mount it. The state route awaits the same function.
+    void ensurePreset().catch((err) => {
+      if (errorCode(err) === 'ENOENT') {
+        ctx.logger.warn('wuyou-agent: 未找到 cordis.patch.yml，跳过 preset-standard-acp 初始化');
+        return;
+      }
+      ctx.logger.error(`wuyou-agent: 初始化 preset-standard-acp 失败：${err instanceof Error ? err.message : String(err)}`);
+    });
 
     const routes = createRoutes({
       io,
@@ -151,6 +181,8 @@ export function apply(ctx: Context, config?: Config) {
         name: profileContext.name || basename(profileContext.dir),
         patchPath: profileContext.patchPath || join(profileContext.dir, 'cordis.patch.yml'),
       },
+      profileDir: profileContext.dir,
+      ensurePreset,
       logger: ctx.logger,
     });
 

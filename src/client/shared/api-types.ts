@@ -63,6 +63,15 @@ export interface StateResponse {
   acps?: AcpRow[];
   /** v2.3: the DSH profile this Host instance edits (web, desktop, cli, ...). */
   dshProfile?: { name: string; patchPath: string };
+  /**
+   * Installed `@nanmicoder/dsh-agent-teams` in this DSH profile.
+   * `seedable` means its bundle config was read and a basic team profile can be written.
+   */
+  agentTeams?: {
+    installed: boolean;
+    seedable?: boolean;
+    version?: string;
+  };
   errors: {
     subagents?: string;
     members?: string;
@@ -70,6 +79,8 @@ export interface StateResponse {
   };
   /** Host runtime diagnostics (atomic-write loading, catalog source). */
   diagnostics?: StateDiagnostics;
+  /** Set when this process just initialized preset-standard-acp. */
+  notice?: string;
 }
 
 export interface StateDiagnostics {

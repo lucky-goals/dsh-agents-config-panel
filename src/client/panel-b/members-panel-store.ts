@@ -280,6 +280,8 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
    * issued before a write cannot overwrite the write's result.
    */
   let requestSeq = 0;
+  /** One automatic seed per panel open; a failed attempt can be retried by refreshing. */
+  let bootstrapAttempted = false;
 
   function notify() {
     listeners.forEach((listener) => listener());
@@ -346,6 +348,27 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
   }
 
   /**
+   * The installed agent-teams plugin mounts from its bundle patch and does not
+   * put a team profile in the user layer. Opening this panel writes that
+   * basic profile once, so the list is editable.
+   */
+  async function maybeBootstrap(response: StateResponse, requested: string): Promise<StateResponse & { notice?: string }> {
+    const canSeed = response.agentTeams?.installed === true
+      && response.agentTeams.seedable === true
+      && (response.teamProfiles?.length ?? 0) === 0
+      && Boolean(response.errors?.members)
+      && response.diagnostics?.atomicWrite?.loaded !== false;
+    if (!canSeed || bootstrapAttempted || typeof api.bootstrapTeams !== 'function') return response;
+    bootstrapAttempted = true;
+    try {
+      return await api.bootstrapTeams({ expectedRevision: response.revision }, requested);
+    } catch (err) {
+      bootstrapAttempted = false;
+      throw err;
+    }
+  }
+
+  /**
    * After a 409: keep `loading` true (the profile picker stays disabled)
    * until the refreshed members land.
    */
@@ -404,10 +427,13 @@ export function createMembersStore(api: ApiClient, defaultProfile = DEFAULT_TEAM
       try {
         const response = await guardedRead(requested);
         if (!response) return; // a newer request or profile owns the state now
+        const ready = await maybeBootstrap(response, requested);
+        if (seq !== requestSeq || state.profile !== requested) return;
         setState({
           loading: false,
-          ...fromResponse(response),
-          error: response.errors.members || null,
+          ...fromResponse(ready),
+          error: ready.errors.members || null,
+          notice: ready === response ? null : ready.notice ?? null,
         });
       } catch (err: any) {
         if (seq !== requestSeq || state.profile !== requested) return;

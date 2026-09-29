@@ -161,18 +161,24 @@ console.log('✓ Imported built modules');
     '/plugins/dsh-wuyou-agent/api/state',
     '/plugins/dsh-wuyou-agent/api/subagents',
     '/plugins/dsh-wuyou-agent/api/members',
+    '/plugins/dsh-wuyou-agent/api/acps',
+    '/plugins/dsh-wuyou-agent/api/acps/test',
+    '/plugins/dsh-wuyou-agent/api/teams',
+    '/plugins/dsh-wuyou-agent/api/teams/bootstrap',
+    '/plugins/dsh-wuyou-agent/api/teams/import',
+    '/plugins/dsh-wuyou-agent/api/subagents/import',
   ];
   const actualRoutePaths = registeredRoutes.map((route) => route.path);
   if (
-    registeredRoutes.length !== 3
-    || collectedEffects.length !== 3
+    registeredRoutes.length !== expectedRoutePaths.length
+    || collectedEffects.length !== expectedRoutePaths.length
     || registeredDisposers.some((disposer, index) => disposer !== collectedEffects[index])
     || registeredRoutes.some((route) => route.kind !== 'exact')
     || JSON.stringify(actualRoutePaths) !== JSON.stringify(expectedRoutePaths)
   ) {
-    fail('apply(ctx, undefined) did not lifecycle-register the three expected API routes', actualRoutePaths);
+    fail('apply(ctx, undefined) did not lifecycle-register the expected API routes', actualRoutePaths);
   }
-  console.log('✓ apply(ctx, undefined) registered three lifecycle-owned API routes');
+  console.log(`✓ apply(ctx, undefined) registered ${expectedRoutePaths.length} lifecycle-owned API routes`);
 }
 
 // 3. loadAtomicWrite against the real DSH runtime (portable discovery, else SKIP)

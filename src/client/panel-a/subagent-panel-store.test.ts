@@ -507,5 +507,17 @@ describe('SubagentPanelStore', () => {
       expect(store.getSnapshot().diagnostics?.catalogSource).toBe('patch');
       expect(store.getSnapshot().notice).toBe('已保存，新建会话后生效');
     });
+
+    it('shows the preset-init notice returned with state', async () => {
+      const api = createMockApi();
+      vi.mocked(api.getState).mockResolvedValue({
+        ...stateWith(),
+        notice: '已初始化 preset-standard-acp，并将默认预设设为 standard-acp。请再重启一次 DSH，新会话才会挂载该预设',
+      });
+      const store = createSubagentStore(api);
+      await store.load();
+      expect(store.getSnapshot().error).toBeNull();
+      expect(store.getSnapshot().notice).toContain('已初始化 preset-standard-acp');
+    });
   });
 });

@@ -15,6 +15,14 @@ import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } 
 import { listAcps, createAcp, updateAcp, removeAcp, importSubagentBundle, ACP_EDITABLE_FIELDS } from './acp-manager.js';
 import { probeAcp } from './acp-probe.js';
 import { createTeamProfile, importTeamProfiles, listTeamProfileConfigs, removeTeamProfile } from './teams-editor.js';
+import {
+  AGENT_TEAMS_NOT_IN_PATCH,
+  AGENT_TEAMS_PACKAGE,
+  BASIC_TEAM_SEEDED_NOTICE,
+  loadInstalledAgentTeams,
+  seedBasicTeamProfile,
+  type InstalledAgentTeams,
+} from './agent-teams-bootstrap.js';
 
 /** Maximum accepted request body, in bytes. */
 export const MAX_BODY_BYTES = 1024 * 1024;
@@ -60,8 +68,20 @@ export interface RouteContext {
    * name the source profile; each DSH profile runs its own plugin instance.
    */
   dshProfile?: { name: string; patchPath: string };
+  /**
+   * Profile directory used to detect an installed `@nanmicoder/dsh-agent-teams`.
+   * When set, state reports `agentTeams` and the panel can seed a basic profile.
+   */
+  profileDir?: string;
+  /** Test override for {@link loadInstalledAgentTeams}. */
+  readInstalledAgentTeams?: () => InstalledAgentTeams | undefined;
   /** ACP test runner (v2.4); tests inject a fake or a short timeout. */
   probeAcp?: typeof probeAcp;
+  /**
+   * Seed `preset-standard-acp` when the user patch has no delegation group.
+   * Returns the patch text to serve, plus a notice after this process writes it.
+   */
+  ensurePreset?: () => Promise<{ yamlText: string; notice: string | null }>;
   logger?: { error(msg: string): void };
 }
 
@@ -474,6 +494,31 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
   const queryProfile = (req: IncomingMessage): string =>
     new URL(req.url ?? '/', 'http://x').searchParams.get('profile') ?? profileDefault;
 
+  const installedAgentTeams = (): InstalledAgentTeams | undefined => {
+    if (context.readInstalledAgentTeams) return context.readInstalledAgentTeams();
+    if (context.profileDir) return loadInstalledAgentTeams(context.profileDir);
+    return undefined;
+  };
+
+  const presentState = <T extends { errors: { members?: string } }>(state: T) => {
+    const found = installedAgentTeams();
+    if (!found) return state;
+    const members = state.errors.members === AGENT_TEAMS_NOT_IN_PATCH
+      ? (found.config
+        ? `已安装 ${AGENT_TEAMS_PACKAGE}${found.version ? `@${found.version}` : ''}，但 cordis.patch.yml 里还没有团队 profile`
+        : `已安装 ${AGENT_TEAMS_PACKAGE}，但读不到插件自带的配置，无法初始化团队 profile`)
+      : state.errors.members;
+    return {
+      ...state,
+      agentTeams: {
+        installed: true,
+        seedable: found.config !== undefined,
+        ...(found.version ? { version: found.version } : {}),
+      },
+      errors: members === state.errors.members ? state.errors : { ...state.errors, members },
+    };
+  };
+
   /**
    * Run one locked mutation. The catalog is awaited inside the lock against
    * the exact text being transformed, so validation never sees a Promise or a
@@ -514,7 +559,7 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
     extra: Record<string, unknown> = {},
   ) => {
     sendJson(res, 200, {
-      ...buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics(), outcome.providers, context.dshProfile),
+      ...presentState(buildState(outcome.yamlText, profile, outcome.catalog, atomicWriteDiagnostics(), outcome.providers, context.dshProfile)),
       notice: SAVED_NOTICE,
       ...extra,
     });
@@ -537,9 +582,19 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
       async handler(req, res) {
         try {
           const profile = queryProfile(req);
-          const yamlText = await io.readPatch();
-          const catalog = await loadCatalog(yamlText);
-          sendJson(res, 200, buildState(yamlText, profile, catalog, atomicWriteDiagnostics(), loadProviders(yamlText), context.dshProfile));
+          const prepared = context.ensurePreset
+            ? await context.ensurePreset()
+            : { yamlText: await io.readPatch(), notice: null as string | null };
+          const catalog = await loadCatalog(prepared.yamlText);
+          const state = presentState(buildState(
+            prepared.yamlText,
+            profile,
+            catalog,
+            atomicWriteDiagnostics(),
+            loadProviders(prepared.yamlText),
+            context.dshProfile,
+          ));
+          sendJson(res, 200, prepared.notice ? { ...state, notice: prepared.notice } : state);
         } catch (err) {
           errorResponse(res, err, logger);
         }
@@ -679,6 +734,42 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           const outcome = await mutate(expectedRevision, (yamlText) => createTeamProfile(yamlText, input));
           // The response state is for the new team, so the panel can switch to it.
           sendMutationState(res, input.name, outcome);
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/teams/bootstrap',
+      async handler(req, res) {
+        try {
+          if (!requirePost(req, res)) return;
+          const body = await readJsonBody(req);
+          const revision = body.expectedRevision;
+          if (typeof revision !== 'string' || !REVISION_PATTERN.test(revision)) {
+            throw invalidField('expectedRevision', '必须是 64 位小写十六进制 revision');
+          }
+          const found = installedAgentTeams();
+          if (!found?.config) {
+            throw new RouteError(
+              'STRUCTURE',
+              found
+                ? `已安装 ${AGENT_TEAMS_PACKAGE}，但读不到插件自带的配置，无法初始化团队 profile`
+                : AGENT_TEAMS_NOT_IN_PATCH,
+            );
+          }
+          const bundleConfig = found.config;
+          let changed = false;
+          const outcome = await mutate(revision, (yamlText) => {
+            const seeded = seedBasicTeamProfile(yamlText, bundleConfig);
+            if (seeded.ok && seeded.yamlText !== yamlText) changed = true;
+            return seeded;
+          });
+          sendMutationState(res, queryProfile(req), outcome, {
+            notice: changed ? BASIC_TEAM_SEEDED_NOTICE : '团队 profile 已存在，无需初始化',
+          });
         } catch (err) {
           errorResponse(res, err, logger);
         }

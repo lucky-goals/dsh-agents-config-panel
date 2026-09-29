@@ -512,6 +512,7 @@ export function createSubagentStore(api: ApiClient): SubagentPanelStore {
           ...fromResponse(response),
           diagnostics: response.diagnostics ?? null,
           error: response.errors.subagents || null,
+          notice: response.notice ?? null,
         });
       } catch (err: any) {
         if (seq !== requestSeq) return;

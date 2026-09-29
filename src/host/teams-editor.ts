@@ -29,6 +29,7 @@ import {
   yamlValue,
 } from './patch-io.js';
 import type { MutationResult } from './types.js';
+import { AGENT_TEAMS_NOT_IN_PATCH } from './agent-teams-bootstrap.js';
 
 /** agent-teams MAX_TEAM_PROFILES. */
 export const MAX_TEAM_PROFILES = 16;
@@ -39,7 +40,7 @@ const MEMBER_KEYS = ['name', 'role', 'provider', 'model', 'reasoning_effort', 'e
 /** Team profile names this panel writes: safe as `--profile <name>` and as a plain YAML key. */
 const TEAM_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 const MEMBER_NAME = /^[a-z][a-z0-9-]*$/;
-const NO_AGENT_TEAMS = '未找到 agent-teams 配置，请确认已安装 @nanmicoder/dsh-agent-teams';
+const NO_AGENT_TEAMS = AGENT_TEAMS_NOT_IN_PATCH;
 const NO_PROFILES = 'agent-teams 配置里没有块格式的 profiles 映射，无法写入团队';
 
 export type TeamProfile = Record<string, unknown>;

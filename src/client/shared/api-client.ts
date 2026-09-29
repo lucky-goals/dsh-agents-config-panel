@@ -44,6 +44,8 @@ export interface ApiClient {
   importTeams(body: TeamsImportRequest, profile?: string): Promise<TeamsImportResponse>;
   /** v2.7: delete a team profile; `profile` is the team being viewed (kept unless removed). */
   removeTeam(body: TeamRemoveRequest, profile?: string): Promise<MutationSuccessResponse>;
+  /** Write a basic agent-teams profile when the package is installed but the user patch has none. */
+  bootstrapTeams(body: { expectedRevision: string }, profile?: string): Promise<MutationSuccessResponse>;
 }
 
 /**
@@ -151,6 +153,13 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
     async removeTeam(body: TeamRemoveRequest, profile?: string): Promise<MutationSuccessResponse> {
       return request<MutationSuccessResponse>(`/teams${profileQuery(profile)}`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async bootstrapTeams(body: { expectedRevision: string }, profile?: string): Promise<MutationSuccessResponse> {
+      return request<MutationSuccessResponse>(`/teams/bootstrap${profileQuery(profile)}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
 
     async importTeams(body: TeamsImportRequest, profile?: string): Promise<TeamsImportResponse> {

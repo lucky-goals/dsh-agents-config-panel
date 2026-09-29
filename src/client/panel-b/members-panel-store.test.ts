@@ -470,6 +470,30 @@ describe('MembersPanelStore', () => {
       expect(store.getSnapshot().members).toEqual([]);
     });
 
+    it('writes a basic team profile when the installed plugin has none in the user patch', async () => {
+      const api = createMockApi();
+      const revision = 'a'.repeat(64);
+      vi.mocked(api.getState).mockResolvedValue(stateFor('standard-acp', [], {
+        revision,
+        errors: { members: '已安装 @nanmicoder/dsh-agent-teams@0.1.22-rc.1，但 cordis.patch.yml 里还没有团队 profile' },
+        agentTeams: { installed: true, seedable: true, version: '0.1.22-rc.1' },
+        diagnostics: { atomicWrite: { loaded: true }, catalogSource: 'runtime', hostApi: 2 },
+      }));
+      const seeded = {
+        ...stateFor('standard-acp', ['standard-acp'], { revision: 'b'.repeat(64), members: [{ name: 'generalist' }] }),
+        notice: '已初始化基础团队配置（profile standard-acp，成员 generalist）。新建会话后生效',
+      };
+      api.bootstrapTeams = vi.fn(async () => seeded);
+      const store = createMembersStore(api);
+      await store.load();
+
+      expect(api.bootstrapTeams).toHaveBeenCalledWith({ expectedRevision: revision }, 'standard-acp');
+      expect(store.getSnapshot().error).toBeNull();
+      expect(store.getSnapshot().teamProfiles).toEqual(['standard-acp']);
+      expect(store.getSnapshot().members).toEqual([{ name: 'generalist' }]);
+      expect(store.getSnapshot().notice).toContain('generalist');
+    });
+
     it('setProfile reloads members and later writes carry the new profile', async () => {
       const api = createMockApi();
       vi.mocked(api.getState).mockImplementation(async (p) => stateFor(p, ['review', 'standard-acp']));
