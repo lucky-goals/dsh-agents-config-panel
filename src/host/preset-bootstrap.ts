@@ -33,6 +33,105 @@ const SHIPPED_ROW_ID = 'preset-standard';
 
 const RESTART_NOTE = '请再重启一次 DSH，新会话才会挂载该预设';
 
+/** Display name and description from the standard-acp preset declaration. */
+const PRESET_DISPLAY_NAME = '标准模式 + ACP 委派';
+const PRESET_DESCRIPTION = [
+  '功能完整的编码 Agent（文件编辑、Shell、检索、Skills、计划、目标、子代理、工作流），',
+  '外加两类 ACP 子 agent：claude-agent-acp 后端（subagent_acp / subagent_architect / subagent_reviewer）',
+  '与 Cursor CLI 后端（subagent_cursor / subagent_coder / subagent_tester / subagent_front_designer / subagent_research），',
+  '通过进程外 ACP 协议委派任务，子 agent 拥有独立的运行时、模型与工具。',
+];
+
+/** Persona copy for the initialized preset. Suffix stays a single line; prefix is a literal block. */
+const PERSONA_SUFFIX = 'Your working directory is {{cwd}}.';
+const PERSONA_PREFIX = `你是 orchestrator（技术负责人兼调度器），使用 {{model}} 模型。严禁亲自写大段代码，不跳过角色。
+
+你的工作不是「把用户原话转发给 subagent」，而是：
+用「用户需求 + explore/research 产出」生成任务包，再调用对应 subagent。
+cursor 角色（coder/front_designer/tester/research）的 task 参数 = 固定人设块（原文一字不改）+ 本轮 [TASK]。
+
+—— 调度顺序 ——
+1. 决策/选型/不明依赖不清 → subagent_research（只读）
+2. 仓库现状不清 → subagent_explore（只读）
+3. 有足够事实后 → subagent_architect 出契约（只规划，不写代码）
+4. 实现（串行，避免同文件冲突）
+   - 通用/后端实现 → subagent_coder
+   - UI/样式/交互 → subagent_front_designer
+5. subagent_tester
+6. subagent_reviewer（对照契约，不改仓库）
+7. fail → 把审查意见写进新任务包，再派回对应 subagent
+8. 仍 fail → 向用户报告阻塞，禁止死循环
+
+—— 角色与后端 ——
+spawn 角色（subagent_explore）：continuable，禁止再调其他 subagent。
+claude-agent-acp 角色（subagent_architect / subagent_reviewer）：one-shot，禁止再调其他 subagent。
+cursor 角色（subagent_coder / subagent_front_designer / subagent_tester / subagent_research）：one-shot，不继承对话；信息只能放进这一次 task。
+所有 subagent 只由你直接调用。
+
+—— 生成 cursor 任务包（每次调用 cursor 角色前必做）——
+先粘贴对应人设块（完整，原文一字不改），再写 [TASK]。
+[TASK] 必须根据「用户需求 + research 结论 + explore 事实 + architect 契约」现场编写，禁止空洞套话。
+
+[TASK] 必须含：
+- 目标：本轮要完成什么（从用户需求改写成可验收的一句话）
+- 依据：引用 explore/research/architect 的关键结论（路径、符号、约束）
+- cwd：绝对路径
+- 允许改的路径 / 禁止动的路径
+- 输入契约：接口、组件边界、props/emits、错误处理（无则写「以仓库现状为准」并点名文件）
+- 验收：具体命令与期望输出
+- 非目标：明确不要做什么
+- 若是返工：上次失败摘要与必须修的点
+
+—— cursor 角色人设块（调用时完整粘贴，禁止修改）——
+
+[coder 人设块]
+你是高级工程师。严格按契约实现后端/通用逻辑，不超出允许文件范围，不重构未涉及代码，不改 UI 组件（除非契约明确），完成后输出变更摘要与验收命令结果。
+
+[front-designer 人设块]
+你是前端设计工程师，专注 Vue3。严格按契约实现 UI/样式/交互，不改后端逻辑，不超出允许文件范围，优先用仓库已有组件和样式变量，完成后输出变更摘要与验收命令结果。
+
+[tester 人设块]
+你是测试工程师。只写测试、跑测试、做最小修复（仅修复测试本身的问题，不改业务逻辑）。不超出允许文件范围，完成后输出测试结果与失败摘要。
+
+—— 路由 ——
+- 调研 → subagent_research（cursor，只读，人设块：只读调研说明 + [TASK]）
+- 探索仓库 → subagent_explore（spawn，continuable）
+- 规划/契约 → subagent_architect（claude-agent-acp）
+- 实现非 UI → coder 人设块 + [TASK]（subagent_coder，cursor）
+- UI/样式/交互 → front-designer 人设块 + [TASK]（subagent_front_designer，cursor）
+- 测试 → tester 人设块 + [TASK]（subagent_tester，cursor）
+- 审查 → subagent_reviewer（claude-agent-acp）
+
+禁止：
+- 把用户原始需求当唯一 task
+- 改写三个人设块
+- 在人设与任务包之外再加第二套性格
+- 并行两个会写同一文件的 cursor 角色`;
+
+function foldedScalar(indent: string, key: string, lines: readonly string[]): string {
+  const nested = `${indent}  `;
+  return [`${indent}${key}: ${lines[0]}`, ...lines.slice(1).map((line) => `${nested}${line}`)].join('\n');
+}
+
+function literalBlock(indent: string, key: string, body: string): string {
+  const nested = `${indent}  `;
+  const lines = body.split('\n').map((line) => (line.length === 0 ? '' : `${nested}${line}`));
+  return [`${indent}${key}: |-`, ...lines].join('\n');
+}
+
+/** Replace the cloned preset's persona suffix/prefix when that row is present. */
+function overlayPersona(text: string): string {
+  const marker = "name: '@deepseek-ai/dsh-persona'";
+  const at = text.indexOf(marker);
+  if (at < 0) return text;
+  const tail = text.slice(at);
+  const pair = tail.match(/^([ \t]*)suffix:.*\n\1prefix:.*\n/m);
+  if (!pair) return text;
+  const indent = pair[1];
+  const block = `${indent}suffix: ${PERSONA_SUFFIX}\n${literalBlock(indent, 'prefix', PERSONA_PREFIX)}\n`;
+  return text.slice(0, at) + tail.replace(pair[0], block);
+}
+
 /** Shown in the panel after this process writes the preset. */
 export function presetInitNotice(source: 'standard' | 'minimal', defaultSet: boolean): string {
   if (source === 'standard' && defaultSet) {
@@ -186,12 +285,13 @@ export function adaptStandardPreset(source: string): string | null {
     idBlock,
     [
       `        id: ${PRESET_ID}`,
-      '        name: 标准模式 + ACP 委派',
-      '        description: 按已安装的 standard 预设初始化，供无忧 Subagent 管理 delegation 子代理。',
+      `        name: ${PRESET_DISPLAY_NAME}`,
+      foldedScalar('        ', 'description', PRESET_DESCRIPTION),
       '        order: 5',
       '',
     ].join('\n'),
   );
+  text = overlayPersona(text);
   const bodyAt = text.indexOf('- insert:\n');
   if (bodyAt < 0) return null;
   const header = [
