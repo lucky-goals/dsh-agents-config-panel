@@ -678,8 +678,64 @@ def select_workspace(page):
         page.wait_for_timeout(500)
     raise RuntimeError(f"isolated workspace entry missing; body={page.locator('body').inner_text()[:2000]}")
 
+HELP_NAME = "Background Mode 说明"
+
+def open_subagent_edit(page, tool_name):
+    """v2.10: open 编辑 for one row of the Subagent tools table (not the ACP table)."""
+    table = page.locator('[data-panel="subagents"] table').filter(has=page.get_by_role("columnheader", name="工具名", exact=True))
+    row = table.locator("tbody tr").filter(has=page.get_by_role("cell", name=tool_name, exact=True))
+    row.get_by_role("button", name="编辑", exact=True).click()
+    # By its own accessible name, so the host settings dialog around it never matches.
+    dialog = page.get_by_role("dialog", name="编辑 Subagent 工具", exact=True)
+    dialog.wait_for(state="visible", timeout=30_000)
+    return dialog
+
+def help_geometry(page):
+    """v2.10: where the open Background Mode bubble is, and whether anything covers it."""
+    return page.evaluate("""(name) => {
+      const button = document.querySelector(`button[aria-label="${name}"]`);
+      const region = button && document.getElementById(button.getAttribute('aria-controls'));
+      const bubble = region?.querySelector('[data-help-bubble]');
+      const dialog = button?.closest('[role="dialog"]');
+      if (!button || !bubble || !dialog) return null;
+      const b = button.getBoundingClientRect(), r = bubble.getBoundingClientRect();
+      const side = r.top >= b.bottom ? 'below' : r.bottom <= b.top ? 'above' : 'overlap';
+      const inset = 12;
+      const points = [[r.left + inset, r.top + inset], [r.right - inset, r.top + inset], [r.left + inset, r.bottom - inset],
+        [r.right - inset, r.bottom - inset], [(r.left + r.right) / 2, (r.top + r.bottom) / 2]];
+      return {
+        side, gap: Math.round(side === 'below' ? r.top - b.bottom : b.top - r.bottom),
+        inViewport: r.left >= 7.5 && r.top >= 7.5 && r.right <= innerWidth - 7.5 && r.bottom <= innerHeight - 7.5,
+        onTop: points.every(([x, y]) => bubble.contains(document.elementFromPoint(x, y))),
+        width: Math.round(r.width), viewport: innerWidth,
+        dialogScroll: [dialog.scrollHeight, dialog.scrollTop],
+        expanded: button.getAttribute('aria-expanded'),
+        current: [...bubble.querySelectorAll('[data-current-mode]')].map((n) => n.dataset.currentMode),
+        text: bubble.textContent,
+      };
+    }""", HELP_NAME)
+
+def open_help(page, dialog, current, extra_text=()):
+    """v2.10: click the "?" and check the bubble: placed at the button, fully visible, nothing resized."""
+    before = page.evaluate("""(name) => {
+      const dialog = document.querySelector(`button[aria-label="${name}"]`).closest('[role="dialog"]');
+      return [dialog.scrollHeight, dialog.scrollTop];
+    }""", HELP_NAME)
+    dialog.get_by_role("button", name=HELP_NAME, exact=True).click()
+    page.locator("[data-help-bubble]").wait_for(state="visible", timeout=30_000)
+    geo = help_geometry(page)
+    required = ("one-shot", "continuable", "默认在前台等子代理完成", "默认在后台运行", "send_message", *extra_text)
+    if (not geo or geo["side"] == "overlap" or geo["gap"] != 6 or not geo["inViewport"] or not geo["onTop"]
+            or geo["expanded"] != "true" or geo["current"] != [current] or geo["dialogScroll"] != before
+            or any(t not in geo["text"] for t in required)):
+        raise RuntimeError(f"v2.10 Background Mode help bubble: geometry={ {k: v for k, v in (geo or {}).items() if k != 'text'} } "
+                           f"dialog_scroll_before={before} missing={[t for t in required if t not in (geo or {}).get('text', '')]}")
+    return geo
+
 with sync_playwright() as playwright:
-    browser = playwright.chromium.launch(headless=True)
+    # Headless Chromium hides scrollbars by default (0px); keep the theme's real
+    # 5px scrollbar so V29 sees the width it takes, as a user's browser does.
+    browser = playwright.chromium.launch(headless=True, ignore_default_args=["--hide-scrollbars"])
     try:
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         page_errors = []
@@ -727,12 +783,223 @@ with sync_playwright() as playwright:
         test_dialog.first.get_by_role("button", name="握手测试", exact=True).wait_for(state="visible", timeout=30_000)
         test_dialog.first.press("Escape")
         test_dialog.first.wait_for(state="hidden", timeout=30_000)
+        # v2.10: "?" next to Background Mode explains one-shot vs continuable; the select is unchanged.
+        edit = open_subagent_edit(page, "subagent_e2e_fork")
+        mode_select = edit.get_by_role("combobox", name="Background Mode", exact=True)
+        if mode_select.locator("option").all_inner_texts() != ["continuable", "one-shot"] or mode_select.input_value() != "one-shot":
+            raise RuntimeError(f"Background Mode select changed: {mode_select.locator('option').all_inner_texts()} value={mode_select.input_value()}")
+        help_btn = edit.get_by_role("button", name=HELP_NAME, exact=True)
+        fork_geo = open_help(page, edit, "one-shot")
+        page.screenshot(path=screenshot_path.replace("browser-settings.png", "browser-background-mode-help.png"), full_page=True)
+        page.keyboard.press("Escape")  # closes only the bubble
+        page.locator("[data-help-bubble]").wait_for(state="detached", timeout=30_000)
+        if not edit.is_visible() or help_btn.get_attribute("aria-expanded") != "false" or not help_btn.evaluate("b => document.activeElement === b"):
+            raise RuntimeError("Escape must close only the help bubble and return focus to the ? button")
+        open_help(page, edit, "one-shot")
+        edit.get_by_text("编辑 Subagent 工具", exact=True).click(position={"x": 2, "y": 2})  # outside the bubble
+        page.locator("[data-help-bubble]").wait_for(state="detached", timeout=30_000)
+        if not edit.is_visible():
+            raise RuntimeError("clicking outside the help bubble closed the dialog")
+        mode_select.select_option("continuable")  # 当前 follows the drop-down
+        open_help(page, edit, "continuable")
+        page.keyboard.press("Escape")
+        page.locator("[data-help-bubble]").wait_for(state="detached", timeout=30_000)
+        page.keyboard.press("Escape")  # now the dialog; nothing saved
+        edit.wait_for(state="hidden", timeout=30_000)
+        acp_edit = open_subagent_edit(page, "subagent_acp")
+        acp_edit.locator('[aria-label="Background Mode: one-shot (read-only)"]').wait_for(state="visible", timeout=30_000)
+        open_help(page, acp_edit, "one-shot", ("当前 Provider 不支持 continuable，只能使用 one-shot",))
+        page.keyboard.press("Escape")
+        page.locator("[data-help-bubble]").wait_for(state="detached", timeout=30_000)
+        page.keyboard.press("Escape")
+        acp_edit.wait_for(state="hidden", timeout=30_000)
+        print(f"E2E_BROWSER_V210 help_button=1 select_unchanged=1 bubble={fork_geo['side']} gap=6 in_viewport=1 on_top=1 "
+              "dialog_not_resized=1 escape_closes_bubble_only=1 focus_back=1 outside_click_closes=1 current_follows_select=1 acp_readonly_note=1")
         page.get_by_text("无忧Teams", exact=True).click()
         members = page.get_by_text("团队成员管理", exact=True)
         members.first.wait_for(state="visible", timeout=30_000)
         members_count = members.count()
-        profile_label = page.get_by_text("团队 profile：standard-acp", exact=True)
-        profile_label.first.wait_for(state="visible", timeout=30_000)
+        # v2.5: the team profile is a select (even with one profile), in the row of
+        # 新建成员, right-aligned, below the header buttons 刷新 / 关闭.
+        picker = page.get_by_role("combobox", name="团队 profile")
+        picker.wait_for(state="visible", timeout=30_000)
+        if picker.input_value() != "standard-acp":
+            raise RuntimeError(f"team profile select value={picker.input_value()}")
+        create_box = page.get_by_role("button", name="新建成员", exact=True).bounding_box()
+        refresh_box = page.get_by_role("button", name="刷新", exact=True).last.bounding_box()
+        close_box = page.get_by_role("button", name="关闭", exact=True).last.bounding_box()
+        picker_box = picker.bounding_box()
+        # v2.7: the right-aligned group is [团队 profile ▾] [新建团队] [删除团队].
+        new_team_box = page.get_by_role("button", name="新建团队", exact=True).bounding_box()
+        delete_team_box = page.get_by_role("button", name="删除团队", exact=True).bounding_box()
+        same_row = abs((picker_box["y"] + picker_box["height"] / 2) - (create_box["y"] + create_box["height"] / 2)) < 8
+        right_of_create = picker_box["x"] > create_box["x"] + create_box["width"]
+        below_header = picker_box["y"] > refresh_box["y"] + refresh_box["height"]
+        right_aligned = (new_team_box["x"] > picker_box["x"] + picker_box["width"]
+                         and delete_team_box["x"] > new_team_box["x"] + new_team_box["width"]
+                         and abs((delete_team_box["x"] + delete_team_box["width"]) - (close_box["x"] + close_box["width"])) < 4)
+        if not (same_row and right_of_create and below_header and right_aligned):
+            raise RuntimeError(f"team profile picker layout: picker={picker_box} new_team={new_team_box} delete_team={delete_team_box} create={create_box} refresh={refresh_box} close={close_box}")
+        page.screenshot(path=screenshot_path.replace("browser-settings.png", "browser-members.png"), full_page=True)
+        print("E2E_BROWSER_V25 team_profile_select=standard-acp same_row=1 right_of_create=1 below_header=1 right_aligned=1")
+        # v2.6: 新建团队 opens the new / clone dialog with one drop-down.
+        page.get_by_role("button", name="新建团队", exact=True).click()
+        team_dialog = page.locator('[role="dialog"]:not([data-shortcut-modal])').filter(has_text="从哪里开始")
+        team_dialog.first.wait_for(state="visible", timeout=30_000)
+        team_options = team_dialog.first.locator("select").first.locator("option").all_inner_texts()
+        if team_options[:2] != ["新建空白团队", "克隆：standard-acp"]:
+            raise RuntimeError(f"team dialog options={team_options}")
+        team_dialog.first.press("Escape")
+        team_dialog.first.wait_for(state="hidden", timeout=30_000)
+        print("E2E_BROWSER_V26 team_dialog=1 options=新建空白团队,克隆：standard-acp")
+        # v2.7: with one team 删除团队 is disabled; clone one, then delete it through the dialog.
+        delete_btn = page.get_by_role("button", name="删除团队", exact=True)
+        if delete_btn.is_enabled():
+            raise RuntimeError("删除团队 must be disabled with a single team")
+        page.get_by_role("button", name="新建团队", exact=True).click()
+        team_dialog.first.wait_for(state="visible", timeout=30_000)
+        team_dialog.first.locator("input").first.fill("e2e-ui-clone")
+        team_dialog.first.get_by_role("button", name="克隆", exact=True).click()
+        team_dialog.first.wait_for(state="hidden", timeout=30_000)
+        page.get_by_text("已创建团队 'e2e-ui-clone'", exact=False).first.wait_for(state="visible", timeout=30_000)
+        if page.get_by_role("combobox", name="团队 profile").input_value() != "e2e-ui-clone":
+            raise RuntimeError("panel did not switch to the cloned team")
+        # The success notice sits above the toolbar (54px) and the first switch clears it,
+        # so close it first: otherwise whether frame 1 still sees it is a race (~8ms).
+        members_panel = page.locator('[data-panel="members"]')
+        members_panel.get_by_role("button", name="关闭提示", exact=True).click()
+        members_panel.locator('[data-alert="success"]').wait_for(state="detached", timeout=30_000)
+        # v2.8: switching teams must not move the toolbar or the table, toggle the
+        # scrollbar, disable the picker or drop focus (was a 29px jump each way).
+        page.evaluate("""() => {
+          const w = window; w.__sw = { shifts: 0, cls: 0, frames: [] }; w.__swStop = false;
+          new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) { w.__sw.shifts++; w.__sw.cls += e.value; } })
+            .observe({ type: 'layout-shift', buffered: false });
+          const first = document.querySelector('[data-panel="members"]');
+          const tick = () => {
+            const bar = document.querySelector('[data-toolbar="members"]');
+            const table = bar?.parentElement?.querySelector('table');
+            const picker = document.getElementById('wuyou-team-profile');
+            const panel = document.querySelector('[data-panel="members"]');
+            const r = (el) => { const b = el?.getBoundingClientRect(); return b ? [Math.round(b.y), Math.round(b.width)] : null; };
+            w.__sw.frames.push({ bar: r(bar), tableTop: r(table)?.[0], disabled: !!picker?.disabled, focus: document.activeElement === picker,
+              // Diagnostics for a failure: success notice shown, same panel element, picker value, scroll offsets.
+              diag: [!!panel?.querySelector('[data-alert="success"]'), panel === first, picker?.value, panel?.scrollTop, panel?.parentElement?.scrollTop].join('|') });
+            if (!w.__swStop) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }""")
+        switch_picker = page.get_by_role("combobox", name="团队 profile")
+        for target in ("standard-acp", "e2e-ui-clone", "standard-acp", "e2e-ui-clone"):
+            switch_picker.focus()
+            switch_picker.select_option(target)
+            page.wait_for_timeout(700)
+        page.evaluate("window.__swStop = true")
+        sw = page.evaluate("window.__sw")
+        bars = {tuple(f["bar"]) for f in sw["frames"] if f["bar"]}
+        tops = {f["tableTop"] for f in sw["frames"] if f["tableTop"] is not None}
+        if len(bars) != 1 or len(tops) != 1 or any(f["disabled"] for f in sw["frames"]) or not sw["frames"][-1]["focus"] or sw["cls"] > 0.002:
+            changes = [(i, f["bar"], f["diag"]) for i, f in enumerate(sw["frames"])
+                       if i == 0 or (f["bar"], f["diag"]) != (sw["frames"][i - 1]["bar"], sw["frames"][i - 1]["diag"])]
+            raise RuntimeError(f"team switch jitter: bar={bars} table_tops={tops} cls={sw['cls']:.4f} shifts={sw['shifts']} "
+                               f"picker_disabled_frames={sum(f['disabled'] for f in sw['frames'])} focus_kept={sw['frames'][-1]['focus']} "
+                               f"changes(frame,bar,notice|same_panel|value|scrollTop|outerScrollTop)={changes[:12]}")
+        print(f"E2E_BROWSER_V28 switches=4 frames={len(sw['frames'])} toolbar_moved=0 table_top_moved=0 picker_disabled_frames=0 focus_kept=1 cls={sw['cls']:.4f}")
+        # v2.9: grow the clone to 8 members (one with a very long name) so it overflows
+        # the panel while standard-acp (3) does not. Switching between them must keep
+        # every width constant and never overflow the host scroller outside the panel.
+        long_name = "e2e-a-deliberately-long-member-name-for-ellipsis"
+        grown = page.evaluate("""async (longName) => {
+          const api = '/plugins/dsh-wuyou-agent/api';
+          const teams = await (await fetch(`${api}/teams`)).json();
+          const clone = teams.profiles['e2e-ui-clone'];
+          const role = (i) => `第 ${i} 个加宽成员：这段角色描述故意写得很长，用来把成员表撑高到出现面板纵向滚动条，`
+            + '并验证列宽不随成员名的长度变化；切换团队时，对话框里的元素都不能被挤压或左右移动。';
+          const extra = [longName, 'e2e-wide-b', 'e2e-wide-c', 'e2e-wide-d', 'e2e-wide-e'].map((name, i) => ({ name, role: role(i + 1) }));
+          const response = await fetch(`${api}/teams/import`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ expectedRevision: teams.revision, overwrite: ['e2e-ui-clone'],
+              teams: [{ name: 'e2e-ui-clone', profile: { ...clone, members: [...clone.members, ...extra] } }] }),
+          });
+          return { status: response.status, body: await response.json() };
+        }""", long_name)
+        if grown["status"] != 200 or grown["body"].get("importReport", {}).get("overwritten") != ["e2e-ui-clone"]:
+            raise RuntimeError(f"v2.9 grow e2e-ui-clone: {grown}")
+        page.get_by_role("button", name="刷新", exact=True).last.click()
+        page.locator(f'th[scope="row"][title="{long_name}"]').wait_for(state="visible", timeout=30_000)
+        page.evaluate("""() => {
+          const w = window; w.__gut = { cls: 0, frames: [] }; w.__gutStop = false;
+          new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) w.__gut.cls += e.value; })
+            .observe({ type: 'layout-shift', buffered: false });
+          const tick = () => {
+            const panel = document.querySelector('[data-panel="members"]');
+            const bar = panel?.querySelector('[data-toolbar="members"]');
+            const table = panel?.querySelector('table');
+            const width = (el) => (el ? Math.round(el.getBoundingClientRect().width * 10) / 10 : null);
+            // Scrollers between the panel and its dialog: the host .options area must never overflow.
+            const outer = [];
+            const stop = panel?.closest('[role="dialog"]') ?? document.body;
+            for (let n = panel?.parentElement; n && n !== stop; n = n.parentElement) {
+              if (/(auto|scroll)/.test(getComputedStyle(n).overflowY)) outer.push(n.scrollHeight > n.clientHeight + 1);
+            }
+            w.__gut.frames.push({
+              rows: panel ? panel.querySelectorAll('th[scope="row"]').length : 0,
+              widths: [panel?.clientWidth ?? null, width(bar), width(table), ...[...(table?.querySelectorAll('thead th') ?? [])].map(width)].join(','),
+              gutter: panel ? getComputedStyle(panel).scrollbarGutter : null,
+              overflow: panel ? panel.scrollHeight > panel.clientHeight + 1 : null,
+              outer,
+            });
+            if (!w.__gutStop) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }""")
+        for target in ("standard-acp", "e2e-ui-clone", "standard-acp", "e2e-ui-clone", "standard-acp", "e2e-ui-clone"):
+            switch_picker.select_option(target)
+            page.wait_for_timeout(700)
+        page.evaluate("window.__gutStop = true")
+        gut = page.evaluate("window.__gut")
+        frames = gut["frames"]
+        widths = {f["widths"] for f in frames}
+        rows = {f["rows"] for f in frames}
+        overflows = {f["overflow"] for f in frames}
+        outer_overflow = sum(1 for f in frames if any(f["outer"]))
+        no_outer_scroller = sum(1 for f in frames if not f["outer"])
+        gutters = {f["gutter"] for f in frames}
+        if (len(widths) != 1 or not {3, 8} <= rows or overflows != {True, False} or outer_overflow
+                or no_outer_scroller or gutters != {"stable"} or gut["cls"] > 0.002):
+            raise RuntimeError(f"v2.9 scrollbar reservation: widths={widths} rows={rows} panel_overflow={overflows} "
+                               f"outer_overflow_frames={outer_overflow} frames_without_outer_scroller={no_outer_scroller} "
+                               f"gutter={gutters} cls={gut['cls']:.4f}")
+        cell = page.evaluate("""(longName) => {
+          const th = document.querySelector(`[data-panel="members"] th[scope="row"][title="${longName}"]`);
+          return th && { text: th.textContent, clipped: th.scrollWidth > th.clientWidth, ellipsis: getComputedStyle(th).textOverflow };
+        }""", long_name)
+        if not cell or cell["text"] != long_name or not cell["clipped"] or cell["ellipsis"] != "ellipsis":
+            raise RuntimeError(f"v2.9 long member name cell: {cell}")
+        page.screenshot(path=screenshot_path.replace("browser-settings.png", "browser-members-scroll.png"), full_page=True)
+        print(f"E2E_BROWSER_V29 switches=6 frames={len(frames)} rows=3,8 panel_overflow=both widths_constant=1 "
+              f"outer_overflow_frames=0 gutter=stable long_name_ellipsis=1 cls={gut['cls']:.4f}")
+        delete_btn.click()
+        delete_dialog = page.locator('[role="dialog"]:not([data-shortcut-modal])').filter(has_text="删除团队：e2e-ui-clone")
+        delete_dialog.first.wait_for(state="visible", timeout=30_000)
+        confirm_btn = delete_dialog.first.get_by_role("button", name="确认删除", exact=True)
+        box = delete_dialog.first.get_by_label("请输入 thinktwice 以确认删除")
+        for typed in ("", "ThinkTwice"):
+            box.fill(typed)
+            if confirm_btn.is_enabled():
+                raise RuntimeError(f"确认删除 enabled for {typed!r}")
+        box.fill("thinktwice")
+        if not confirm_btn.is_enabled():
+            raise RuntimeError("确认删除 still disabled after typing thinktwice")
+        page.screenshot(path=screenshot_path.replace("browser-settings.png", "browser-delete-team.png"), full_page=True)
+        confirm_btn.click()
+        delete_dialog.first.wait_for(state="hidden", timeout=30_000)
+        page.get_by_text("已删除团队 'e2e-ui-clone'", exact=False).first.wait_for(state="visible", timeout=30_000)
+        after = page.get_by_role("combobox", name="团队 profile")
+        left = after.locator("option").all_inner_texts()
+        if after.input_value() != "standard-acp" or left != ["standard-acp"]:
+            raise RuntimeError(f"after delete: value={after.input_value()} options={left}")
+        print("E2E_BROWSER_V27 single_team_delete_disabled=1 clone=e2e-ui-clone blocked_until_thinktwice=1 deleted=1 back_to=standard-acp")
         page.get_by_role("button", name="新建成员", exact=True).click()
         member_dialog = page.locator('[role="dialog"]:not([data-shortcut-modal])').filter(has_text="新建成员")
         member_dialog.first.wait_for(state="visible", timeout=30_000)
@@ -744,7 +1011,7 @@ with sync_playwright() as playwright:
         member_dialog.first.press("Escape")
         member_dialog.first.wait_for(state="hidden", timeout=30_000)
         escape_closed = True
-        profile_picker = "not-applicable-single-profile"
+        profile_picker = "select-single-profile"
         mobile_page = browser.new_page(viewport={"width": 390, "height": 844})
         mobile_page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         mobile_page.wait_for_selector("body", timeout=30_000)
@@ -753,6 +1020,13 @@ with sync_playwright() as playwright:
         mobile_page.get_by_role("button", name="Settings").click()
         mobile_page.get_by_text("无忧Subagent", exact=True).click()
         mobile_page.get_by_text("Subagent 工具管理", exact=True).first.wait_for(state="visible", timeout=30_000)
+        mobile_edit = open_subagent_edit(mobile_page, "subagent_e2e_fork")
+        mobile_geo = open_help(mobile_page, mobile_edit, "one-shot")
+        mobile_page.keyboard.press("Escape")
+        mobile_page.locator("[data-help-bubble]").wait_for(state="detached", timeout=30_000)
+        mobile_page.keyboard.press("Escape")
+        mobile_edit.wait_for(state="hidden", timeout=30_000)
+        print(f"E2E_BROWSER_V210_MOBILE viewport={mobile_geo['viewport']} bubble_width={mobile_geo['width']} bubble={mobile_geo['side']} in_viewport=1 on_top=1")
         mobile_page.get_by_text("无忧Teams", exact=True).click()
         mobile_page.get_by_text("团队成员管理", exact=True).first.wait_for(state="visible", timeout=30_000)
         print("E2E_BROWSER_V23 labels=无忧Subagent,无忧Teams acp_section=1 import_export=1 role_textarea_rows=3 acp_test_dialog=1")
@@ -773,13 +1047,13 @@ with sync_playwright() as playwright:
             raise RuntimeError(f"runtime RPC failed: {rpc}")
         if result["panels"]["subagents"] < 1 or result["panels"]["members"] < 1:
             raise RuntimeError(f"settings panels missing: {result['panels']}")
-        if result["escapeClosed"] is not True or result["profilePicker"] != "not-applicable-single-profile":
+        if result["escapeClosed"] is not True or result["profilePicker"] != "select-single-profile":
             raise RuntimeError(f"modal/profile checks missing: {result}")
         if result["moduleLoaderType"] != "object":
             raise RuntimeError(f"window.__ModuleLoader__ is {result['moduleLoaderType']}")
         if page_errors:
             raise RuntimeError(f"browser page errors: {page_errors}")
-        print("E2E_BROWSER panels=subagents,members moduleLoader=object screenshots=desktop,mobile escape=closed profile_picker=single-profile")
+        print("E2E_BROWSER panels=subagents,members moduleLoader=object screenshots=desktop,mobile escape=closed profile_picker=select-single-profile")
     finally:
         browser.close()
 PY
@@ -1472,6 +1746,80 @@ if (!st.ok || st.handshake || cmd?.status !== 'pass' || st.resolvedCommand !== '
 const h = hs.checks.find((c) => c.key === 'handshake');
 if (hs.ok || h?.status !== 'fail' || !h.detail.includes('退出')) throw new Error(`handshake: ${JSON.stringify(hs)}`);
 console.log(`E2E_V24_ACP_TEST static=pass handshake=fail(${h.detail.split('。')[0]}) unknown=404`);
+NODE
+
+# v2.6: team profiles — list, clone, blank create, multi-team import with an
+# explicit overwrite, then agent-teams' own validator on every written team.
+TEAMS_BEFORE="${ARTIFACT_DIR}/v26-teams-before.json"
+TEAM_CLONE="${ARTIFACT_DIR}/v26-team-clone.json"
+TEAM_BLANK="${ARTIFACT_DIR}/v26-team-blank.json"
+TEAMS_IMPORT="${ARTIFACT_DIR}/v26-teams-import.json"
+TEAMS_AFTER="${ARTIFACT_DIR}/v26-teams-after.json"
+teams_get() {
+  local out="$1" status
+  status="$(curl -sS --max-time 15 -o "${out}" -w '%{http_code}' -b "${COOKIE_JAR}" "${BASE_URL}/plugins/dsh-wuyou-agent/api/teams")"
+  assert_status "${status}" "200" "v2.6 GET teams" "${out}"
+}
+team_post() {
+  local path="$1" data="$2" out="$3" expected="$4" status
+  status="$(curl -sS --max-time 15 -o "${out}" -w '%{http_code}' -b "${COOKIE_JAR}" -H 'content-type: application/json' --data "${data}" "${BASE_URL}/plugins/dsh-wuyou-agent/api/${path}")"
+  assert_status "${status}" "${expected}" "v2.6 POST ${path}" "${out}"
+}
+teams_get "${TEAMS_BEFORE}"
+REV="$(v23_revision "${TEAMS_BEFORE}")"
+team_post teams "{\"expectedRevision\":\"${REV}\",\"action\":\"create\",\"name\":\"e2e-copy\",\"from\":\"standard-acp\"}" "${TEAM_CLONE}" 200
+REV="$(v23_revision "${TEAM_CLONE}")"
+team_post teams "{\"expectedRevision\":\"${REV}\",\"action\":\"create\",\"name\":\"e2e-blank\",\"firstMember\":\"solo\",\"description\":\"E2E blank team\"}" "${TEAM_BLANK}" 200
+REV="$(v23_revision "${TEAM_BLANK}")"
+team_post teams/import "{\"expectedRevision\":\"${REV}\",\"teams\":[{\"name\":\"standard-acp\",\"profile\":{\"members\":[{\"name\":\"nope\"}]}},{\"name\":\"e2e-copy\",\"profile\":{\"description\":\"overwritten\",\"taskPlanning\":\"captain\",\"members\":[{\"name\":\"a\"},{\"name\":\"b\"}]}},{\"name\":\"e2e-new\",\"profile\":{\"protocol\":\"line one\\nline two\\n\",\"members\":[{\"name\":\"n1\",\"role\":\"r1\\nr2\"}]}}],\"overwrite\":[\"e2e-copy\"]}" "${TEAMS_IMPORT}" 200
+teams_get "${TEAMS_AFTER}"
+AGENT_TEAMS_PROFILES_JS="${HOME}/.dsh/profiles/web/node_modules/@nanmicoder/dsh-agent-teams/lib/profiles.js"
+node --input-type=module - "${TEAMS_BEFORE}" "${TEAM_CLONE}" "${TEAMS_IMPORT}" "${TEAMS_AFTER}" "${AGENT_TEAMS_PROFILES_JS}" <<'NODE'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [before, clone, imported, after] = process.argv.slice(2, 6).map((p) => JSON.parse(fs.readFileSync(p, 'utf8')));
+const validator = process.argv[6];
+const fail = (m) => { throw new Error(m); };
+if (JSON.stringify(Object.keys(before.profiles)) !== '["standard-acp"]') fail(`before: ${Object.keys(before.profiles)}`);
+if (clone.profile !== 'e2e-copy' || JSON.stringify(clone.members) !== JSON.stringify(before.profiles['standard-acp'].members)) fail(`clone: ${JSON.stringify(clone.members)}`);
+const r = imported.importReport;
+if (JSON.stringify(r.created) !== '["e2e-new"]' || JSON.stringify(r.overwritten) !== '["e2e-copy"]' || r.skipped[0]?.name !== 'standard-acp') fail(`report: ${JSON.stringify(r)}`);
+const p = after.profiles;
+if (JSON.stringify(Object.keys(p)) !== '["standard-acp","e2e-copy","e2e-blank","e2e-new"]') fail(`after: ${Object.keys(p)}`);
+if (JSON.stringify(p['standard-acp']) !== JSON.stringify(before.profiles['standard-acp'])) fail('standard-acp changed without overwrite');
+if (p['e2e-copy'].description !== 'overwritten' || p['e2e-copy'].members.length !== 2) fail(`e2e-copy: ${JSON.stringify(p['e2e-copy'])}`);
+if (p['e2e-new'].protocol !== 'line one\nline two\n' || p['e2e-new'].members[0].role !== 'r1\nr2') fail(`e2e-new: ${JSON.stringify(p['e2e-new'])}`);
+let checked = 'skipped(agent-teams not installed in web profile)';
+if (fs.existsSync(validator)) {
+  const { resolveTeamProfile, formatProfilesForPrompt } = await import(pathToFileURL(validator).href);
+  for (const name of Object.keys(p)) resolveTeamProfile(p, name, 8);
+  if (!formatProfilesForPrompt(p).includes('e2e-new')) fail('formatProfilesForPrompt missing e2e-new');
+  checked = `agent-teams resolveTeamProfile ok for ${Object.keys(p).length} teams`;
+}
+console.log(`E2E_V26_TEAMS clone=e2e-copy blank=e2e-blank import=created:e2e-new,overwritten:e2e-copy,skipped:standard-acp validator=${checked}`);
+NODE
+
+TEAM_REMOVE_REFUSED="${ARTIFACT_DIR}/v27-team-remove-refused.json"
+TEAM_REMOVE="${ARTIFACT_DIR}/v27-team-remove.json"
+TEAMS_FINAL="${ARTIFACT_DIR}/v27-teams-final.json"
+REV="$(v23_revision "${TEAMS_AFTER}")"
+team_post teams "{\"expectedRevision\":\"${REV}\",\"action\":\"remove\",\"name\":\"e2e-blank\",\"confirm\":\"ThinkTwice\"}" "${TEAM_REMOVE_REFUSED}" 400
+team_post teams "{\"expectedRevision\":\"${REV}\",\"action\":\"remove\",\"name\":\"e2e-blank\",\"confirm\":\"thinktwice\"}" "${TEAM_REMOVE}" 200
+teams_get "${TEAMS_FINAL}"
+node --input-type=module - "${TEAM_REMOVE}" "${TEAMS_FINAL}" "${AGENT_TEAMS_PROFILES_JS}" <<'NODE'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [removed, final] = process.argv.slice(2, 4).map((p) => JSON.parse(fs.readFileSync(p, 'utf8')));
+const names = Object.keys(final.profiles);
+if (JSON.stringify(names) !== '["standard-acp","e2e-copy","e2e-new"]') throw new Error(`after remove: ${names}`);
+if (JSON.stringify(removed.teamProfiles) !== JSON.stringify(names)) throw new Error(`state teamProfiles: ${removed.teamProfiles}`);
+let checked = 'skipped';
+if (fs.existsSync(process.argv[4])) {
+  const { resolveTeamProfile } = await import(pathToFileURL(process.argv[4]).href);
+  for (const n of names) resolveTeamProfile(final.profiles, n, 8);
+  checked = `resolveTeamProfile ok for ${names.length}`;
+}
+console.log(`E2E_V27_TEAM_REMOVE wrong_word=400 removed=e2e-blank left=${names.join(',')} validator=${checked}`);
 NODE
 stop_server
 
