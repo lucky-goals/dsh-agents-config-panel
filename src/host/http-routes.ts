@@ -14,6 +14,7 @@ import { subagentProviderDirectory, type SubagentProviderDirectory } from './sub
 import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } from './members-editor.js';
 import { listAcps, createAcp, updateAcp, removeAcp, importSubagentBundle, ACP_EDITABLE_FIELDS } from './acp-manager.js';
 import { probeAcp } from './acp-probe.js';
+import { createTeamProfile, importTeamProfiles, listTeamProfileConfigs, removeTeamProfile } from './teams-editor.js';
 
 /** Maximum accepted request body, in bytes. */
 export const MAX_BODY_BYTES = 1024 * 1024;
@@ -89,6 +90,7 @@ const HTTP_STATUS_MAP: Record<string, number> = {
   READ_ONLY: 422,
   LAST_MEMBER: 422,
   IN_USE: 409,
+  LAST_TEAM: 422,
   BUSY: 409,
   STRUCTURE: 500,
   INTERNAL: 500,
@@ -364,6 +366,56 @@ function validateAcpPayload(payloadField: string, payload: Record<string, unknow
   check('env', (v) => isPlainObject(v) && Object.values(v).every(isString), '必须是字符串键值对象');
 }
 
+function optionalString(body: Record<string, unknown>, name: string): string | undefined {
+  const value = body[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw invalidField(name, '必须是字符串');
+  return value;
+}
+
+/** Word the user types to confirm deleting a team (v2.7); the Host checks it too. */
+export const TEAM_DELETE_CONFIRMATION = 'thinktwice';
+
+/**
+ * POST /teams:
+ * - `{ expectedRevision, action: 'create', name, from? | firstMember, description? }`
+ * - `{ expectedRevision, action: 'remove', name, confirm: 'thinktwice' }`
+ */
+function validateTeamCreateBody(body: Record<string, unknown>) {
+  const revision = body.expectedRevision;
+  if (typeof revision !== 'string' || !REVISION_PATTERN.test(revision)) throw invalidField('expectedRevision', '必须是 64 位小写十六进制 revision');
+  if (body.action === 'remove') {
+    const name = requireNonEmptyString(body, 'name');
+    if (body.confirm !== TEAM_DELETE_CONFIRMATION) throw invalidField('confirm', `必须是 '${TEAM_DELETE_CONFIRMATION}'，删除团队需要二次确认`);
+    return { kind: 'remove' as const, expectedRevision: revision, name };
+  }
+  if (body.action !== 'create') throw invalidField('action', '必须是 create 或 remove');
+  const name = requireNonEmptyString(body, 'name');
+  const from = optionalString(body, 'from');
+  const firstMember = optionalString(body, 'firstMember');
+  const description = optionalString(body, 'description');
+  if (from !== undefined && firstMember !== undefined) throw invalidField('firstMember', '克隆时不能同时指定');
+  return { kind: 'create' as const, expectedRevision: revision, input: { name, from, firstMember, description } };
+}
+
+/** POST /teams/import: `{ expectedRevision, teams: [{ name, profile, scope? }], overwrite: string[] }`. */
+function validateTeamImportBody(body: Record<string, unknown>) {
+  const revision = body.expectedRevision;
+  if (typeof revision !== 'string' || !REVISION_PATTERN.test(revision)) throw invalidField('expectedRevision', '必须是 64 位小写十六进制 revision');
+  const teams = body.teams;
+  if (!Array.isArray(teams)) throw invalidField('teams', '必须是数组');
+  if (teams.length > MAX_BUNDLE_ITEMS) throw invalidField('teams', `最多 ${MAX_BUNDLE_ITEMS} 项`);
+  teams.forEach((team, index) => {
+    if (!isPlainObject(team)) throw invalidField(`teams[${index}]`, '必须是 JSON 对象');
+    if (typeof team.name !== 'string') throw invalidField(`teams[${index}].name`, '必须是字符串');
+    if (!isPlainObject(team.profile)) throw invalidField(`teams[${index}].profile`, '必须是 JSON 对象');
+    if (team.scope !== undefined && team.scope !== 'full' && team.scope !== 'members') throw invalidField(`teams[${index}].scope`, "只能是 'full' 或 'members'");
+  });
+  const overwrite = body.overwrite ?? [];
+  if (!Array.isArray(overwrite) || !overwrite.every((n) => typeof n === 'string')) throw invalidField('overwrite', '必须是字符串数组');
+  return { expectedRevision: revision, teams: teams as any[], overwrite: overwrite as string[] };
+}
+
 /** Upper bound per list in an import bundle; the body is already capped at 1MB. */
 const MAX_BUNDLE_ITEMS = 200;
 
@@ -587,6 +639,66 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           } finally {
             probing.delete(id);
           }
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/teams',
+      async handler(req, res) {
+        try {
+          if (req.method === 'GET') {
+            // v2.6: every team profile with its full config, for export and import preview.
+            const yamlText = await io.readPatch();
+            sendJson(res, 200, {
+              revision: computeRevision(yamlText),
+              profiles: listTeamProfileConfigs(yamlText),
+              ...(context.dshProfile ? { dshProfile: context.dshProfile } : {}),
+            });
+            return;
+          }
+          if (!requirePost(req, res)) return;
+          const write = validateTeamCreateBody(await readJsonBody(req));
+          if (write.kind === 'remove') {
+            const removed = write.name;
+            const outcome = await mutate(write.expectedRevision, (yamlText) => removeTeamProfile(yamlText, removed));
+            // Keep the viewed team unless it was the one removed; then fall
+            // back like the panel does (standard-acp, else the first team).
+            const viewed = queryProfile(req);
+            const left = listTeamProfiles(outcome.yamlText);
+            const profile = viewed !== removed && left.includes(viewed)
+              ? viewed
+              : left.includes(profileDefault) ? profileDefault : left[0];
+            sendMutationState(res, profile, outcome);
+            return;
+          }
+          const { expectedRevision, input } = write;
+          const outcome = await mutate(expectedRevision, (yamlText) => createTeamProfile(yamlText, input));
+          // The response state is for the new team, so the panel can switch to it.
+          sendMutationState(res, input.name, outcome);
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/teams/import',
+      async handler(req, res) {
+        try {
+          if (!requirePost(req, res)) return;
+          const { expectedRevision, teams, overwrite } = validateTeamImportBody(await readJsonBody(req));
+          let report: unknown;
+          const outcome = await mutate(expectedRevision, (yamlText) => {
+            const result = importTeamProfiles(yamlText, teams, overwrite);
+            if (result.ok) report = result.report;
+            return result;
+          });
+          sendMutationState(res, queryProfile(req), outcome, { importReport: report });
         } catch (err) {
           errorResponse(res, err, logger);
         }

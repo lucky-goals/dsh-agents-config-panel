@@ -16,7 +16,8 @@ export type ErrorCode =
   | 'INVALID'
   | 'READ_ONLY'
   | 'LAST_MEMBER'
-  | 'IN_USE';
+  | 'IN_USE'
+  | 'LAST_TEAM';
 
 export interface MutationError {
   ok: false;

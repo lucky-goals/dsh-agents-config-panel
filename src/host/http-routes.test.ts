@@ -849,3 +849,116 @@ describe('v2.4 POST /acps/test (real fixture)', () => {
     expect(data.checks[0].detail).toBe('/opt/example/bin/claude-agent-acp 不存在');
   });
 });
+
+describe('v2.6 team routes (real fixture)', () => {
+  let store: ReturnType<typeof memoryIO>;
+  let routes: ReturnType<typeof createRoutes>;
+  beforeEach(() => {
+    store = memoryIO(REAL_FIXTURE);
+    routes = createRoutes({ io: store.io, profileDefault: 'standard-acp', getCatalog: asyncCatalog(), dshProfile: { name: 'web', patchPath: '/p/web/cordis.patch.yml' } });
+  });
+  const post = (suffix: string, body: Record<string, unknown>) =>
+    call(routes, suffix, createMockReq('POST', `/plugins/dsh-wuyou-agent/api${suffix}`, body));
+  const rev = () => computeRevision(store.text());
+
+  it('GET /teams returns every team profile with its full config and the revision', async () => {
+    const { status, data } = await call(routes, '/teams', createMockReq('GET', '/plugins/dsh-wuyou-agent/api/teams'));
+    expect(status).toBe(200);
+    expect(data.revision).toBe(rev());
+    expect(Object.keys(data.profiles)).toEqual(['standard-acp']);
+    expect(data.profiles['standard-acp'].members).toHaveLength(5);
+    expect(data.dshProfile.name).toBe('web');
+  });
+
+  it('POST /teams clones a team; the response state is the new team, selectable at once', async () => {
+    const { status, data } = await post('/teams', { expectedRevision: rev(), action: 'create', name: 'copy', from: 'standard-acp' });
+    expect(status).toBe(200);
+    expect(data.teamProfiles).toEqual(['standard-acp', 'copy']);
+    expect(data.profile).toBe('copy');
+    expect(data.members.map((m: any) => m.name)).toEqual(['claude', 'coder', 'tester', 'front-designer', 'generalist']);
+  });
+
+  it('POST /teams creates a blank team; rejects duplicates, bad bodies and stale revisions', async () => {
+    const created = await post('/teams', { expectedRevision: rev(), action: 'create', name: 'solo', firstMember: 'worker', description: '单人' });
+    expect(created.status).toBe(200);
+    expect(created.data.members).toEqual([{ name: 'worker' }]);
+    expect((await post('/teams', { expectedRevision: rev(), action: 'create', name: 'solo', firstMember: 'w' })).data.code).toBe('DUPLICATE');
+    expect((await post('/teams', { expectedRevision: rev(), action: 'create', name: 'x', from: 'solo', firstMember: 'w' })).status).toBe(400);
+    expect((await post('/teams', { expectedRevision: rev(), action: 'delete', name: 'x' })).status).toBe(400);
+    expect((await post('/teams', { expectedRevision: '0'.repeat(64), action: 'create', name: 'y', firstMember: 'w' })).status).toBe(409);
+  });
+
+  it('POST /teams/import applies creates and chosen overwrites in one revision and reports skips', async () => {
+    await post('/teams', { expectedRevision: rev(), action: 'create', name: 'solo', firstMember: 'worker' });
+    const { status, data } = await post('/teams/import', {
+      expectedRevision: rev(),
+      teams: [
+        { name: 'standard-acp', profile: { members: [{ name: 'only' }] } },
+        { name: 'solo', profile: { description: '覆盖后', members: [{ name: 'a' }, { name: 'b' }] } },
+        { name: 'review', profile: { members: [{ name: 'reviewer' }] } },
+      ],
+      overwrite: ['solo'],
+    });
+    expect(status).toBe(200);
+    expect(data.importReport).toEqual({
+      created: ['review'],
+      overwritten: ['solo'],
+      skipped: [{ name: 'standard-acp', reason: "团队 'standard-acp' 已存在，未选择覆盖" }],
+    });
+    expect(data.teamProfiles).toEqual(['standard-acp', 'solo', 'review']);
+    expect(data.revision).toBe(rev());
+  });
+
+  it('POST /teams/import validates the body shape', async () => {
+    for (const body of [{ teams: {} }, { teams: [{ name: 1, profile: {} }] }, { teams: [{ name: 'a', profile: {}, scope: 'x' }] }, { teams: [], overwrite: 'a' }]) {
+      const { status } = await post('/teams/import', { expectedRevision: rev(), ...body });
+      expect(status, JSON.stringify(body)).toBe(400);
+    }
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+});
+
+describe('v2.7 POST /teams remove (real fixture)', () => {
+  let store: ReturnType<typeof memoryIO>;
+  let routes: ReturnType<typeof createRoutes>;
+  beforeEach(() => {
+    store = memoryIO(REAL_FIXTURE);
+    routes = createRoutes({ io: store.io, profileDefault: 'standard-acp', getCatalog: asyncCatalog() });
+  });
+  const post = (body: Record<string, unknown>, query = '') =>
+    call(routes, '/teams', createMockReq('POST', `/plugins/dsh-wuyou-agent/api/teams${query}`, body));
+  const rev = () => computeRevision(store.text());
+
+  it('removes a team only with confirm "thinktwice"; the response switches away from the removed team', async () => {
+    await post({ expectedRevision: rev(), action: 'create', name: 'copy', from: 'standard-acp' });
+    const withClone = store.text();
+
+    for (const confirm of [undefined, '', 'ThinkTwice', 'think twice']) {
+      const { status, data } = await post({ expectedRevision: rev(), action: 'remove', name: 'copy', ...(confirm === undefined ? {} : { confirm }) });
+      expect(status, String(confirm)).toBe(400);
+      expect(data.message).toContain('thinktwice');
+    }
+    expect(store.text()).toBe(withClone);
+
+    const { status, data } = await post({ expectedRevision: rev(), action: 'remove', name: 'copy', confirm: 'thinktwice' }, '?profile=copy');
+    expect(status).toBe(200);
+    expect(data.teamProfiles).toEqual(['standard-acp']);
+    expect(data.profile).toBe('standard-acp');
+    expect(data.members).toHaveLength(5);
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('keeps the viewed team when another one is removed', async () => {
+    await post({ expectedRevision: rev(), action: 'create', name: 'copy', from: 'standard-acp' });
+    const { data } = await post({ expectedRevision: rev(), action: 'remove', name: 'standard-acp', confirm: 'thinktwice' }, '?profile=copy');
+    expect(data.profile).toBe('copy');
+    expect(data.teamProfiles).toEqual(['copy']);
+  });
+
+  it('the last team is 422 LAST_TEAM, an unknown team 404, a stale revision 409; nothing is written', async () => {
+    expect(await post({ expectedRevision: rev(), action: 'remove', name: 'standard-acp', confirm: 'thinktwice' })).toMatchObject({ status: 422, data: { code: 'LAST_TEAM' } });
+    expect((await post({ expectedRevision: rev(), action: 'remove', name: 'nope', confirm: 'thinktwice' })).status).toBe(404);
+    expect((await post({ expectedRevision: '0'.repeat(64), action: 'remove', name: 'standard-acp', confirm: 'thinktwice' })).status).toBe(409);
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+});

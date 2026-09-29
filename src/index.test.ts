@@ -121,7 +121,7 @@ describe('index', () => {
   it.each([
     ['undefined config', undefined],
     ['empty config', {}],
-  ])('registers six routes and defaults to standard-acp with %s', async (_label, config) => {
+  ])('registers eight routes and defaults to standard-acp with %s', async (_label, config) => {
     const profileDir = await createFixtureProfile();
     const web = createWebServer();
     const connection = { requestRejection: vi.fn().mockReturnValue(undefined) };
@@ -139,9 +139,11 @@ describe('index', () => {
       '/plugins/dsh-wuyou-agent/api/members',
       '/plugins/dsh-wuyou-agent/api/acps',
       '/plugins/dsh-wuyou-agent/api/acps/test',
+      '/plugins/dsh-wuyou-agent/api/teams',
+      '/plugins/dsh-wuyou-agent/api/teams/import',
       '/plugins/dsh-wuyou-agent/api/subagents/import',
     ]);
-    expect(harness.ctx.effect).toHaveBeenCalledTimes(6);
+    expect(harness.ctx.effect).toHaveBeenCalledTimes(8);
     expect(harness.effectDisposers).toEqual(web.disposers);
 
     const stateRoute = web.routes.find(
@@ -186,11 +188,11 @@ describe('index', () => {
     expect(web.register).not.toHaveBeenCalled();
 
     harness.setService('webServer', web.server);
-    expect(web.register).toHaveBeenCalledTimes(6);
+    expect(web.register).toHaveBeenCalledTimes(8);
 
     harness.setService('webServer', web.server);
     harness.setService('unrelated', {});
-    expect(web.register).toHaveBeenCalledTimes(6);
+    expect(web.register).toHaveBeenCalledTimes(8);
   });
 
   it('wraps handlers with the real connection service object shape', async () => {
@@ -225,7 +227,7 @@ describe('index', () => {
     });
 
     apply(harness.ctx as any, {});
-    expect(web.register).toHaveBeenCalledTimes(6);
+    expect(web.register).toHaveBeenCalledTimes(8);
 
     const stateRoute = web.routes.find(
       (route) => route.path === '/plugins/dsh-wuyou-agent/api/state'
