@@ -22,7 +22,10 @@ import { AcpSection } from './AcpSection';
 import type { SubagentImportPreview } from '../shared/import-export';
 import {
   DiagnosticsBanner,
+  LoadingAnnouncer,
   PanelHeader,
+  panelRootStyle,
+  busyTableStyle,
   StatusAlerts,
   formActionsStyle,
   tableStyles,
@@ -134,7 +137,7 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
     : [...providerOptionsFromState, { value: values.provider, label: `${values.provider}（未注册）` }];
 
   return (
-    <div style={{ padding: '16px', color: 'var(--dsw-alias-label-primary)' }}>
+    <div data-panel="subagents" style={panelRootStyle}>
       <PanelHeader
         title="Subagent 工具管理"
         loading={busy}
@@ -163,13 +166,9 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
         新建 Subagent 工具
       </Button>
 
-      {busy && (
-        <div role="status" style={{ marginTop: '12px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }}>
-          加载中...
-        </div>
-      )}
+      <LoadingAnnouncer loading={busy} />
 
-      <table style={tableStyles.table}>
+      <table style={busyTableStyle(busy && state.rows.length > 0)} aria-busy={busy && state.rows.length > 0 ? true : undefined}>
         <thead>
           <tr>
             <th style={tableStyles.th}>工具名</th>
@@ -206,10 +205,10 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
               </tr>
             );
           })}
-          {state.rows.length === 0 && !busy && (
+          {state.rows.length === 0 && (
             <tr>
               <td style={{ ...tableStyles.td, color: 'var(--dsw-alias-label-secondary)' }} colSpan={4}>
-                暂无 subagent 工具
+                {busy ? '加载中...' : '暂无 subagent 工具'}
               </td>
             </tr>
           )}

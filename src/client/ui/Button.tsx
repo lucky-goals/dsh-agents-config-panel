@@ -41,6 +41,8 @@ export function Button({ onClick, disabled, variant = 'secondary', children, typ
     borderStyle: 'solid',
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.5 : 1,
+    // v2.8: dim after 150ms, undim at once, so a quick reload does not flash every button.
+    transition: `opacity 120ms ease ${disabled ? '150ms' : '0ms'}`,
     whiteSpace: 'nowrap',
     ...VARIANTS[variant],
   };

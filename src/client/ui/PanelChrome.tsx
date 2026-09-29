@@ -138,6 +138,56 @@ export function StatusAlerts({ error, conflict, notice, onDismiss }: StatusAlert
   );
 }
 
+/**
+ * v2.9: root of each settings panel. It fills the host content area and
+ * scrolls itself with the scrollbar space always reserved (the DSH theme
+ * scrollbar is a classic 5px one). Before, the host area scrolled with
+ * `overflow-y: auto` and no gutter, so whenever a team's rows crossed the
+ * fold its scrollbar appeared and squeezed the whole panel 5px to the left.
+ * Same pattern as DSH's own chat / conversation scrollers.
+ */
+export const panelRootStyle: React.CSSProperties = {
+  height: '100%',
+  boxSizing: 'border-box',
+  overflowY: 'auto',
+  scrollbarGutter: 'stable',
+  padding: '16px',
+  color: 'var(--dsw-alias-label-primary)',
+};
+
+/** Takes no space: screen readers hear it, the layout never moves. */
+const visuallyHidden: React.CSSProperties = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  margin: '-1px',
+  padding: 0,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+/**
+ * v2.8: always-mounted live region for "加载中...". Loading used to insert a
+ * visible line above the table, pushing it down ~29px and back on every team
+ * switch (and toggling the scrollbar). Visible loading text now lives only in
+ * the table's empty row, which is there anyway.
+ */
+export function LoadingAnnouncer({ loading }: { loading: boolean }) {
+  return <div role="status" aria-live="polite" style={visuallyHidden}>{loading ? '加载中...' : ''}</div>;
+}
+
+/** A table whose rows are being replaced: announced busy, dimmed only if it takes a while. */
+export function busyTableStyle(busy: boolean): React.CSSProperties {
+  return {
+    ...tableStyles.table,
+    opacity: busy ? 0.6 : 1,
+    // Dim after 150ms, brighten at once: a fast switch shows no flash at all.
+    transition: `opacity 120ms ease ${busy ? '150ms' : '0ms'}`,
+  };
+}
+
 /** Table cell styles shared by both panels. */
 export const tableStyles = {
   table: { width: '100%', borderCollapse: 'collapse', marginTop: '12px' } as React.CSSProperties,
