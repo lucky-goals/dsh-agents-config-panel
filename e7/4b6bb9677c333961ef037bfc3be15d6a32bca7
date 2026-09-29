@@ -1,0 +1,28 @@
+src/host/preset-bootstrap.ts
+  s_f7d78b88660516::t_6d48fa90d6362c 288-289,294
+  s_f7d78b88660516::t_a236b4041e340c 36-127,129-134
+  s_f7d78b88660516::t_e9d6ff4af9d993 128
+src/host/preset-bootstrap.test.ts
+  s_f7d78b88660516::t_19cc2fb52e14d7 4,6
+  s_f7d78b88660516::t_0ebe662a0cf5ac 34-38
+  s_f7d78b88660516::t_373c1625fdfbc8 89-94
+  s_f7d78b88660516::t_4b1b49dcfce9c2 212-213
+  s_f7d78b88660516::t_a0478be6cf013c 98-101
+  s_f7d78b88660516::t_0ee763058718c7 65-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.45-trip",
+  "base_commit_sha": "e74b6bb9677c333961ef037bfc3be15d6a32bca7",
+  "prompts": {},
+  "sessions": {
+    "s_f7d78b88660516": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "9dba3087-8659-42a4-a346-732670ae25f9",
+        "model": "grok-4.7"
+      },
+      "human_author": "Jiawen Yuan <jwyuan@trip.com>"
+    }
+  }
+}
