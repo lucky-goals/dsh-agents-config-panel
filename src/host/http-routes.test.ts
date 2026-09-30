@@ -1058,3 +1058,189 @@ describe('preset bootstrap on state', () => {
     expect(store.text().match(/id: preset-standard-acp/g)).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// K16 (v2.12): POST /subagents with action 'move'.
+// ---------------------------------------------------------------------------
+describe('v2.12 POST /subagents move (K16, real fixture)', () => {
+  const REV = computeRevision(REAL_FIXTURE);
+  const UP_NOTICE = '已上移。只改变列表顺序，不影响模型看到的工具顺序';
+  const DOWN_NOTICE = '已下移。只改变列表顺序，不影响模型看到的工具顺序';
+
+  /** PatchIO that records any lock/read, to prove validation runs first. */
+  function trackedIO() {
+    const inner = memoryIO(REAL_FIXTURE);
+    const touched = { reads: 0, locks: 0 };
+    const io: PatchIO = {
+      async readPatch() {
+        touched.reads += 1;
+        return inner.io.readPatch();
+      },
+      async writePatchLocked(expected, transform) {
+        touched.locks += 1;
+        return inner.io.writePatchLocked(expected, transform);
+      },
+    };
+    return { io, touched, text: inner.text };
+  }
+
+  function routesFor(io: PatchIO) {
+    return createRoutes({ io, profileDefault: 'standard-acp', getCatalog: asyncCatalog() });
+  }
+
+  function moveBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { expectedRevision: REV, action: 'move', id: 'tool-subagent-fork', direction: 'down', ...overrides };
+  }
+
+  it('moves the coder row up: 200, the up notice, the pair swapped, revision is the new sha256', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+    const before = listSubagents(REAL_FIXTURE).map((row) => row.id);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', {
+      expectedRevision: REV,
+      action: 'move',
+      id: 'tool-subagent-coder',
+      direction: 'up',
+    }));
+
+    expect(status).toBe(200);
+    expect(data.notice).toBe(UP_NOTICE);
+    expect(store.text()).not.toBe(REAL_FIXTURE);
+    expect(data.revision).toBe(computeRevision(store.text()));
+
+    const expected = [...before];
+    const index = before.indexOf('tool-subagent-coder');
+    expected[index - 1] = 'tool-subagent-coder';
+    expected[index] = 'tool-subagent-reviewer';
+    expect(listSubagents(store.text()).map((row) => row.id)).toEqual(expected);
+    expect(data.subagents.map((row: { id: string }) => row.id)).toEqual(expected);
+  });
+
+  it('moves the fork row down: 200 and the down notice, with the file really written', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody()));
+
+    expect(status).toBe(200);
+    expect(data.notice).toBe(DOWN_NOTICE);
+    const ids = listSubagents(store.text()).map((row) => row.id);
+    expect(ids.indexOf('tool-subagent-acp')).toBeLessThan(ids.indexOf('tool-subagent-fork'));
+    expect(data.revision).toBe(computeRevision(store.text()));
+  });
+
+  it('the first row cannot move up: 400 INVALID and the file stays byte-identical', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody({
+      id: 'tool-subagent',
+      direction: 'up',
+    })));
+
+    expect(status).toBe(400);
+    expect(data).toEqual({ code: 'INVALID', message: '已经是第一个 subagent，不能上移' });
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('the last row cannot move down: 400 INVALID and the file stays byte-identical', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody({
+      id: 'tool-subagent-claude-code',
+      direction: 'down',
+    })));
+
+    expect(status).toBe(400);
+    expect(data).toEqual({ code: 'INVALID', message: '已经是最后一个 subagent，不能下移' });
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  const invalidBodies: Array<[string, Record<string, unknown>, string]> = [
+    ['direction left', moveBody({ direction: 'left' }), '字段 direction 必须是 up、down 之一'],
+    ['direction up-ish', moveBody({ direction: 'UP' }), '字段 direction 必须是 up、down 之一'],
+    ['direction missing', { expectedRevision: REV, action: 'move', id: 'tool-subagent-fork' }, '字段 direction 必须是 up、down 之一'],
+    ['direction null', moveBody({ direction: null }), '字段 direction 必须是 up、down 之一'],
+    ['id missing', { expectedRevision: REV, action: 'move', direction: 'down' }, '字段 id 必须是非空字符串'],
+    ['id empty', moveBody({ id: '' }), '字段 id 必须是非空字符串'],
+    ['input carried', moveBody({ input: { toolName: 'subagent_x', provider: 'fork' } }), '字段 input 不支持'],
+    ['patch carried', moveBody({ patch: { backgroundMode: 'one-shot' } }), '字段 patch 不支持'],
+  ];
+
+  for (const [label, body, message] of invalidBodies) {
+    it(`rejects ${label} with 400 before any read or lock, file unchanged`, async () => {
+      const tracked = trackedIO();
+      const routes = routesFor(tracked.io);
+
+      const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', body));
+
+      expect(status).toBe(400);
+      expect(data).toEqual({ code: 'INVALID', message });
+      expect(tracked.touched).toEqual({ reads: 0, locks: 0 });
+      expect(tracked.text()).toBe(REAL_FIXTURE);
+    });
+  }
+
+  it('the unknown-action message now names move', async () => {
+    const tracked = trackedIO();
+    const routes = routesFor(tracked.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', {
+      expectedRevision: REV,
+      action: 'add',
+      input: { toolName: 'subagent_x', provider: 'fork' },
+    }));
+
+    expect(status).toBe(400);
+    expect(data).toEqual({ code: 'INVALID', message: '字段 action 必须是 create、update、remove、move 之一' });
+    expect(tracked.touched).toEqual({ reads: 0, locks: 0 });
+    expect(tracked.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('a stale revision is 409 STALE_REVISION and writes nothing', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody({
+      expectedRevision: '0'.repeat(64),
+    })));
+
+    expect(status).toBe(409);
+    expect(data.code).toBe('STALE_REVISION');
+    expect(data.message).toBe('配置已被其他地方修改，请刷新后重试');
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it.each(['workflow-ptc', 'missing'])('an id outside the subagent rows (%s) is 404 NOT_FOUND and writes nothing', async (id) => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody({ id })));
+
+    expect(status).toBe(404);
+    expect(data).toEqual({ code: 'NOT_FOUND', message: `未找到 subagent '${id}'` });
+    expect(store.text()).toBe(REAL_FIXTURE);
+  });
+
+  it('moves an unregistered read-only row (codex) down with 200, not 422', async () => {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = routesFor(store.io);
+
+    const { status, data } = await call(routes, '/subagents', createMockReq('POST', '/plugins/dsh-wuyou-agent/api/subagents', moveBody({
+      id: 'tool-subagent-codex',
+      direction: 'down',
+    })));
+
+    expect(status).toBe(200);
+    expect(data.notice).toBe(DOWN_NOTICE);
+    const ids = listSubagents(store.text()).map((row) => row.id);
+    expect(ids.indexOf('tool-subagent-claude-code')).toBeLessThan(ids.indexOf('tool-subagent-codex'));
+    const codexRow = (data.subagents as Array<{ id: string; editable: boolean; disabled: boolean; config: Record<string, unknown> }>)
+      .find((row) => row.id === 'tool-subagent-codex');
+    expect(codexRow).toMatchObject({ editable: false, disabled: true, config: { provider: 'codex' } });
+    expect(listSubagents(store.text()).find((row) => row.id === 'tool-subagent-claude-code'))
+      .toMatchObject({ editable: false, disabled: true, config: { provider: 'claude-code' } });
+  });
+});

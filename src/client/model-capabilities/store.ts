@@ -1,3 +1,15 @@
+import {
+  MAX_IMPORT_BYTES,
+  downloadYaml,
+  readImportFile,
+} from '../shared/import-export';
+import {
+  applyModelImport,
+  exportModelConfig,
+  modelExportFilename,
+  parseModelConfig,
+  previewModelImport,
+} from './io';
 import { bulkPlan, newBulk, bulkResultMsg } from './bulk';
 import { parseCap } from './capacity';
 import { deriveEnv } from './efforts';
@@ -65,6 +77,7 @@ function initialUi(): McUi {
     loading: true,
     status: '',
     previewReturn: null,
+    importPreview: null,
     dsPrev: 'high',
   };
 }
@@ -260,6 +273,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     let nextUi: McUi = {
       ...previousUi,
       loading: false,
+       importPreview: null,
       readonly,
       saving: false,
       saved: false,
@@ -273,7 +287,8 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       menuIdx: null,
     };
     if (keepView) {
-      nextUi = { ...previousUi, loading: false, readonly, saving: false, saved: false, conflict: 'hidden', status: '', menuIdx: null };
+      nextUi = { ...previousUi, loading: false,
+       importPreview: null, readonly, saving: false, saved: false, conflict: 'hidden', status: '', menuIdx: null };
       const route = nextUi.route ? draft.providers[nextUi.route] : undefined;
       if (nextUi.route && !route) {
         nextUi = { ...nextUi, view: 'list', route: null, edit: null, bulk: null, menuIdx: null };
@@ -413,7 +428,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     const before = computeOps(base, draft, secrets);
     const credOps = mergedCredOps(before.cred);
     if (!before.pi.length && !before.ds.length && !credOps.length) {
-      publish({ ui: { ...snapshot.ui, saved: true, status: '没有待写入的变更。' } });
+      publish({ ui: { ...snapshot.ui, saved: true, status: '没有待写入的变更。', importPreview: null } });
       return;
     }
     const addedProvider = Object.keys(base.providers).every((id) => !draft.providers[id])
@@ -503,7 +518,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       }
       pendingCred = [];
       const ui = { ...snapshot.ui, saving: false, saved: true, status: addedProvider ? `${NS_PI} 已写入。` : '已保存。', sel: {}, undo: null };
-      publish({ saveError: null, ui: { ...ui, previewReturn: null } });
+      publish({ saveError: null, ui: { ...ui, previewReturn: null, importPreview: null } });
       if (snapshot.ui.bulk) publish({ ui: { ...ui, bulk: null } });
     } catch (error) {
       publish({ saveError: String(error), ui: { ...snapshot.ui, saving: false } });
@@ -515,7 +530,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     secrets = {};
     wizardSecret = '';
     pendingCred = [];
-    publish({ saveError: null, ui: { ...snapshot.ui, saved: false, conflict: 'hidden', status: '', edit: null, bulk: null, dialog: null } });
+    publish({ saveError: null, ui: { ...snapshot.ui, saved: false, conflict: 'hidden', status: '', edit: null, bulk: null, dialog: null, importPreview: null } });
   };
 
   const enter = (routeId: string) => setUi((ui) => { ui.view = 'detail'; ui.route = routeId; ui.edit = null; ui.bulk = null; ui.dialog = null; });
@@ -883,7 +898,8 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       next.providers[route].models = next.providers[route].models;
       const ui = snapshot.ui;
       ui.undo = { route, model: clone(model), idx };
-    }, { ui: { ...snapshot.ui, menuIdx: null, undo: { route, model: clone(p.models[idx]), idx } } });
+    }, { ui: { ...snapshot.ui, menuIdx: null,
+     undo: { route, model: clone(p.models[idx]), idx } } });
   };
   const undoDelete = () => {
     const undo = snapshot.ui.undo;
@@ -893,6 +909,62 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   const toggleAdv = (railKey: string) => setUi((ui) => { ui.showAdv = { ...ui.showAdv, [railKey]: !ui.showAdv[railKey] }; });
   const dismissStatus = () => publish({ saveError: null, ui: { ...snapshot.ui, status: '' } });
   const keepConflict = () => publish({ saveError: '草稿还在，但解除冲突前保存会失败。', ui: { ...snapshot.ui, conflict: 'kept' } });
+  const exportConfig = (): void => {
+    if (snapshot.ui.loading || snapshot.ui.saving || snapshot.loadError) return;
+    const dirty = snapshot.ops.dirty > 0 || snapshot.ui.conflict !== 'hidden';
+    const text = exportModelConfig(base);
+    downloadYaml(modelExportFilename(), text);
+    const prefix = dirty ? '只导出已保存的配置。' : '已导出。';
+    publish({ ui: { ...snapshot.ui, status: `${prefix}文件不含密钥和请求头；baseURL 和 apiKeyEnv 属于接入信息，分享前请检查` } });
+  };
+  const importConfig = async (file: { name: string; size: number; text: () => Promise<string> }): Promise<void> => {
+    if (
+      snapshot.ui.readonly
+      || snapshot.ui.loading
+      || snapshot.ui.saving
+      || snapshot.loadError
+      || snapshot.ops.dirty > 0
+      || snapshot.ui.conflict !== 'hidden'
+    ) return;
+    try {
+      if (file.size > MAX_IMPORT_BYTES) throw new Error('文件超过 1MB 上限');
+      const text = await readImportFile(file as unknown as File);
+      const parsed = parseModelConfig(text);
+      const preview = previewModelImport(parsed, draft, { hasDs: snapshot.hasDs });
+      publish({ saveError: null, ui: {
+        ...snapshot.ui,
+        importPreview: {
+          fileName: file.name,
+          items: preview.items,
+          selected: preview.items.filter((item) => item.checkable && item.checked).map((item) => item.id),
+          warning: preview.warning,
+        },
+      } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      publish({ saveError: `无法导入 ${file.name}：${message}`, ui: { ...snapshot.ui, importPreview: null } });
+    }
+  };
+  const setImportChecked = (id: string, on: boolean): void => {
+    const current = snapshot.ui.importPreview;
+    if (!current) return;
+    const item = current.items.find((candidate) => candidate.id === id);
+    if (!item?.checkable) return;
+    const selected = new Set(current.selected);
+    if (on) selected.add(id); else selected.delete(id);
+    publish({ ui: { ...snapshot.ui, importPreview: { ...current, selected: [...selected] } } });
+  };
+  const confirmImport = (): void => {
+    const current = snapshot.ui.importPreview;
+    if (!current) return;
+    const next = applyModelImport(draft, current.items, new Set(current.selected));
+    draft = next;
+    publish({ ui: { ...snapshot.ui, importPreview: null, status: '已导入到草稿，尚未保存。请预览变更后保存。', saved: false } });
+  };
+  const cancelImport = (): void => {
+    if (!snapshot.ui.importPreview) return;
+    publish({ ui: { ...snapshot.ui, importPreview: null } });
+  };
 
   const dispose = () => {
     for (const disposer of disposers.splice(0)) disposer();
@@ -904,6 +976,11 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     load,
     dispose,
     save,
+    exportConfig,
+    importConfig,
+    setImportChecked,
+    confirmImport,
+    cancelImport,
     discard,
     reload,
     keepConflict,

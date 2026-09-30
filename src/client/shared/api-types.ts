@@ -123,7 +123,8 @@ export interface SubagentProviderInfo {
 
 export interface SubagentsMutationRequest {
   expectedRevision: string;
-  action: 'create' | 'update' | 'remove';
+  action: 'create' | 'update' | 'remove' | 'move';
+  direction?: 'up' | 'down';
   id?: string;
   input?: {
     toolName: string;

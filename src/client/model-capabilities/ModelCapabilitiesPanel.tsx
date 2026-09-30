@@ -4,7 +4,8 @@
  * and renders one view per snap.ui.
  *
  * Layout: [关闭] · scrolling main area (banners on top) · edit/bulk layer
- * (absolute, 48px left for the save bar) · save bar · dialog · row menu.
+ * (absolute, 48px left for the save bar) · save bar · dialog · import preview ·
+ * row menu. The import preview (ui.importPreview) counts as a dialog.
  * A layer makes the main area and the top bar inert; a dialog also makes the
  * layer and the save bar inert. With a layer and no dialog, Tab cycles through
  * the layer and the save bar only; after a dialog, focus returns to the layer.
@@ -19,6 +20,7 @@ import { AddProviderWizard } from './components/AddProviderWizard';
 import { BulkLayer } from './components/BulkLayer';
 import { DeleteDialog } from './components/DeleteDialog';
 import { EditAccessLayer } from './components/EditAccessLayer';
+import { ImportPreviewDialog } from './components/ImportPreviewDialog';
 import { ModelEditLayer } from './components/ModelEditLayer';
 import { ModelTable } from './components/ModelTable';
 import { PreviewPanel } from './components/PreviewPanel';
@@ -75,7 +77,7 @@ function MainView({ snap, store }: { snap: McSnapshot; store: ModelCapabilitiesS
   if (ui.loading) {
     return (
       <>
-        <ListHead addDisabled />
+        <ListHead snap={snap} store={store} addDisabled />
         <div style={s.skeleton} aria-hidden="true" />
         <div style={s.skeleton} aria-hidden="true" />
         <div style={s.skeleton} aria-hidden="true" />
@@ -86,7 +88,7 @@ function MainView({ snap, store }: { snap: McSnapshot; store: ModelCapabilitiesS
   if (snap.loadError) {
     return (
       <>
-        <ListHead addDisabled />
+        <ListHead snap={snap} store={store} addDisabled />
         <Alert type="error">
           <div>{snap.loadError}</div>
           <div style={{ marginTop: '8px' }}><Button onClick={() => void store.reload()}>重新加载</Button></div>
@@ -128,7 +130,8 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   const topRef = useRef<HTMLDivElement>(null);
 
   const layer = layerOf(snap);
-  const dialog = !!ui.dialog;
+  // The import preview is not in ui.dialog, but counts as an open dialog (R3 1.8).
+  const dialog = !!ui.dialog || ui.importPreview != null;
   const mainHidden = !!layer || dialog;
   useInert(mainRef, mainHidden);
   useInert(layerRef, dialog);
@@ -263,6 +266,7 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
         </div>
       </div>
       <DeleteDialog snap={snap} store={store} />
+      <ImportPreviewDialog snap={snap} store={store} />
       <RowMenu snap={snap} store={store} anchor={anchor} />
     </div>
   );

@@ -1146,3 +1146,128 @@ describe('v2.10 Background Mode help button in the Subagent dialog (real fixture
     expect(acp).toContain('aria-label="Background Mode: one-shot (read-only)"');
   });
 });
+
+// ---------------------------------------------------------------------------
+// K16 (v2.12): the ↑ / ↓ arrows in the operations column.
+// ---------------------------------------------------------------------------
+describe('v2.12 K16 Subagent 排序 (real fixture)', () => {
+  const RESTART_TITLE = '上移和下移需要重启 DSH 后生效';
+  /** Diagnostics of a Host that predates v2.1 (no `hostApi`), writes still available. */
+  const LEGACY_HOST: StateDiagnostics = { atomicWrite: { loaded: true }, catalogSource: 'patch', subagentProvidersSource: 'patch' };
+
+  /** Opening tags of the row's move arrows for one direction. */
+  function arrowTags(row: string, direction: 'up' | 'down'): string[] {
+    return [...row.matchAll(new RegExp(`<button([^>]*data-move="${direction}"[^>]*)>`, 'g'))].map((match) => match[1]);
+  }
+
+  /** The rendered row of a tool, by its toolName cell. */
+  function toolRow(html: string, toolName: string): string {
+    const row = rowHtml(html, toolName);
+    expect(row, toolName).toBeDefined();
+    return row!;
+  }
+
+  async function renderPanel(diagnostics: StateDiagnostics = HEALTHY): Promise<string> {
+    const store = createSubagentStore(fixtureApi((profile) => fixtureState(profile, diagnostics)));
+    await store.load();
+    return renderToString(<SubagentPanel store={store} />);
+  }
+
+  it('renders the same 13 rows in patch order, only the first ↑ and the last ↓ locked', async () => {
+    const html = await renderPanel();
+
+    expect(firstColumn(html).map((cell) => cell.trim()))
+      .toEqual(listSubagents(FIXTURE).map((row) => String(row.config.toolName)));
+    expect(firstColumn(html)).toHaveLength(13);
+
+    const first = toolRow(html, 'subagent');
+    const firstUp = arrowTags(first, 'up')[0];
+    const firstDown = arrowTags(first, 'down')[0];
+    expect(firstUp, 'subagent ↑').toBeDefined();
+    expect(firstDown, 'subagent ↓').toBeDefined();
+    expect(firstUp, 'subagent ↑').toContain('disabled');
+    expect(firstDown, 'subagent ↓').not.toContain('disabled');
+
+    const last = toolRow(html, 'subagent_claude_code');
+    const lastUp = arrowTags(last, 'up')[0];
+    const lastDown = arrowTags(last, 'down')[0];
+    expect(lastUp, 'subagent_claude_code ↑').toBeDefined();
+    expect(lastDown, 'subagent_claude_code ↓').toBeDefined();
+    expect(lastDown, 'subagent_claude_code ↓').toContain('disabled');
+    expect(lastUp, 'subagent_claude_code ↑').not.toContain('disabled');
+
+    const middle = toolRow(html, 'subagent_coder');
+    const middleUp = arrowTags(middle, 'up')[0];
+    const middleDown = arrowTags(middle, 'down')[0];
+    expect(middleUp, 'subagent_coder ↑').toBeDefined();
+    expect(middleDown, 'subagent_coder ↓').toBeDefined();
+    expect(middleUp, 'subagent_coder ↑').not.toContain('disabled');
+    expect(middleDown, 'subagent_coder ↓').not.toContain('disabled');
+  });
+
+  it('lets the read-only codex row move while its 编辑 button stays locked', async () => {
+    const html = await renderPanel();
+    const codex = toolRow(html, 'subagent_codex');
+
+    const codexUp = arrowTags(codex, 'up')[0];
+    const codexDown = arrowTags(codex, 'down')[0];
+    expect(codexUp, 'subagent_codex ↑').toBeDefined();
+    expect(codexDown, 'subagent_codex ↓').toBeDefined();
+    expect(codexUp, 'subagent_codex ↑').not.toContain('disabled');
+    expect(codexDown, 'subagent_codex ↓').not.toContain('disabled');
+    const editTag = buttonTags(codex, '编辑')[0];
+    expect(editTag, 'subagent_codex 编辑').toBeDefined();
+    expect(editTag, 'subagent_codex 编辑').toContain('disabled');
+
+    // Its neighbor is the last row, so only the ↑ arrow is usable there.
+    const claudeCode = toolRow(html, 'subagent_claude_code');
+    expect(arrowTags(claudeCode, 'up')[0], 'subagent_claude_code ↑').toBeDefined();
+  });
+
+  it('labels the arrows with the row toolName and carries data-move-id', async () => {
+    const html = await renderPanel();
+    const fork = toolRow(html, 'subagent_fork');
+
+    const up = arrowTags(fork, 'up')[0];
+    const down = arrowTags(fork, 'down')[0];
+    expect(up, 'subagent_fork ↑').toBeDefined();
+    expect(down, 'subagent_fork ↓').toBeDefined();
+    expect(up).toContain('aria-label="上移 subagent_fork"');
+    expect(down).toContain('aria-label="下移 subagent_fork"');
+    expect(up).toContain('data-move-id="tool-subagent-fork"');
+    expect(down).toContain('data-move-id="tool-subagent-fork"');
+  });
+
+  it('locks both arrows on an old Host and names the restart in the title', async () => {
+    const html = await renderPanel(LEGACY_HOST);
+    const coder = toolRow(html, 'subagent_coder');
+
+    for (const direction of ['up', 'down'] as const) {
+      const [tag] = arrowTags(coder, direction);
+      expect(tag, direction).toBeDefined();
+      expect(tag, direction).toContain('disabled');
+      expect(tag, direction).toContain(RESTART_TITLE);
+    }
+    for (const toolName of ['subagent', 'subagent_fork', 'subagent_claude_code']) {
+      const row = toolRow(html, toolName);
+      for (const direction of ['up', 'down'] as const) {
+        const tag = arrowTags(row, direction)[0];
+        expect(tag, `${toolName} ${direction}`).toBeDefined();
+        expect(tag, `${toolName} ${direction}`).toContain('disabled');
+      }
+    }
+  });
+
+  it('locks both arrows when atomic-write is unavailable', async () => {
+    const html = await renderPanel(BLOCKED);
+
+    for (const toolName of ['subagent', 'subagent_coder', 'subagent_codex', 'subagent_claude_code']) {
+      const row = toolRow(html, toolName);
+      for (const direction of ['up', 'down'] as const) {
+        const tag = arrowTags(row, direction)[0];
+        expect(tag, `${toolName} ${direction}`).toBeDefined();
+        expect(tag, `${toolName} ${direction}`).toContain('disabled');
+      }
+    }
+  });
+});

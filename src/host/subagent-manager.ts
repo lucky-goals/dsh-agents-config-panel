@@ -459,3 +459,157 @@ export function removeSubagent(
     return { ok: true, yamlText: applyFieldEdits(yamlText, [{ start, end: range[1], text: '', field: 'id' }], 'id') };
   });
 }
+
+/**
+ * Return the movable block end for one row.  The first pass finds the last
+ * actual key/value line covered by the YAML node range, so comments inside a
+ * map never truncate that map.  The second pass adopts only deeper trailing
+ * comments; a shallower comment is kept in the gap unless a following key
+ * proves that the map continues after it.
+ */
+function rowBlockEnd(yamlText: string, row: unknown, nextStart: number): number {
+  const range = nodeRange(row);
+  if (!range) return nextStart;
+  const start = lineStart(yamlText, range[0]);
+  const configPair = pairFor(row, 'config');
+  const anchor = configPair?.key ?? pairFor(row, 'id')?.key;
+  const anchorRange = nodeRange(anchor);
+  const keyColumn = anchorRange
+    ? indentationAt(yamlText, anchorRange[0]).length + (configPair ? 0 : 2)
+    : 0;
+
+  const rangeEnd = Math.min(range[1], nextStart);
+  let offset = start;
+  let end = start;
+
+  // `range[1]` is the value end, not necessarily the end of the last line
+  // that belongs to the map.  Scan only that bounded region and ignore all
+  // blank/comment lines when choosing the initial block end.
+  while (offset < rangeEnd) {
+    const newline = yamlText.indexOf('\n', offset);
+    const physicalEnd = newline < 0 ? yamlText.length : newline;
+    const stop = Math.min(physicalEnd, rangeEnd);
+    const line = yamlText.slice(offset, stop);
+    const contentEnd = line.endsWith('\r') ? stop - 1 : stop;
+    const trimmed = line.trim();
+    if (trimmed !== '' && !trimmed.startsWith('#')) {
+      end = newline >= 0 && physicalEnd < rangeEnd ? physicalEnd + 1 : contentEnd;
+    }
+
+    if (newline < 0 || physicalEnd >= rangeEnd) break;
+    offset = newline + 1;
+  }
+
+  // Continue after the last real key line.  A trailing newline is a gap byte,
+  // so comments are scanned from the following line and adopted explicitly.
+  offset = end;
+
+  while (offset < nextStart) {
+    const newline = yamlText.indexOf('\n', offset);
+    const physicalEnd = newline < 0 ? yamlText.length : newline;
+    const stop = Math.min(physicalEnd, nextStart);
+    const line = yamlText.slice(offset, stop);
+    const indent = /^[ \t]*/.exec(line)![0].length;
+    const trimmed = line.trim();
+    const afterLine = newline < 0 || physicalEnd >= nextStart ? nextStart : newline + 1;
+
+    if (trimmed === '') {
+      offset = afterLine;
+      continue;
+    }
+
+    if (trimmed.startsWith('#')) {
+      if (indent > keyColumn) {
+        end = Math.min(afterLine, nextStart);
+        offset = afterLine;
+        continue;
+      }
+
+      // A shallow comment may be interleaved inside the map.  Look ahead over
+      // comments and blank lines; only a following map key keeps this comment
+      // with the row.  Otherwise the comment belongs to the gap.
+      let lookahead = afterLine;
+      let continuationEnd: number | undefined;
+      while (lookahead < nextStart) {
+        const nextNewline = yamlText.indexOf('\n', lookahead);
+        const nextPhysicalEnd = nextNewline < 0 ? yamlText.length : nextNewline;
+        const nextStop = Math.min(nextPhysicalEnd, nextStart);
+        const nextLine = yamlText.slice(lookahead, nextStop);
+        const nextTrimmed = nextLine.trim();
+        const nextIndent = /^[ \t]*/.exec(nextLine)![0].length;
+        const nextAfterLine = nextNewline < 0 || nextPhysicalEnd >= nextStart
+          ? nextStart
+          : nextNewline + 1;
+
+        if (nextTrimmed === '' || nextTrimmed.startsWith('#')) {
+          lookahead = nextAfterLine;
+          continue;
+        }
+        if (!nextTrimmed.startsWith('-') && nextIndent >= keyColumn) continuationEnd = nextAfterLine;
+        break;
+      }
+
+      if (continuationEnd === undefined) break;
+      end = continuationEnd;
+      offset = continuationEnd;
+      const continuationNewline = yamlText.indexOf('\n', offset);
+      if (continuationNewline < 0 || continuationNewline >= nextStart) break;
+      offset = continuationNewline + 1;
+      continue;
+    }
+
+    // Any ordinary content here is outside the row unless it was accepted as
+    // the map-key continuation in the look-ahead branch above.
+    break;
+  }
+
+  return Math.min(end, nextStart);
+}
+
+export function moveSubagent(yamlText: string, id: string, direction: 'up' | 'down'): MutationResult {
+  return guardMutation('id', () => {
+    const sequence = locateRows(yamlText);
+    if (isResult(sequence)) return sequence;
+
+    const rows = allSubagentRows(sequence);
+    const index = rows.findIndex((row) => rowId(row) === id);
+    if (index < 0) return error('NOT_FOUND', `未找到 subagent '${id}'`);
+
+    const target = direction === 'down' ? index + 1 : index - 1;
+    if (target < 0) return error('INVALID', '已经是第一个 subagent，不能上移');
+    if (target >= rows.length) return error('INVALID', '已经是最后一个 subagent，不能下移');
+
+    const spans = rows.map((row, position) => {
+      const range = nodeRange(row);
+      if (!range) throw new Error(STRUCTURE_ERROR);
+      const next = rows[position + 1];
+      const nextStart = next ? lineStart(yamlText, nodeRange(next)![0]) : yamlText.length;
+      return {
+        start: lineStart(yamlText, range[0]),
+        end: rowBlockEnd(yamlText, row, nextStart),
+      };
+    });
+
+    const earlier = spans[Math.min(index, target)];
+    const later = spans[Math.max(index, target)];
+    const needsTemporaryFinalNewline = later.end === yamlText.length && !yamlText.endsWith('\n');
+    const finalNewline = needsTemporaryFinalNewline
+      ? (yamlText.includes('\r\n') ? '\r\n' : '\n')
+      : '';
+    const source = finalNewline ? yamlText + finalNewline : yamlText;
+    const laterEnd = later.end + finalNewline.length;
+    const swapped = source.slice(0, earlier.start)
+      + source.slice(later.start, laterEnd)
+      + source.slice(earlier.end, later.start)
+      + source.slice(earlier.start, earlier.end)
+      + source.slice(laterEnd);
+    const result = finalNewline ? swapped.slice(0, -finalNewline.length) : swapped;
+
+    try {
+      parseYaml(result);
+    } catch {
+      return error('INVALID', '移动后的配置无法解析');
+    }
+    return { ok: true, yamlText: result };
+  });
+}

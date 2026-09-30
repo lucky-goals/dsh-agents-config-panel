@@ -68,6 +68,7 @@ const BASE_UI: McUi = {
   loading: false,
   status: '',
   previewReturn: null,
+  importPreview: null,
   dsPrev: '',
 };
 
@@ -566,5 +567,130 @@ describe('状态条与横幅（SSR）', () => {
 
   it('loading announces 正在加载配置', () => {
     expect(text(renderPanel({ ui: { loading: true } }))).toContain('正在加载配置');
+  });
+});
+
+/* ================= 导入导出（R3 文档 1.3、1.9） ================= */
+
+/** 契约 1.9 的警告与说明原文。 */
+const IMPORT_WARNING =
+  '文件不应包含密钥或请求头。这些字段会被丢弃，不会进入草稿。baseURL 和 apiKeyEnv 会随新提供方写入草稿，分享来的文件请先看过。';
+const IMPORT_NOTE =
+  '已存在的提供方默认不覆盖。勾选「覆盖」后，自定义提供方只替换模型、显示名和 API，保留本机的 baseURL、密钥环境变量名和请求头。DeepSeek 只合并思考设置和模型表。';
+
+/** 一个 conflict、一个 new、一个 invalid：勾选状态与 1.5 的预览初值一致。 */
+const IMPORT_ITEMS = [
+  { kind: 'conflict' as const, id: 'gpt-gateway', label: 'GPT Gateway', reason: "提供方 'gpt-gateway' 已存在", checked: false, checkable: true },
+  { kind: 'new' as const, id: 'brand-new', label: 'Brand New', reason: "将新增提供方 'brand-new'", checked: true, checkable: true },
+  { kind: 'invalid' as const, id: 'Bad_Id', label: 'Bad_Id', reason: "提供方 ID 'Bad_Id' 不合法", checked: false, checkable: false },
+];
+
+function previewUi(): Partial<McUi> {
+  return { importPreview: { fileName: 'x.yaml', items: IMPORT_ITEMS, selected: ['brand-new'], warning: IMPORT_WARNING } };
+}
+
+/** 从对话框标题到 html 末尾的那一段（对话框总是渲染在主区之后）。 */
+function dialogRegion(html: string): string {
+  const at = html.indexOf('导入模型配置');
+  expect(at, '导入模型配置').toBeGreaterThan(-1);
+  return html.slice(at);
+}
+
+/** 含有 checkbox 的 <label> 块的可见文字（SSR 没有 DOM，只能用文本近似）。 */
+function checkboxLabels(html: string): string[] {
+  return [...html.matchAll(/<input[^>]*type="checkbox"[^>]*>([\s\S]*?)(?:<\/label>|<\/span>|<\/div>)/g)]
+    .map((m) => m[1].replace(/<[^>]*>/g, ' ').trim());
+}
+
+/** React SSR 会把文本里的 ' 转义成 &#x27;，比对 reason 前先解回来。 */
+function decodeEntities(html: string): string {
+  return html
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+describe('列表头的导出与导入（R3 1.3、1.9）', () => {
+  it('按钮顺序为 导出、导入、添加提供方，导入用的是 ImportFileButton', () => {
+    const html = text(renderPanel());
+    const exportAt = html.indexOf('>导出</button>');
+    const importAt = html.indexOf('>导入</button>');
+    const addAt = html.indexOf('>添加提供方</button>');
+    expect(exportAt, '导出').toBeGreaterThan(-1);
+    expect(importAt, '导入').toBeGreaterThan(-1);
+    expect(addAt, '添加提供方').toBeGreaterThan(-1);
+    expect(html, 'ImportFileButton 的 aria-label').toContain('aria-label="导入配置文件"');
+    expect(exportAt).toBeLessThan(importAt);
+    expect(importAt).toBeLessThan(addAt);
+  });
+
+  it('只读：导入禁用并带「只读模式，不能导入」，导出可点', () => {
+    const html = text(renderPanel({ ui: { readonly: true } }));
+    const exportTag = buttonTags(html, '导出')[0];
+    const importTag = buttonTags(html, '导入')[0];
+    expect(exportTag, '导出按钮').toBeDefined();
+    expect(importTag, '导入按钮').toBeDefined();
+    expect(exportTag).not.toContain('disabled');
+    expect(importTag).toContain('disabled');
+    expect(importTag).toContain('title="只读模式，不能导入"');
+  });
+
+  it('有未保存的修改：导入禁用并带契约 title，导出仍可点', () => {
+    const html = text(renderPanel({ snap: { ops: { ...EMPTY_OPS, dirty: 1 } } }));
+    const exportTag = buttonTags(html, '导出')[0];
+    const importTag = buttonTags(html, '导入')[0];
+    expect(exportTag, '导出按钮').toBeDefined();
+    expect(importTag, '导入按钮').toBeDefined();
+    expect(exportTag).not.toContain('disabled');
+    expect(importTag).toContain('disabled');
+    expect(importTag).toContain('title="有未保存的修改或配置冲突，请先保存、放弃或重新加载后再导入"');
+  });
+
+  it('加载中：两个按钮都禁用', () => {
+    const html = text(renderPanel({ ui: { loading: true } }));
+    expect(buttonTags(html, '导出')[0], '导出按钮').toBeDefined();
+    expect(buttonTags(html, '导出')[0]).toContain('disabled');
+    expect(buttonTags(html, '导入')[0], '导入按钮').toBeDefined();
+    expect(buttonTags(html, '导入')[0]).toContain('disabled');
+  });
+});
+
+describe('导入预览对话框（R3 1.9）', () => {
+  it('importPreview 为 null 时不渲染对话框，有值时渲染', () => {
+    expect(text(renderPanel())).not.toContain('导入模型配置');
+    expect(text(renderPanel({ ui: previewUi() }))).toContain('导入模型配置');
+  });
+
+  it('标题、文件名、警告、说明、计数与按钮', () => {
+    const html = text(renderPanel({ ui: previewUi() }));
+    expect(html).toContain('导入模型配置');
+    expect(html).toContain('文件：x.yaml');
+    expect(html).toContain(IMPORT_WARNING);
+    expect(html).toContain(IMPORT_NOTE);
+    expect(html).toContain('将新增 1 项，覆盖 0 项，跳过 2 项。');
+    expect(buttonTags(html, '确认导入（1）')).toHaveLength(1);
+    expect(buttonTags(html, '取消')).toHaveLength(1);
+    expect(html, '旧文案').not.toContain('已存在的配置不会被覆盖');
+  });
+
+  it('每行有 label、徽章和 reason；只有 checkable 的项有勾选框，文字是 导入/覆盖', () => {
+    const region = dialogRegion(text(renderPanel({ ui: previewUi() })));
+    const plain = decodeEntities(region);
+    expect(plain).toContain('GPT Gateway');
+    expect(plain).toContain('Brand New');
+    expect(plain).toContain("提供方 'gpt-gateway' 已存在");
+    expect(plain).toContain("将新增提供方 'brand-new'");
+    expect(plain).toContain("提供方 ID 'Bad_Id' 不合法");
+    for (const badge of ['新增', '覆盖', '无效']) expect(plain, badge).toContain(badge);
+
+    // invalid 的 checkable 为 false → 不渲染勾选框
+    expect(region.match(/type="checkbox"/g) ?? []).toHaveLength(2);
+    const labels = checkboxLabels(region);
+    expect(labels).toHaveLength(2);
+    expect(labels.filter((label) => label.includes('导入'))).toHaveLength(1);
+    expect(labels.filter((label) => label.includes('覆盖'))).toHaveLength(1);
   });
 });

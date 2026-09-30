@@ -491,6 +491,15 @@ export const mcStyles: Record<string, S> = styles({
   dlgBody: { display: 'flex', flexDirection: 'column', gap: '12px' },
   dlgDesc: { margin: 0, fontSize: '13px', lineHeight: '20px', color: C.fg2 },
   dlgActions: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
+
+  /* ---------- list head actions / import preview (R3 1.9) ---------- */
+  headActions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', flexShrink: 0 },
+  impWarn: { margin: 0, fontSize: '13px', lineHeight: '20px', color: C.warn },
+  impList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '8px' },
+  impRow: { display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '10px 12px', border: HAIR, borderRadius: '10px' },
+  impMain: { flex: 1, minWidth: 0 },
+  impCheck: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', lineHeight: '20px', color: C.fg, cursor: 'pointer', flexShrink: 0 },
+  impCount: { margin: 0, fontSize: '13px', lineHeight: '20px', color: C.fg },
 });
 
 /** Merge style objects left to right; falsy entries are skipped. */

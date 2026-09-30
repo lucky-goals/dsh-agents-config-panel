@@ -9,7 +9,7 @@ import type { PatchIO } from './patch-file.js';
 import type { ModelCatalog } from './catalog.js';
 import type { CatalogResult, CatalogSource } from './runtime-deps.js';
 import { computeRevision } from './patch-io.js';
-import { listSubagents, createSubagent, updateSubagent, removeSubagent } from './subagent-manager.js';
+import { listSubagents, createSubagent, updateSubagent, removeSubagent, moveSubagent } from './subagent-manager.js';
 import { subagentProviderDirectory, type SubagentProviderDirectory } from './subagent-providers.js';
 import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } from './members-editor.js';
 import { listAcps, createAcp, updateAcp, removeAcp, importSubagentBundle, ACP_EDITABLE_FIELDS } from './acp-manager.js';
@@ -257,7 +257,7 @@ export function buildState(
 const REVISION_PATTERN = /^[0-9a-f]{64}$/;
 
 const WRITE_ACTIONS = {
-  subagents: ['create', 'update', 'remove'],
+  subagents: ['create', 'update', 'remove', 'move'],
   members: ['add', 'update', 'remove'],
   acps: ['create', 'update', 'remove'],
 } as const;
@@ -271,6 +271,8 @@ export interface ValidatedWrite {
   target?: string;
   /** members only. */
   profile?: string;
+  /** move direction. */
+  direction?: 'up' | 'down';
   /** create input, add member, or update patch. */
   payload?: Record<string, unknown>;
 }
@@ -350,8 +352,18 @@ export function validateWriteBody(kind: WriteKind, body: Record<string, unknown>
   const result: ValidatedWrite = { expectedRevision: revision, action };
   if (kind === 'members') result.profile = requireNonEmptyString(body, 'profile');
 
-  if (action === 'update' || action === 'remove') {
+  if (action === 'update' || action === 'remove' || action === 'move') {
     result.target = requireNonEmptyString(body, kind === 'members' ? 'name' : 'id');
+  }
+
+  if (action === 'move') {
+    const direction = body.direction;
+    if (direction !== 'up' && direction !== 'down') {
+      throw invalidField('direction', '必须是 up、down 之一');
+    }
+    result.direction = direction;
+    if ('input' in body) throw invalidField('input', '不支持');
+    if ('patch' in body) throw invalidField('patch', '不支持');
   }
 
   const payloadField = action === 'create' ? 'input' : action === 'add' ? 'member' : action === 'update' ? 'patch' : undefined;
@@ -613,13 +625,20 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
           const profile = queryProfile(req);
 
           const outcome = await mutate(write.expectedRevision, (yamlText, current, directory) => {
+            if (write.action === 'move') return moveSubagent(yamlText, write.target!, write.direction!);
             const providers = directory.providers;
             if (write.action === 'create') return createSubagent(yamlText, write.payload as any, current, providers);
             if (write.action === 'update') return updateSubagent(yamlText, write.target!, write.payload as any, current, providers);
             return removeSubagent(yamlText, write.target!, providers);
           });
 
-          sendMutationState(res, profile, outcome);
+          sendMutationState(res, profile, outcome, write.action === 'move'
+            ? {
+              notice: write.direction === 'up'
+                ? '已上移。只改变列表顺序，不影响模型看到的工具顺序'
+                : '已下移。只改变列表顺序，不影响模型看到的工具顺序',
+            }
+            : {});
         } catch (err) {
           errorResponse(res, err, logger);
         }

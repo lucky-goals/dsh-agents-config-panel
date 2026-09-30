@@ -1,3 +1,5 @@
+import type { ImportItem } from './io';
+
 export const NS_PI = 'llm-pi-ai' as const;
 export const NS_DS = 'llm-deepseek' as const;
 export const DS_ROUTE_ID = 'deepseek-official' as const;
@@ -160,6 +162,7 @@ export interface McUi {
   loading: boolean;
   status: string;
   previewReturn: { view: McView; route: string | null } | null;
+  importPreview: { fileName: string; items: ImportItem[]; selected: string[]; warning: string } | null;
   dsPrev: string;
 }
 export interface McSnapshot {
@@ -205,6 +208,11 @@ export interface ModelCapabilitiesStore {
   load(): Promise<void>;
   dispose(): void;
   save(): Promise<void>;
+  exportConfig(): void;
+  importConfig(file: { name: string; size: number; text: () => Promise<string> }): Promise<void>;
+  setImportChecked(id: string, on: boolean): void;
+  confirmImport(): void;
+  cancelImport(): void;
   discard(): void;
   reload(): Promise<void>;
   keepConflict(): void;

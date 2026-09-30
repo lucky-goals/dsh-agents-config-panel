@@ -70,6 +70,26 @@ const oldHostNoticeStyle: React.CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 };
 
+const MOVE_RESTART_TITLE = '上移和下移需要重启 DSH 后生效';
+const MOVE_FIRST_TITLE = '已经是第一个 subagent，不能上移';
+const MOVE_LAST_TITLE = '已经是最后一个 subagent，不能下移';
+
+/** Contract §2.5: 24px square arrow buttons, theme variables only. */
+function moveButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: '24px',
+    height: '24px',
+    padding: 0,
+    fontSize: 14,
+    borderRadius: 6,
+    border: '1px solid var(--dsw-alias-border-l2)',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-label-primary)',
+    opacity: disabled ? 0.5 : 1,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+  };
+}
+
 export const IMPORT_WARNING = '文件中的 ACP 带有本机命令路径和 env，导入后请确认路径在本机存在，env 中没有不该共享的密钥。';
 
 /** Preview dialog sections for a Panel A import file. */
@@ -138,6 +158,17 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
     ? providerOptionsFromState
     : [...providerOptionsFromState, { value: values.provider, label: `${values.provider}（未注册）` }];
 
+  // v2.12 K16: ↑/↓ arrows. Read-only rows can still move; title priority is
+  // write-blocked/busy → old Host → first/last edge.
+  const hostLacksMove = state.hostApiV2 !== true;
+  const moveLocked = busy || blocked || hostLacksMove;
+  const moveTitle = (direction: 'up' | 'down', edge: boolean): string | undefined => {
+    if (busy || blocked) return writeTitle;
+    if (hostLacksMove) return MOVE_RESTART_TITLE;
+    if (edge) return direction === 'up' ? MOVE_FIRST_TITLE : MOVE_LAST_TITLE;
+    return undefined;
+  };
+
   return (
     <div data-panel="subagents" style={panelRootStyle}>
       <PanelHeader
@@ -180,7 +211,7 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
           </tr>
         </thead>
         <tbody>
-          {state.rows.map((row) => {
+          {state.rows.map((row, index) => {
             const config = row.config as Record<string, unknown>;
             const toolName = String(config.toolName ?? row.id);
             const editable = isRowEditable(state, row);
@@ -194,8 +225,29 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
                 </td>
                 <td style={tableStyles.td}>{String(config.provider ?? '-')}</td>
                 <td style={tableStyles.td}>{String(config.backgroundMode ?? '-')}</td>
-                <td style={tableStyles.td}>
+                <td style={{ ...tableStyles.td, whiteSpace: 'nowrap' }}>
                   <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      {(['up', 'down'] as const).map((direction) => {
+                        const edge = direction === 'up' ? index === 0 : index === state.rows.length - 1;
+                        const moveDisabled = moveLocked || edge;
+                        return (
+                          <button
+                            key={direction}
+                            type="button"
+                            style={moveButtonStyle(moveDisabled)}
+                            disabled={moveDisabled}
+                            title={moveTitle(direction, edge)}
+                            aria-label={`${direction === 'up' ? '上移' : '下移'} ${toolName}`}
+                            data-move={direction}
+                            data-move-id={row.id}
+                            onClick={() => void store.move(row.id, direction)}
+                          >
+                            {direction === 'up' ? '↑' : '↓'}
+                          </button>
+                        );
+                      })}
+                    </div>
                     <Button onClick={() => store.openEdit(row.id)} disabled={disabled} title={rowTitle}>
                       编辑
                     </Button>

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createSubagentStore } from './subagent-panel-store';
 import type { ApiClient } from '../shared/api-client';
-import type { StateResponse, MutationSuccessResponse } from '../shared/api-types';
+import type { StateResponse, MutationSuccessResponse, SubagentRow } from '../shared/api-types';
+import { WRITE_UNAVAILABLE_MESSAGE } from '../ui/host-state';
 
 describe('SubagentPanelStore', () => {
   function createMockApi(): ApiClient {
@@ -519,5 +520,234 @@ describe('SubagentPanelStore', () => {
       expect(store.getSnapshot().error).toBeNull();
       expect(store.getSnapshot().notice).toContain('已初始化 preset-standard-acp');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K16 (v2.12): move() routes through POST /subagents with action 'move'.
+// ---------------------------------------------------------------------------
+describe('v2.12 move (K16)', () => {
+  const MOVE_UP_NOTICE = '已上移。只改变列表顺序，不影响模型看到的工具顺序';
+  const RESTART_MESSAGE = '上移和下移需要重启 DSH 后生效';
+
+  const fourRows: SubagentRow[] = [
+    { id: 'tool-subagent-fork', disabled: false, editable: true, config: { toolName: 'subagent_fork', provider: 'fork' } },
+    { id: 'tool-subagent-acp', disabled: false, editable: true, config: { toolName: 'subagent_acp', provider: 'ccacp' } },
+    {
+      id: 'tool-subagent-codex',
+      disabled: true,
+      editable: false,
+      config: { toolName: 'subagent_codex', provider: 'codex' },
+      readOnlyReason: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
+    },
+    {
+      id: 'tool-subagent-claude-code',
+      disabled: true,
+      editable: false,
+      config: { toolName: 'subagent_claude_code', provider: 'claude-code' },
+      readOnlyReason: "provider 'claude-code' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
+    },
+  ];
+
+  function stateWith(diagnostics?: StateResponse['diagnostics'], revision = 'rev1'): StateResponse {
+    return {
+      revision,
+      catalog: { providers: [] },
+      subagents: fourRows,
+      teamProfiles: ['standard-acp'],
+      profile: 'standard-acp',
+      members: [],
+      errors: {},
+      diagnostics,
+    };
+  }
+
+  /** Same three-method stub as the suite above; `move` only needs mutateSubagents. */
+  function createMockApi(): ApiClient {
+    return {
+      getState: vi.fn(),
+      mutateSubagents: vi.fn(),
+      mutateMembers: vi.fn(),
+    } as unknown as ApiClient;
+  }
+
+  const V2: StateResponse['diagnostics'] = { atomicWrite: { loaded: true }, catalogSource: 'runtime', hostApi: 2, subagentProvidersSource: 'patch' };
+  const BLOCKED: StateResponse['diagnostics'] = { atomicWrite: { loaded: false, tried: ['file:///a'] }, catalogSource: 'patch', hostApi: 2 };
+  const LEGACY_HOST: StateResponse['diagnostics'] = { atomicWrite: { loaded: true }, catalogSource: 'patch' };
+
+  function movedState(revision: string, order: SubagentRow[]): MutationSuccessResponse {
+    return { ...stateWith(V2, revision), subagents: order, notice: MOVE_UP_NOTICE };
+  }
+
+  it('sends {action: move, id, direction, expectedRevision} and shows the response notice', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(V2));
+    vi.mocked(api.mutateSubagents).mockResolvedValue(movedState('rev2', [fourRows[1], fourRows[0], fourRows[2], fourRows[3]]));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-acp', 'up');
+
+    expect(api.mutateSubagents).toHaveBeenCalledWith({
+      expectedRevision: 'rev1',
+      action: 'move',
+      id: 'tool-subagent-acp',
+      direction: 'up',
+    });
+    const state = store.getSnapshot();
+    expect(state.notice).toBe(MOVE_UP_NOTICE);
+    expect(state.error).toBeNull();
+    expect(state.loading).toBe(false);
+    expect(state.revision).toBe('rev2');
+    expect(state.rows.map((row) => row.id)).toEqual([
+      'tool-subagent-acp',
+      'tool-subagent-fork',
+      'tool-subagent-codex',
+      'tool-subagent-claude-code',
+    ]);
+  });
+
+  it('does not call the API for the first row moving up', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(V2));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-fork', 'up');
+
+    expect(api.mutateSubagents).not.toHaveBeenCalled();
+  });
+
+  it('does not call the API for the last row moving down', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(V2));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-claude-code', 'down');
+
+    expect(api.mutateSubagents).not.toHaveBeenCalled();
+  });
+
+  it('does not call the API when writes are blocked and keeps the write-unavailable error', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(BLOCKED));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-acp', 'up');
+
+    expect(api.mutateSubagents).not.toHaveBeenCalled();
+    expect(store.getSnapshot().error).toBe(WRITE_UNAVAILABLE_MESSAGE);
+  });
+
+  it('does not call the API on a pre-v2 Host and asks for a restart', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(LEGACY_HOST));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-acp', 'up');
+
+    expect(api.mutateSubagents).not.toHaveBeenCalled();
+    expect(store.getSnapshot().error).toBe(RESTART_MESSAGE);
+  });
+
+  it('still moves a read-only row: the provider directory does not gate ordering', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState).mockResolvedValue(stateWith(V2));
+    vi.mocked(api.mutateSubagents).mockResolvedValue(movedState('rev2', [fourRows[0], fourRows[2], fourRows[1], fourRows[3]]));
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-codex', 'up');
+
+    expect(api.mutateSubagents).toHaveBeenCalledWith({
+      expectedRevision: 'rev1',
+      action: 'move',
+      id: 'tool-subagent-codex',
+      direction: 'up',
+    });
+    expect(store.getSnapshot().error).toBeNull();
+  });
+
+  it('refreshes on STALE_REVISION and never retries with the old revision', async () => {
+    const api = createMockApi();
+    vi.mocked(api.getState)
+      .mockResolvedValueOnce(stateWith(V2))
+      .mockResolvedValueOnce({
+        ...stateWith(V2, 'rev9'),
+        subagents: [fourRows[3], fourRows[2], fourRows[1], fourRows[0]],
+      });
+    const conflict = Object.assign(new Error('配置已被其他地方修改，请刷新后重试'), { code: 'STALE_REVISION' });
+    vi.mocked(api.mutateSubagents).mockRejectedValue(conflict);
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-acp', 'up');
+
+    expect(api.mutateSubagents).toHaveBeenCalledTimes(1);
+    const state = store.getSnapshot();
+    expect(state.conflict).toBe('配置已被其他地方修改，请刷新后重试');
+    expect(state.revision).toBe('rev9');
+    expect(state.rows.map((row) => row.id)).toEqual([
+      'tool-subagent-claude-code',
+      'tool-subagent-codex',
+      'tool-subagent-acp',
+      'tool-subagent-fork',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3F low L1: an old Host that still reports `hostApi: 2` but predates the
+// v2.12 `move` action — the ordinary case of rebuilding the client without
+// restarting DSH. `move` then really does reach the server, and comes back as
+// a 400 naming the `action` field, which tells the user nothing about the
+// restart that actually fixes it (subagent-panel-store.ts:649-653).
+// ---------------------------------------------------------------------------
+
+describe('R3F move against a pre-v2.12 Host (v2.12 review)', () => {
+  const RESTART_HINT = '上移和下移需要重启 DSH 后生效';
+  const OLD_HOST_400 = '字段 action 必须是 create、update、remove 之一';
+
+  const rows: SubagentRow[] = [
+    { id: 'tool-subagent-fork', disabled: false, editable: true, config: { toolName: 'subagent_fork', provider: 'fork' } },
+    { id: 'tool-subagent-acp', disabled: false, editable: true, config: { toolName: 'subagent_acp', provider: 'ccacp' } },
+  ];
+
+  it('turns the server 400 into an actionable restart message', async () => {
+    const api = {
+      getState: vi.fn(),
+      mutateSubagents: vi.fn(),
+      mutateMembers: vi.fn(),
+    } as unknown as ApiClient;
+    // hostApi is still 2, so the store is allowed to send `move` at all...
+    vi.mocked(api.getState).mockResolvedValue({
+      revision: 'rev1',
+      catalog: { providers: [] },
+      subagents: rows,
+      teamProfiles: ['standard-acp'],
+      profile: 'standard-acp',
+      members: [],
+      errors: {},
+      diagnostics: { atomicWrite: { loaded: true }, catalogSource: 'runtime', hostApi: 2, subagentProvidersSource: 'patch' },
+    });
+    // ...but this Host predates the action and rejects it.
+    vi.mocked(api.mutateSubagents).mockRejectedValue(
+      Object.assign(new Error(OLD_HOST_400), { code: 'INVALID', status: 400 }),
+    );
+
+    const store = createSubagentStore(api);
+    await store.load();
+    await store.move('tool-subagent-acp', 'up');
+
+    expect(api.mutateSubagents).toHaveBeenCalledWith({
+      expectedRevision: 'rev1',
+      action: 'move',
+      id: 'tool-subagent-acp',
+      direction: 'up',
+    });
+    expect(store.getSnapshot().error).toContain(RESTART_HINT);
   });
 });

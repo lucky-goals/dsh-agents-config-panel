@@ -201,4 +201,37 @@ describe('real fixture HTTP route integration', () => {
     expect(stale.body.message).toBe('配置已被其他地方修改，请刷新后重试');
     expect(await readFile(join(profileDir, 'cordis.patch.yml'), 'utf8')).toBe(beforeStale);
   });
+
+  it('moves a subagent down and back up through the route, restoring the fixture bytes', async () => {
+    const original = await readFile(fixturePath, 'utf8');
+    const patchPath = join(profileDir, 'cordis.patch.yml');
+    const state = await request(base, '/plugins/dsh-wuyou-agent/api/state?profile=standard-acp');
+
+    const down = await request(base, '/plugins/dsh-wuyou-agent/api/subagents', 'POST', {
+      expectedRevision: String(state.body.revision),
+      action: 'move',
+      id: 'tool-subagent-fork',
+      direction: 'down',
+    });
+    expect(down.status).toBe(200);
+    expect(down.body.notice).toBe('已下移。只改变列表顺序，不影响模型看到的工具顺序');
+
+    const moved = await readFile(patchPath, 'utf8');
+    expect(moved).not.toBe(original);
+    expect(String(down.body.revision)).toBe(computeRevision(moved));
+    const movedIds = listSubagents(moved).map((row) => row.id);
+    expect(movedIds.indexOf('tool-subagent-acp')).toBeLessThan(movedIds.indexOf('tool-subagent-fork'));
+    expect((down.body.subagents as Array<{ id: string }>).map((row) => row.id)).toEqual(movedIds);
+
+    const up = await request(base, '/plugins/dsh-wuyou-agent/api/subagents', 'POST', {
+      expectedRevision: String(down.body.revision),
+      action: 'move',
+      id: 'tool-subagent-fork',
+      direction: 'up',
+    });
+    expect(up.status).toBe(200);
+    expect(up.body.notice).toBe('已上移。只改变列表顺序，不影响模型看到的工具顺序');
+    expect(await readFile(patchPath, 'utf8')).toBe(original);
+  });
+
 });

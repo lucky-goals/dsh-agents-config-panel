@@ -186,6 +186,7 @@ export interface SubagentPanelStore {
   openEdit(id: string): void;
   setField<K extends keyof SubagentFormData>(field: K, value: SubagentFormData[K]): void;
   submit(): Promise<void>;
+  move(id: string, direction: 'up' | 'down'): Promise<void>;
   requestDelete(id: string): void;
   confirmDelete(): Promise<void>;
   cancel(): void;
@@ -628,6 +629,40 @@ export function createSubagentStore(api: ApiClient): SubagentPanelStore {
       } catch (err: any) {
         if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message);
         else setState({ loading: false, error: err.message || MSG.saveFailed });
+      }
+    },
+
+    async move(id: string, direction: 'up' | 'down'): Promise<void> {
+      if (writeBlocked()) return;
+      if (state.hostApiV2 !== true) {
+        setState({ error: '上移和下移需要重启 DSH 后生效' });
+        return;
+      }
+
+      const index = state.rows.findIndex((row) => row.id === id);
+      if (index < 0) {
+        setState({ error: MSG.subagentNotFound(id) });
+        return;
+      }
+      if ((direction === 'up' && index === 0) || (direction === 'down' && index === state.rows.length - 1)) return;
+
+      requestSeq++;
+      setState({ loading: true, error: null, conflict: null });
+      try {
+        const response = await api.mutateSubagents({ expectedRevision: state.revision, action: 'move', id, direction });
+        requestSeq++;
+        setState({ loading: false, ...fromResponse(response), notice: response.notice, form: closedForm() });
+      } catch (err: any) {
+        if (err.code === 'STALE_REVISION') await refreshAfterConflict(err.message);
+        else {
+          const oldHostMoveError = err.status === 400
+            && typeof err.message === 'string'
+            && err.message.includes('字段 action 必须是');
+          setState({
+            loading: false,
+            error: oldHostMoveError ? '上移和下移需要重启 DSH 后生效' : (err.message || '移动失败'),
+          });
+        }
       }
     },
 

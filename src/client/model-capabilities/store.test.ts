@@ -791,3 +791,238 @@ describe('store 输入与容量（R2 签名）', () => {
     expect(JSON.stringify(store.getSnapshot().draft)).toBe(before);
   });
 });
+
+/* ==========================================================================
+ * R3 W1a：模型能力导入导出（docs/specs/r3-io-and-move.md 第 1.3、1.4、1.8 节）
+ *
+ * downloadYaml 是唯一会碰 DOM 的依赖，这里 mock 掉它，其余导出（readImportFile、
+ * MAX_IMPORT_BYTES、exportTimestamp）保持真实，好让「超过 1MB」走真逻辑。
+ * 导入用 {name,size,text} 形状的对象，不引入 jsdom。
+ * ========================================================================== */
+vi.mock('../shared/import-export', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../shared/import-export')>()),
+  downloadYaml: vi.fn(),
+}));
+import { downloadYaml } from '../shared/import-export';
+
+const R3_KIND = 'wuyou-model-capabilities';
+
+/** 合法文件：一个已存在的提供方（conflict）、一个新提供方（new）、一个非法 ID（invalid）。 */
+const R3_FILE = [
+  `kind: ${R3_KIND}`,
+  'version: 1',
+  'providers:',
+  '  gpt-gateway:',
+  '    api: anthropic-messages',
+  '    displayName: 文件里的 GPT',
+  '    models:',
+  '      - id: gpt-6-astra',
+  '        name: Astra from file',
+  '        reasoningEfforts: false',
+  '  brand-new:',
+  '    api: openai-completions',
+  '    displayName: Brand New',
+  '    models:',
+  '      - id: gpt-6-nova',
+  '        name: Nova',
+  '  Bad_Id:',
+  '    api: openai-completions',
+  '    models:',
+  '      - id: bad',
+  '',
+].join('\n');
+
+function r3File(name: string, content: string = R3_FILE, size: number = content.length) {
+  const text = vi.fn(async () => content);
+  return { file: { name, size, text }, text };
+}
+
+beforeEach(() => vi.mocked(downloadYaml).mockClear());
+
+describe('store.exportConfig（1.3）', () => {
+  it('Given 草稿改了模型名 When exportConfig Then 下载的内容来自 base，status 以「只导出已保存的配置」开头', async () => {
+    const { store } = setup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+    expect(store.getSnapshot().ops.dirty).toBeGreaterThan(0);
+
+    store.exportConfig();
+
+    expect(vi.mocked(downloadYaml)).toHaveBeenCalledTimes(1);
+    const [name, text] = vi.mocked(downloadYaml).mock.calls[0];
+    expect(name).toMatch(/^wuyou-models-\d{8}-\d{6}\.yaml$/);
+    expect(text).toContain(`kind: ${R3_KIND}`);
+    expect(text).toContain('id: gpt-6-astra');
+    expect(text).not.toContain('Renamed');
+    expect(text).not.toContain('deepseek-official');
+    expect(text.split('\n')[1]).toContain('导出时间');
+
+    const status = store.getSnapshot().ui.status;
+    expect(status.startsWith('只导出已保存的配置')).toBe(true);
+    expect(status).toContain('文件不含密钥和请求头；baseURL 和 apiKeyEnv 属于接入信息，分享前请检查');
+  });
+
+  it('Given 干净状态 When exportConfig Then status 是契约原文', async () => {
+    const { store } = setup();
+    await store.load();
+
+    store.exportConfig();
+
+    expect(vi.mocked(downloadYaml)).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().ui.status).toBe(
+      '已导出。文件不含密钥和请求头；baseURL 和 apiKeyEnv 属于接入信息，分享前请检查',
+    );
+  });
+
+  it('Given 只读 When exportConfig Then 仍然下载；importConfig 不读文件', async () => {
+    const { store } = setup({ describeWritable: false });
+    await store.load();
+    expect(store.getSnapshot().ui.readonly).toBe(true);
+
+    store.exportConfig();
+    expect(vi.mocked(downloadYaml)).toHaveBeenCalledTimes(1);
+
+    const { file, text } = r3File('a.yaml');
+    await store.importConfig(file);
+    expect(text).not.toHaveBeenCalled();
+    expect(store.getSnapshot().ui.importPreview).toBeNull();
+  });
+});
+
+describe('store.importConfig（1.4、1.8）', () => {
+  it('Given 草稿是 dirty When importConfig Then 不读文件；放弃草稿之后才读', async () => {
+    const { store } = setup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+
+    const blocked = r3File('a.yaml');
+    await store.importConfig(blocked.file);
+    expect(blocked.text).not.toHaveBeenCalled();
+    expect(store.getSnapshot().ui.importPreview).toBeNull();
+
+    // 对照组：同一个文件在干净状态下会被读（否则上面的断言可能只是别的原因挡住了 importConfig）
+    store.discard();
+    const allowed = r3File('a.yaml');
+    await store.importConfig(allowed.file);
+    expect(allowed.text).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().ui.importPreview).not.toBeNull();
+  });
+
+  it('Given conflict 为 shown When importConfig Then 不读文件；reload 之后才读', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+    fake.emit('settings/document-updated', NS_PI, 99);
+    expect(store.getSnapshot().ui.conflict).toBe('shown');
+
+    const blocked = r3File('a.yaml');
+    await store.importConfig(blocked.file);
+    expect(blocked.text).not.toHaveBeenCalled();
+    expect(store.getSnapshot().ui.importPreview).toBeNull();
+
+    await store.reload();
+    expect(store.getSnapshot().ui.conflict).toBe('hidden');
+    const allowed = r3File('a.yaml');
+    await store.importConfig(allowed.file);
+    expect(allowed.text).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().ui.importPreview).not.toBeNull();
+  });
+
+  it('Given 文件超过 1MB When importConfig Then saveError 是「无法导入 <名>：文件超过 1MB 上限」', async () => {
+    const { store } = setup();
+    await store.load();
+
+    const { file, text } = r3File('a.yaml', R3_FILE, 2 * 1024 * 1024);
+    await store.importConfig(file);
+
+    expect(store.getSnapshot().saveError).toBe('无法导入 a.yaml：文件超过 1MB 上限');
+    expect(store.getSnapshot().ui.importPreview).toBeNull();
+    expect(text, '超过上限就不读内容').not.toHaveBeenCalled();
+  });
+
+  it('Given 合法文件 When importConfig Then 只填 importPreview，selected 是 checked 的 id，草稿不变', async () => {
+    const { store } = setup();
+    await store.load();
+    const before = JSON.stringify(store.getSnapshot().draft);
+
+    const { file, text } = r3File('models.yaml');
+    await store.importConfig(file);
+
+    expect(text).toHaveBeenCalledTimes(1);
+    const preview = store.getSnapshot().ui.importPreview;
+    expect(preview).not.toBeNull();
+    expect(preview!.fileName).toBe('models.yaml');
+    expect(preview!.items.map((item) => item.kind)).toEqual(['conflict', 'new', 'invalid']);
+    expect(preview!.selected).toEqual(['brand-new']);
+    expect(preview!.warning).toContain('文件不应包含密钥或请求头');
+    expect(JSON.stringify(store.getSnapshot().draft)).toBe(before);
+  });
+
+  it('Given 预览打开 When setImportChecked / confirmImport Then 草稿按勾选合并，dirty>0，status 正确且不调用 mutate', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    const { file } = r3File('models.yaml');
+    await store.importConfig(file);
+
+    store.setImportChecked('gpt-gateway', true);
+    expect([...store.getSnapshot().ui.importPreview!.selected].sort()).toEqual(['brand-new', 'gpt-gateway']);
+    // invalid 的 id 不处理
+    store.setImportChecked('Bad_Id', true);
+    expect([...store.getSnapshot().ui.importPreview!.selected].sort()).toEqual(['brand-new', 'gpt-gateway']);
+    store.setImportChecked('brand-new', false);
+    expect(store.getSnapshot().ui.importPreview!.selected).toEqual(['gpt-gateway']);
+    store.setImportChecked('brand-new', true);
+
+    store.confirmImport();
+
+    const snap = store.getSnapshot();
+    expect(snap.ui.importPreview).toBeNull();
+    expect(snap.ui.status).toBe('已导入到草稿，尚未保存。请预览变更后保存。');
+    expect(snap.ops.dirty).toBeGreaterThan(0);
+    expect(snap.draft.providers['brand-new']).toBeDefined();
+    expect(snap.draft.providers['brand-new'].models.map((m) => m.id)).toEqual(['gpt-6-nova']);
+    expect(snap.draft.providers['gpt-gateway'].api).toBe('anthropic-messages');
+    expect(snap.draft.providers['gpt-gateway'].displayName).toBe('文件里的 GPT');
+    expect(snap.draft.providers['gpt-gateway'].models.map((m) => m.id)).toEqual(['gpt-6-astra']);
+    expect(snap.draft.providers['gpt-gateway'].models[0].name).toBe('Astra from file');
+    expect(snap.draft.providers['gpt-gateway'].baseURL).toBe('https://magic-api.up.railway.app/v1');
+    expect(snap.draft.providers['gpt-gateway'].apiKeyEnv).toBe('GPT_GATEWAY_API_KEY');
+    expect(fake.mutate, '导入只改草稿').not.toHaveBeenCalled();
+  });
+
+  it('Given 预览打开 When cancelImport Then 只关对话框，草稿不变', async () => {
+    const { store } = setup();
+    await store.load();
+    const before = JSON.stringify(store.getSnapshot().draft);
+    const { file } = r3File('models.yaml');
+    await store.importConfig(file);
+    expect(store.getSnapshot().ui.importPreview).not.toBeNull();
+
+    store.cancelImport();
+
+    expect(store.getSnapshot().ui.importPreview).toBeNull();
+    expect(JSON.stringify(store.getSnapshot().draft)).toBe(before);
+  });
+
+  it('Given 预览打开 When discard 或 reload Then importPreview 被清空', async () => {
+    const discarded = setup();
+    await discarded.store.load();
+    await discarded.store.importConfig(r3File('models.yaml').file);
+    expect(discarded.store.getSnapshot().ui.importPreview).not.toBeNull();
+    discarded.store.discard();
+    expect(discarded.store.getSnapshot().ui.importPreview).toBeNull();
+
+    const reloaded = setup();
+    await reloaded.store.load();
+    await reloaded.store.importConfig(r3File('models.yaml').file);
+    expect(reloaded.store.getSnapshot().ui.importPreview).not.toBeNull();
+    await reloaded.store.reload();
+    expect(reloaded.store.getSnapshot().ui.importPreview).toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createPatchIO } from '../../src/host/patch-file.js';
 import { createRoutes, type RouteDescriptor } from '../../src/host/http-routes.js';
 import { readCatalog } from '../../src/host/catalog.js';
+import { computeRevision } from '../../src/host/patch-io.js';
 import { createApiClient } from '../../src/client/shared/api-client';
 import { createSubagentStore, type SubagentPanelStore } from '../../src/client/panel-a/subagent-panel-store';
 import { createMembersStore, type MembersPanelStore } from '../../src/client/panel-b/members-panel-store';
@@ -293,4 +294,27 @@ describe('real fixture host/client contract', () => {
     expect(blocked.error).toBe("provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑");
     expect(await readFile(harness.patchPath, 'utf8')).toBe(afterRegistered);
   });
+
+  it('moves a row through the store: only the order changes and the notice names the tool order', async () => {
+    const harness = await createHarness();
+    await harness.subagents.load(TEAM_PROFILE);
+    const before = harness.subagents.getSnapshot().rows.map((row) => row.id);
+    const beforeBytes = await readFile(harness.patchPath, 'utf8');
+
+    await harness.subagents.move('tool-subagent-fork', 'down');
+
+    const state = harness.subagents.getSnapshot();
+    expect(state.error).toBeNull();
+    expect(state.notice, 'notice').toBeTruthy();
+    expect(state.notice).toContain('不影响模型看到的工具顺序');
+    const after = state.rows.map((row) => row.id);
+    expect(after.indexOf('tool-subagent-acp')).toBeLessThan(after.indexOf('tool-subagent-fork'));
+    expect([...after].sort()).toEqual([...before].sort());
+    expect(after).toHaveLength(13);
+
+    const afterBytes = await readFile(harness.patchPath, 'utf8');
+    expect(afterBytes).not.toBe(beforeBytes);
+    expect(state.revision).toBe(computeRevision(afterBytes));
+  });
+
 });

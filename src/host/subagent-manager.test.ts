@@ -3,11 +3,20 @@ import { describe, expect, it } from 'vitest';
 import {
   createSubagent,
   listSubagents,
+  moveSubagent,
   removeSubagent,
   updateSubagent,
 } from './subagent-manager';
 import { readCatalog } from './catalog';
 import { resolveSubagentProviders } from './subagent-providers.js';
+import {
+  findSubagentSequence,
+  lineStart,
+  nodeRange,
+  pairValue,
+  parseYaml,
+  scalarString,
+} from './patch-io.js';
 
 const fixture = readFileSync(
   new URL('../../test/fixtures/real-web-cordis.patch.yml', import.meta.url),
@@ -770,5 +779,491 @@ describe('SubagentManager against the real patch shape', () => {
       editable: false,
       readOnlyReason: "provider 'codex' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K16 (v2.12): moving a subagent row up or down.
+//
+// The byte spans below are contract §2.1 transcribed: a row spans from its own
+// `- id` line start to `node.range[1]` (the value end), collapsed onto the next
+// row's line start when the two overlap. The fixture has exactly two such
+// overlaps (architect → reviewer and reviewer → coder): both value ends reach
+// 14 bytes into the next row's line, i.e. into its indentation, which the
+// collapse leaves with the row that follows.
+// ---------------------------------------------------------------------------
+
+const MOVE_SUBAGENT_NAME = '@deepseek-ai/dsh-tool-subagent';
+
+interface RowSpan {
+  id: string;
+  /** `lineStart(range[0])`: the row's own `- id` line start, indentation included. */
+  start: number;
+  /** `range[1]` before the §2.1 collapse. */
+  valueEnd: number;
+  /** Value end collapsed onto the next row's line start when they overlap. */
+  end: number;
+}
+
+/** §2.1 byte spans of every dsh-tool-subagent row, in file order. */
+function rowSpans(text: string, label: string): RowSpan[] {
+  const sequence = findSubagentSequence(parseYaml(text));
+  expect(sequence, label).toBeDefined();
+  const raw = sequence!.items
+    .filter((row) => scalarString(pairValue(row, 'name')) === MOVE_SUBAGENT_NAME)
+    .map((row) => {
+      const range = nodeRange(row);
+      expect(range, label).toBeDefined();
+      return {
+        id: scalarString(pairValue(row, 'id')),
+        start: lineStart(text, range![0]),
+        valueEnd: range![1],
+      };
+    });
+  return raw.map((row, index) => {
+    const next = raw[index + 1];
+    return { ...row, end: next !== undefined && next.start < row.valueEnd ? next.start : row.valueEnd };
+  });
+}
+
+/** §2.1 swap of two adjacent rows: the two blocks trade places, the gap stays. */
+function swappedText(text: string, earlierId: string, laterId: string): string {
+  const spans = rowSpans(text, 'fixture');
+  const index = spans.findIndex((span) => span.id === earlierId);
+  const earlier = spans[index];
+  const later = spans[index + 1];
+  expect(earlier, earlierId).toBeDefined();
+  if (later?.id !== laterId) throw new Error(`${earlierId} is followed by ${String(later?.id)}, not ${laterId}`);
+  return text.slice(0, earlier.start)
+    + text.slice(later.start, later.end)
+    + text.slice(earlier.end, later.start)
+    + text.slice(earlier.start, earlier.end)
+    + text.slice(later.end);
+}
+
+function rowIds(text: string): string[] {
+  return listSubagents(text).map((row) => row.id);
+}
+
+/** The id order after `first` traded places with the row below it. */
+function idsAfterDownSwap(ids: readonly string[], first: string, second: string): string[] {
+  const next = [...ids];
+  const index = ids.indexOf(first);
+  expect(index, first).toBeGreaterThanOrEqual(0);
+  next[index] = second;
+  next[index + 1] = first;
+  return next;
+}
+
+function rowBlockStart(text: string, id: string): number {
+  const at = text.indexOf(`- id: ${id}`);
+  expect(at, id).toBeGreaterThanOrEqual(0);
+  return at - 14;
+}
+
+describe('K16 Subagent 排序 (v2.12): moveSubagent', () => {
+  const fixtureIds = rowIds(fixture);
+
+  it('starts from the 13 rows in patch order (the index the cases below rely on)', () => {
+    expect(fixtureIds).toEqual([
+      'tool-subagent',
+      'tool-subagent-fork',
+      'tool-subagent-acp',
+      'tool-subagent-cursor',
+      'tool-subagent-explore',
+      'tool-subagent-architect',
+      'tool-subagent-reviewer',
+      'tool-subagent-coder',
+      'tool-subagent-tester',
+      'tool-subagent-front-designer',
+      'tool-subagent-research',
+      'tool-subagent-codex',
+      'tool-subagent-claude-code',
+    ]);
+  });
+
+  const adjacentPairs = [
+    ['fork ↔ acp', 'tool-subagent-fork', 'tool-subagent-acp'],
+    ['explore ↔ architect', 'tool-subagent-explore', 'tool-subagent-architect'],
+    ['architect ↔ reviewer', 'tool-subagent-architect', 'tool-subagent-reviewer'],
+    ['codex ↔ claude-code', 'tool-subagent-codex', 'tool-subagent-claude-code'],
+  ] as const;
+
+  it.each(adjacentPairs)(
+    '%s: down swaps the pair, then up restores the fixture byte for byte',
+    (_pair, first, second) => {
+      const down = yamlText(moveSubagent(fixture, first, 'down'));
+
+      expect(down, 'a move must change bytes').not.toBe(fixture);
+      expect(() => parseYaml(down)).not.toThrow();
+      expect(down).toBe(swappedText(fixture, first, second));
+      expect(rowIds(down)).toEqual(idsAfterDownSwap(fixtureIds, first, second));
+
+      const up = yamlText(moveSubagent(down, first, 'up'));
+
+      expect(() => parseYaml(up)).not.toThrow();
+      expect(rowIds(up)).toEqual(fixtureIds);
+      expect(up, 'down + up must be byte-identical to the fixture').toBe(fixture);
+    },
+  );
+
+  it('fork down: the lead comment stays at its old offset and fork keeps every byte', () => {
+    const spans = rowSpans(fixture, 'fixture');
+    expect(spans[1].id).toBe('tool-subagent-fork');
+    expect(spans[2].id).toBe('tool-subagent-acp');
+    const fork = spans[1];
+    const comment = '# Fork omits model selection';
+    const commentAt = fixture.indexOf(comment);
+    expect(commentAt).toBeGreaterThanOrEqual(0);
+    expect(commentAt).toBeLessThan(fork.start);
+
+    const changed = yamlText(moveSubagent(fixture, 'tool-subagent-fork', 'down'));
+    const acpAt = changed.indexOf('- id: tool-subagent-acp');
+
+    // The comment sits above `- id`, so it is not inside fork's span.
+    expect(changed.indexOf(comment)).toBe(commentAt);
+    expect(acpAt).toBeGreaterThan(changed.indexOf(comment));
+    // ... it stays immediately above the row that took fork's slot.
+    expect(changed.slice(commentAt, acpAt - 14)).toBe(fixture.slice(commentAt, fork.start));
+    // Fork's own bytes moved as one block.
+    const forkAt = rowBlockStart(changed, 'tool-subagent-fork');
+    expect(changed.slice(forkAt, forkAt + (fork.end - fork.start))).toBe(fixture.slice(fork.start, fork.end));
+  });
+
+  it('explore down: the commented-out config/persona block stays in the gap between the rows', () => {
+    const spans = rowSpans(fixture, 'fixture');
+    expect(spans.map((span) => span.id).slice(4, 7)).toEqual([
+      'tool-subagent-explore',
+      'tool-subagent-architect',
+      'tool-subagent-reviewer',
+    ]);
+    const explore = spans[4];
+    const architect = spans[5];
+    const gap = fixture.slice(explore.end, architect.start);
+    expect(gap).toContain('# config:');
+    expect(gap).toContain('#   persona: |');
+
+    const changed = yamlText(moveSubagent(fixture, 'tool-subagent-explore', 'down'));
+    const architectAt = changed.indexOf('- id: tool-subagent-architect');
+    const exploreAt = changed.indexOf('- id: tool-subagent-explore');
+    expect(architectAt).toBeGreaterThanOrEqual(0);
+    expect(exploreAt).toBeGreaterThan(architectAt);
+
+    // architect took explore's slot, the untouched gap follows it, explore follows the gap.
+    const between = changed.slice(architectAt - 14, exploreAt - 14);
+    expect(between).toBe(fixture.slice(architect.start, architect.end) + gap);
+    expect(between).toContain('# config:');
+    expect(between).toContain('#   persona: |');
+    expect(between).toContain('#     禁止：改文件、装依赖、跑会写磁盘的命令、调用其他 subagent。');
+  });
+
+  it('architect down: the Reviewer comments travel with architect, the 14 spaces stay with reviewer', () => {
+    const spans = rowSpans(fixture, 'fixture');
+    expect(spans.map((span) => span.id).slice(5, 8)).toEqual([
+      'tool-subagent-architect',
+      'tool-subagent-reviewer',
+      'tool-subagent-coder',
+    ]);
+    const architect = spans[5];
+    const reviewer = spans[6];
+    const coder = spans[7];
+
+    // The two overlap in the fixture: each value end reaches into the next row's line.
+    expect(architect.valueEnd).toBeGreaterThan(reviewer.start);
+    expect(reviewer.valueEnd).toBeGreaterThan(coder.start);
+    expect(architect.end).toBe(reviewer.start);
+    expect(reviewer.end).toBe(coder.start);
+    expect(fixture.slice(architect.start, architect.end))
+      .toContain('# Reviewer: code review against contract');
+    expect(fixture.slice(reviewer.start, reviewer.end))
+      .toContain('# ccacp advertises persona:false — role instructions go in the task prompt');
+
+    const changed = yamlText(moveSubagent(fixture, 'tool-subagent-architect', 'down'));
+    const architectAt = changed.indexOf('- id: tool-subagent-architect');
+    const reviewerAt = changed.indexOf('- id: tool-subagent-reviewer');
+    const architectBlock = fixture.slice(architect.start, architect.end);
+    const reviewerBlock = fixture.slice(reviewer.start, reviewer.end);
+
+    // Reviewer moved up into architect's slot, architect follows immediately:
+    // the collapsed spans swallow the gap, and nothing between them is left over.
+    expect(reviewerAt).toBeLessThan(architectAt);
+    expect(reviewerAt - 14).toBe(architect.start);
+    expect(reviewerAt - 14 + reviewerBlock.length).toBe(architectAt - 14);
+    expect(changed.slice(reviewerAt - 14, reviewerAt - 14 + reviewerBlock.length)).toBe(reviewerBlock);
+    expect(changed.slice(architectAt - 14, architectAt - 14 + architectBlock.length)).toBe(architectBlock);
+    expect(changed.slice(reviewerAt - 14, architectAt - 14)).not.toContain('# Reviewer:');
+    expect(changed.slice(architectAt - 14, architectAt - 14 + architectBlock.length))
+      .toContain('# Reviewer: code review against contract');
+    // Each row keeps its own 14 spaces of indentation, and only its own.
+    expect(changed.slice(reviewerAt - 14, reviewerAt)).toBe('              ');
+    expect(changed.slice(architectAt - 14, architectAt)).toBe('              ');
+    expect(changed[reviewerAt - 15]).toBe('\n');
+    expect(changed[architectAt - 15]).toBe('\n');
+  });
+
+  it('codex down: both read-only rows keep their own disabled/provider bytes and stay read-only', () => {
+    const spans = rowSpans(fixture, 'fixture');
+    expect(spans.map((span) => span.id).slice(11)).toEqual(['tool-subagent-codex', 'tool-subagent-claude-code']);
+    const codex = spans[11];
+    const claude = spans[12];
+
+    const changed = yamlText(moveSubagent(fixture, 'tool-subagent-codex', 'down'));
+    const rows = listSubagents(changed);
+    const ids = rows.map((row) => row.id);
+    expect(ids.indexOf('tool-subagent-claude-code')).toBeLessThan(ids.indexOf('tool-subagent-codex'));
+    expect(rows.find((row) => row.id === 'tool-subagent-claude-code')).toMatchObject({
+      editable: false,
+      disabled: true,
+      config: { provider: 'claude-code', toolName: 'subagent_claude_code' },
+    });
+    expect(rows.find((row) => row.id === 'tool-subagent-codex')).toMatchObject({
+      editable: false,
+      disabled: true,
+      config: { provider: 'codex', toolName: 'subagent_codex' },
+    });
+
+    const codexBlock = fixture.slice(codex.start, codex.end);
+    const claudeBlock = fixture.slice(claude.start, claude.end);
+    const claudeAt = rowBlockStart(changed, 'tool-subagent-claude-code');
+    const codexAt = rowBlockStart(changed, 'tool-subagent-codex');
+    expect(changed.slice(claudeAt, claudeAt + claudeBlock.length)).toBe(claudeBlock);
+    expect(changed.slice(codexAt, codexAt + codexBlock.length)).toBe(codexBlock);
+    // `disabled: true` belongs to each block, not to the pair as a whole.
+    expect([...changed.slice(claudeAt, codexAt + codexBlock.length).matchAll(/disabled: true/g)]).toHaveLength(2);
+    expect(changed.slice(claudeAt, claudeAt + claudeBlock.length)).toContain('provider: claude-code');
+    expect(changed.slice(codexAt, codexAt + codexBlock.length)).toContain('provider: codex');
+  });
+
+  it('rejects the first row moving up and the last row moving down without returning text', () => {
+    const first = moveSubagent(fixture, 'tool-subagent', 'up');
+    expect(first).toEqual({ ok: false, code: 'INVALID', message: '已经是第一个 subagent，不能上移' });
+    expect(first).not.toHaveProperty('yamlText');
+
+    const last = moveSubagent(fixture, 'tool-subagent-claude-code', 'down');
+    expect(last).toEqual({ ok: false, code: 'INVALID', message: '已经是最后一个 subagent，不能下移' });
+    expect(last).not.toHaveProperty('yamlText');
+  });
+
+  it.each(['workflow-ptc', 'missing'])('NOT_FOUND for %s in both directions', (id) => {
+    const expected = { ok: false, code: 'NOT_FOUND', message: `未找到 subagent '${id}'` };
+    expect(moveSubagent(fixture, id, 'up')).toEqual(expected);
+    expect(moveSubagent(fixture, id, 'down')).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3F: the two moveSubagent defects found while reviewing v2.12 (K16), plus
+// the store regression the same review asked for. Every case below is red on
+// the pre-fix implementation, and red for the reason named in its own title.
+//
+// Defect 1 — rowBlockEnd (subagent-manager.ts:496-501): a comment whose
+// indentation is <= the row's key column is read as the end of that row's
+// block, even when the same row's map continues right after the comment. The
+// swap then parses, and even round-trips, but moves a key from one row to the
+// other; when the receiving row already owns that key the swap is rejected as
+// INVALID 「移动后的配置无法解析」 instead.
+// Defect 2 — moveSubagent (subagent-manager.ts:520-540): a swapped last row
+// sitting at EOF without a trailing newline either silently loses bytes (the
+// blank line between the pair migrates to the end of the file) or is rejected
+// with INVALID 「移动后的配置无法解析」.
+//
+// The patch below is the smallest shape `findSubagentSequence` accepts: root
+// sequence → `insert` item → `id: preset-standard-acp` → `config.plugins` →
+// `id: delegation` / `name: cordis:group` → `config` sequence.
+// 14 spaces = a row's own `- id` indent, 16 = that row's key column.
+// ---------------------------------------------------------------------------
+
+describe('R3F Subagent 排序回归 (v2.12 review)', () => {
+  const HEAD = [
+    '- insert:',
+    '    - id: preset-standard-acp',
+    "      name: '@deepseek-ai/dsh-agent-preset'",
+    '      config:',
+    '        plugins:',
+    '          - id: delegation',
+    '            name: cordis:group',
+    '            config:',
+    '',
+  ].join('\n');
+
+  const ROW_A = [
+    '              - id: a',
+    "                name: '@deepseek-ai/dsh-tool-subagent'",
+    '                config:',
+    '                  provider: spawn',
+    '                  toolName: a',
+    '',
+  ].join('\n');
+
+  const ROW_B = [
+    '              - id: b',
+    "                name: '@deepseek-ai/dsh-tool-subagent'",
+    '                config:',
+    '                  provider: spawn',
+    '                  toolName: b',
+    '',
+  ].join('\n');
+
+  /** The bytes from `id`'s own `- id` line start to the next row (or EOF). */
+  function rowBlock(text: string, id: string): string {
+    const marker = `- id: ${id}\n`;
+    const at = text.indexOf(marker);
+    expect(at, id).toBeGreaterThanOrEqual(0);
+    const from = text.lastIndexOf('\n', at) + 1;
+    const rest = text.slice(at + marker.length);
+    const next = rest.search(/^[ \t]*- id: /m);
+    return text.slice(from, next < 0 ? text.length : at + marker.length + next);
+  }
+
+  /** `a` moved down, asserted to succeed; null after recording the failure. */
+  function moveDown(text: string): string | null {
+    const result = moveSubagent(text, 'a', 'down');
+    expect(result.ok, result.ok ? '' : `${result.code}: ${result.message}`).toBe(true);
+    return result.ok ? result.yamlText : null;
+  }
+
+  /**
+   * A move is a pure reorder: the order becomes b, a and every row object is
+   * deeply equal to its pre-move self. No key may migrate between the rows.
+   */
+  function expectPureSwap(original: string, moved: string): void {
+    const before = listSubagents(original);
+    expect(before.map((row) => row.id), 'precondition').toEqual(['a', 'b']);
+
+    const after = listSubagents(moved);
+    expect(after.map((row) => row.id)).toEqual(['b', 'a']);
+    expect(after[0]).toEqual(before[1]);
+    expect(after[1]).toEqual(before[0]);
+  }
+
+  /** `up` from the moved text must return the original byte for byte. */
+  function expectUpRoundTrip(original: string, moved: string): void {
+    const up = moveSubagent(moved, 'a', 'up');
+    expect(up.ok, up.ok ? '' : `${up.code}: ${up.message}`).toBe(true);
+    if (up.ok) expect(up.yamlText).toBe(original);
+  }
+
+  it('finding 1 (a): `disabled` after a key-column comment stays with its own row', () => {
+    const text = HEAD + ROW_A + '                # temporarily off\n                disabled: true\n' + ROW_B;
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expect(listSubagents(moved)).toMatchObject([
+      { id: 'b', disabled: false },
+      { id: 'a', disabled: true },
+    ]);
+    // The comment documents `disabled`, so it is inside a's block, not b's.
+    expect(rowBlock(moved, 'a')).toContain('# temporarily off');
+    expect(rowBlock(moved, 'b')).not.toContain('# temporarily off');
+
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 1 (a2): the same defect one column shallower (14-space comment)', () => {
+    const text = HEAD + ROW_A + '              # temporarily off\n                disabled: true\n' + ROW_B;
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expect(listSubagents(moved)).toMatchObject([
+      { id: 'b', disabled: false },
+      { id: 'a', disabled: true },
+    ]);
+    expect(rowBlock(moved, 'a')).toContain('# temporarily off');
+
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 1 (b): a comment above `config:` does not make the move INVALID', () => {
+    const text = HEAD
+      + '              - id: a\n'
+      + "                name: '@deepseek-ai/dsh-tool-subagent'\n"
+      + '                # note\n'
+      + '                config:\n'
+      + '                  provider: spawn\n'
+      + '                  toolName: a\n'
+      + ROW_B;
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 1 (c): a tab-indented comment inside `config:` does not make the move INVALID', () => {
+    const text = HEAD
+      + '              - id: a\n'
+      + "                name: '@deepseek-ai/dsh-tool-subagent'\n"
+      + '                config:\n'
+      + '                  provider: spawn\n'
+      + '\t\t# tab note\n'
+      + '                  toolName: a\n'
+      + ROW_B;
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 1 (d): when both rows carry `disabled` each keeps its own value', () => {
+    const text = HEAD + ROW_A
+      + '                # temporarily off\n'
+      + '                disabled: true\n'
+      + '              - id: b\n'
+      + "                name: '@deepseek-ai/dsh-tool-subagent'\n"
+      + '                config:\n'
+      + '                  provider: spawn\n'
+      + '                  toolName: b\n'
+      + '                disabled: false\n';
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expect(listSubagents(moved)).toMatchObject([
+      { id: 'b', disabled: false },
+      { id: 'a', disabled: true },
+    ]);
+
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 2 (c): blank line between the pair, last row at EOF with no newline', () => {
+    const text = HEAD + ROW_A + '\n' + ROW_B.slice(0, -1);
+    expect(text.endsWith('\n')).toBe(false);
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 2 (c2): last row with a trailing comment and no final newline', () => {
+    const text = HEAD + ROW_A + ROW_B.slice(0, -1) + '\n                  # config tail';
+    expect(text.endsWith('\n')).toBe(false);
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expectUpRoundTrip(text, moved);
+  });
+
+  it('finding 2 (d2): CRLF file whose last row has no final newline', () => {
+    const text = (HEAD + ROW_A + ROW_B.slice(0, -1)).replace(/\n/g, '\r\n');
+    expect(text.endsWith('\r\n')).toBe(false);
+
+    const moved = moveDown(text);
+    if (moved === null) return;
+
+    expectPureSwap(text, moved);
+    expectUpRoundTrip(text, moved);
   });
 });

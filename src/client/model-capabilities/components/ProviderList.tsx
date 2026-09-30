@@ -1,5 +1,5 @@
 /**
- * Provider list (prototype viewList): title, LIST_DESC, 添加提供方, one card per
+ * Provider list (prototype viewList): title, LIST_DESC, 导出 / 导入 / 添加提供方, one card per
  * provider (custom ones in record order, DeepSeek last) and the read-only
  * default-model line.
  */
@@ -8,6 +8,7 @@ import { DS_ROUTE_ID, LIST_DESC, NS_PI } from '../types';
 import type { McSnapshot, ModelCapabilitiesStore, ProviderDraft } from '../types';
 import { hasLegacy } from '../efforts';
 import { mcStyles as s, sx } from '../styles';
+import { ImportFileButton } from '../../ui/PanelChrome';
 import { Btn, CredStatus, Tag, apiName } from './shared';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
@@ -40,15 +41,39 @@ function summaryOf(p: ProviderDraft): string {
   return hasLegacy(p) ? '有旧字段' : '已配置';
 }
 
-/** Header row shared with the loading state. */
-export function ListHead({ addDisabled, onAdd }: { addDisabled: boolean; onAdd?: () => void }) {
+export const IMPORT_READONLY_TITLE = '只读模式，不能导入';
+export const IMPORT_DIRTY_TITLE = '有未保存的修改或配置冲突，请先保存、放弃或重新加载后再导入';
+
+/**
+ * 导出 / 导入 state per R3 1.3: loading, loadError and saving disable both;
+ * readonly or unsaved work / a conflict only disable 导入 (with a title).
+ */
+function ioState(snap: McSnapshot): { exportDisabled: boolean; importDisabled: boolean; importTitle?: string } {
+  const { ui, ops } = snap;
+  if (ui.loading || snap.loadError || ui.saving) return { exportDisabled: true, importDisabled: true };
+  if (ui.readonly) return { exportDisabled: false, importDisabled: true, importTitle: IMPORT_READONLY_TITLE };
+  if (ops.dirty > 0 || ui.conflict !== 'hidden') return { exportDisabled: false, importDisabled: true, importTitle: IMPORT_DIRTY_TITLE };
+  return { exportDisabled: false, importDisabled: false };
+}
+
+/** Header row shared with the loading / load-error states: 导出 · 导入 · 添加提供方. */
+export function ListHead({ snap, store, addDisabled, onAdd }: ComponentProps & { addDisabled: boolean; onAdd?: () => void }) {
+  const io = ioState(snap);
   return (
     <div style={s.head}>
       <div style={s.headMain}>
         <h2 style={s.h1}>模型能力</h2>
         <p style={s.desc}>{LIST_DESC}</p>
       </div>
-      <Btn kind="primary" disabled={addDisabled} onClick={onAdd} data-mc="add-provider">添加提供方</Btn>
+      <div style={s.headActions}>
+        <Btn disabled={io.exportDisabled} onClick={() => store.exportConfig()} data-mc="export">导出</Btn>
+        <ImportFileButton
+          onFile={(f) => void store.importConfig(f)}
+          disabled={io.importDisabled}
+          title={io.importTitle}
+        />
+        <Btn kind="primary" disabled={addDisabled} onClick={onAdd} data-mc="add-provider">添加提供方</Btn>
+      </div>
     </div>
   );
 }
@@ -62,7 +87,7 @@ export function ProviderList({ snap, store }: ComponentProps): JSX.Element | nul
 
   return (
     <>
-      <ListHead addDisabled={addDisabled} onAdd={add} />
+      <ListHead snap={snap} store={store} addDisabled={addDisabled} onAdd={add} />
       {!hasCustom && (
         <div style={sx(s.card, s.empty)}>
           <p style={s.desc}>还没有自定义提供方。</p>
