@@ -42,6 +42,15 @@
 - mutate 返回的错误不是冲突时，finally 会丢掉 pendingEcho。如果请求进行期间恰好收到过一次真实的外部写入，base 的 revision 就过期了，要等到下一次保存才会以冲突的形式暴露出来。
 - 审查备注：R1 复审时 subagent_reviewer（claude-agent-acp）连续 3 次返回 resource_exhausted，改用通用 subagent 按只读审查员的口径完成复审，结论为 pass。
 
+## R2 审查遗留（low）
+- `bulk.ts:5`：批量时空白容量的提示文案写成「改为「不修改」「清除」」，契约里是「改为「不修改」或「清除」」。测试按现在的文案冻结了，所以两处要一起改。
+- `store.ts` keepView：只有编辑下标越界时才清 `undo`。`undo.idx` 本身越界时不会清，撤销会插到错位的位置。另外 route 消失时 `dialog` 没有关掉。
+- `styles.ts` 表格轨道在 560px 实测不会溢出。但容器宽度小于各列 minmax 下限之和（约 452px + 操作列）时，`scroll` 没有横向滚动，操作列仍然可能溢出。
+- `efforts.ts`：`input` 为 `[]` 时 `set` 仍然是 true。结果表格摘要显示「未设置」，编辑层却显示「清除」。
+- 死代码：`bulk.ts` 的 `rawPersist` 现在只剩测试在用；`ops.ts` 的 `yScalar`、`types.ts` 的 `DsEffort` 全仓库没有引用。
+- `store.ts` 的 save 循环里，`inFlight.delete(ns)` 在分支前和 finally 各执行一次。行为没有影响，可以删掉一处。
+- 以下 R2 之前记录的 low 已在 R2 修复，这里不再列出：原型阶段的 #1–#4、#6–#9；W4 的 sel/undo、keepView、「llm-pi-ai 已写入」、transparent、空白失焦、length；R1 自查的 secretError 文案、回声竞态、headers 重复。
+
 ## 实现阶段
 - 不做「获取模型」（原型里用的是本地假数据）。
 - 官方「模型」页的 section order 未知。本 section 用 99，排在无忧 Subagent（100）前面。

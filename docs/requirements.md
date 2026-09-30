@@ -514,7 +514,7 @@ spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning E
 Panel C 的 section 为 `{id:'wuyou-model-capabilities', order:99, label:'模型能力'}`，由 D1 子 fiber 注册。它是 Client-only 的设置编辑器，不新增 Host 路由，也不使用 D3 的 api-client；通过注入的 `configForms` 读取 namespace snapshot，通过 `remote.settings` 和 `remote.credentials` 写入。
 
 - 支持 `llm-pi-ai` 自定义提供方与 `llm-deepseek` 官方提供方；缺少其中一个 namespace 时只隐藏对应卡片，section 仍显示。DeepSeek 的 UI route id 为 `deepseek-official`，但写入 path 不得包含该 id。
-- 读取时区分 `value` 与 `user`：只有 `user` 中出现的字段算显式覆盖，schema 默认值不能被无意写回。模型的输入类型、思考档位、上下文窗口和最大输出支持继承、单独设置、校验与批量编辑；未知的额外字段必须原样保留。
+- 模型容量和输入只有已设置/未设置两种状态；提供方级默认键 defaultInput/reasoning/defaultContextWindow/defaultMaxTokens（pi）与 defaultContextWindow/maxTokens（DS）面板不展示、不编辑，原样保留；DeepSeek 的 thinking/reasoningEffort 仍可编辑
 - 凭证明文只在 store 私有闭包中保存，snapshot、草稿和预览只暴露是否已配置。凭证按 64 项分批读写；保存顺序为 Pi 设置、DeepSeek 设置、凭证。
 - `remote.settings.mutate` 返回 `{ok:true,value}` 或 `{ok:false,error}`，不以抛异常作为业务失败通道。设置事件与凭证事件分别处理；自身写入的 settings 回声静默，外部 settings 变更显示冲突并保留草稿。
 - 只读条件包括非本机、配置描述不可用、视图不可写或目标 config form 为 memory 模式。只读时仍可浏览、预览、取消和重新加载，所有写入按钮禁用。
@@ -1046,7 +1046,7 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 ### K14. 模型能力（v2.11）
 
-新增「模型能力」settings.section，order 为 99，位于无忧Subagent 和无忧Teams 之前；通过依赖 `slots`、`configForms`、`remote`、`remote.settings`、`remote.credentials` 的子 fiber 注册，服务不齐时不影响既有两个 section。Panel C 使用框架无关 store 和 `useSyncExternalStore`，支持 Pi/DeepSeek namespace 的模型能力读取、继承与覆盖、容量和思考档位校验、批量编辑、凭证引用、预览、冲突处理及保存。它只使用设置与凭证服务，不新增 Host 路由，也不把明文密钥放进 snapshot。完整映射、路径和函数契约见 `docs/specs/model-capabilities.md`。
+新增「模型能力」settings.section，order 为 99，位于无忧Subagent 和无忧Teams 之前；通过依赖 `slots`、`configForms`、`remote`、`remote.settings`、`remote.credentials` 的子 fiber 注册，服务不齐时不影响既有两个 section。Panel C 使用框架无关 store 和 `useSyncExternalStore`，支持 Pi/DeepSeek namespace 的模型能力读取与编辑（已设置/未设置）、容量和思考档位校验、批量编辑、凭证引用、预览、冲突处理及保存。它只使用设置与凭证服务，不新增 Host 路由，也不把明文密钥放进 snapshot。完整映射、路径和函数契约见 `docs/specs/model-capabilities.md`，R2 增量见 `docs/specs/model-capabilities.r2.md`。R2：移除提供方默认值与继承；模型容量/输入只有已设置/未设置。
 
 「团队 profile」下拉框从标题栏移到「新建成员」同一行，行容器 `display:flex; justify-content:space-between`：「新建成员」在左，`<label for="wuyou-team-profile">团队 profile</label>` + `<select id="wuyou-team-profile">` 在右，位于刷新、关闭按钮下方且右边缘与它们对齐。只要 `teamProfiles` 非空就显示下拉框（只有一个 profile 时也是），选项为 `teamProfiles` 全部，默认规则不变（请求值 → `standard-acp` → 第一个）。写入进行中（含 409 后的刷新）禁用，普通加载与切换时保持可用（v2.8，见 K11）；写入不可用时仍可切换（只读查看）；没有团队 profile 时不显示。
 
