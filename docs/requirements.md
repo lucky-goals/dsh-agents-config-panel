@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.11（v2.2–v2.11 的变更见文末 K 节）
+版本：2.12（v2.2–v2.12 的变更见文末 K 节）
 插件包名：`@nanmicoder/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -300,8 +300,9 @@ function assertMountable(config, provider): void {
 
 两条写入路由都要检查：
 - `expectedRevision` 必须是 64 位小写十六进制字符串。
-- `action` 必须属于该路由允许的集合：subagents 是 `create`/`update`/`remove`，members 是 `add`/`update`/`remove`。
-- `update`/`remove` 必须带非空字符串 `id`（subagents）或 `name`（members）。
+- `action` 必须属于该路由允许的集合：subagents 是 `create`/`update`/`remove`/`move`，members 是 `add`/`update`/`remove`。
+- `update`/`remove` 必须带非空字符串 `id`（subagents）或 `name`（members）。`move` 必须带非空字符串 `id`。
+- `move` 的 `direction` 必须是 `up` 或 `down`，且不能带 `input`/`patch`。
 - `input`/`member`/`patch` 必须是普通 JSON 对象；`update` 的 `patch` 不能是空对象。
 
 members 路由还要求 `profile` 是非空字符串。成员对象的字段内容由 `addMember`/`updateMember` 校验。
@@ -383,7 +384,7 @@ GET /plugins/dsh-wuyou-agent/api/state?profile=standard-acp
 POST /plugins/dsh-wuyou-agent/api/subagents
 ```
 
-body：`{ expectedRevision, action: 'create'|'update'|'remove', id?, input?, patch? }`。响应 state 中的 `profile` 取 query string 的 `?profile=`，缺省为 `standard-acp`。
+body：`{ expectedRevision, action: 'create'|'update'|'remove'|'move', id?, input?, patch?, direction? }`。`move` 时 body 为 `{ expectedRevision, action: 'move', id, direction }`，其中 `direction` 为 `up` 或 `down`，且不带 `input`/`patch`。响应 state 中的 `profile` 取 query string 的 `?profile=`，缺省为 `standard-acp`。
 
 ```http
 POST /plugins/dsh-wuyou-agent/api/members
@@ -391,7 +392,7 @@ POST /plugins/dsh-wuyou-agent/api/members
 
 body：`{ expectedRevision, profile, action: 'add'|'update'|'remove', name?, member?, patch? }`
 
-成功：HTTP `200`，返回新的 state，并附 `notice: '已保存，新建会话后生效'`。这份 state 基于本次实际写入的文本构建，不再二次读盘。如果写入后 `errors` 里仍有另一个面板的结构缺失，例如 patch 里没有 agent-teams，也照常返回 200。
+成功：HTTP `200`，返回新的 state，并附 `notice`。普通写入提示为 `已保存，新建会话后生效`；`move` 上移提示为 `已上移。只改变列表顺序，不影响模型看到的工具顺序`，下移提示为 `已下移。只改变列表顺序，不影响模型看到的工具顺序`。这份 state 基于本次实际写入的文本构建，不再二次读盘。如果写入后 `errors` 里仍有另一个面板的结构缺失，例如 patch 里没有 agent-teams，也照常返回 200。
 
 失败返回 `{ code, message }`，不包含堆栈。状态码如下：
 
@@ -863,7 +864,7 @@ Then ~/.dsh/profiles/web 下文件集合与验收前相同
 - 不编辑 `persona`、`toolFilter`、`maxDepth` 数值、`enableRunInBackground`、`outputSchema`
 - 不修改 `@deepseek-ai/dsh-subagent-acp` 注册行的 command、args、env
 - 不启用 codex/claude-code，也不改动这两行
-- 不改 Panel A 的表格列
+- 不改 Panel A 的表格列。v2.12 起操作列内可以有上移、下移（见 K16），不新增列
 - 不改 Panel B 的字段、校验和写入逻辑
 - 不把 `subagents` 加进 `inject`
 
@@ -890,7 +891,7 @@ v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有�
   - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
   - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
 
-## K. v2.2–v2.11 变更
+## K. v2.2–v2.12 变更
 
 ### K1. 菜单名（v2.2）
 
@@ -1052,6 +1053,14 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 语义：选择只决定面板查看和编辑哪个团队 profile 的成员，不写配置。agent-teams 的配置 schema（`profiles` 字典）没有「当前生效 profile」字段，团队在 `agent_teams_create({ profile })` 或 `/agent-teams --profile <name>` 时选用 profile，因此插件无法、也不去设置一个全局默认。新增或删除团队 profile 不在本版范围。
 
+### K15. 模型能力导入导出（v2.12）
+
+模型能力 Panel C 支持 `wuyou-model-capabilities` v1 YAML 的已保存配置导出与草稿导入。导出只读取已保存基线，过滤密钥、请求头和敏感字段；导入先解析并预览，确认后只写入草稿，不调用 Host `mutate` 或凭证写入。导入受 1MB 上限、未保存修改和配置冲突保护；保存、放弃或重新加载会清理预览。具体 schema、校验、冲突合并和文案见 `docs/specs/r3-io-and-move.md` 第 1 节。
+
+### K16. Subagent 排序（v2.12）
+
+Panel A 操作列新增上移、下移两个 24×24 原生按钮；按钮一次点击调用现有 subagents 写入路由的 `move` action，支持 `direction: 'up'|'down'`，首项上移和末项下移禁用。Host 在锁内局部交换 delegation 序列并保留原文，成功提示说明只改变列表顺序、不影响模型看到的工具顺序。`hostApi` 不是 2 或写入被阻止时按钮禁用；Host 同为 hostApi 2 但尚未重启时，Host 返回 400，界面提示「上移和下移需要重启 DSH 后生效」。具体请求校验、字节保留和交互规则见 `docs/specs/r3-io-and-move.md` 第 2 节。
+
 ### K7. 验收映射
 
 | 需求 | 自动化证据 |
@@ -1076,6 +1085,8 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 | K13 Background Mode 说明 | `help-tip.test.tsx`（`placeHelpBubble`：下方、翻到上方、两侧都不够时限高、1440 与 390 视口的水平夹取；关闭时的标记：`aria-expanded="false"`、`aria-controls` 指向空的 `role="status"`、24×24 点击区域）、`background-mode-help.test.tsx`（两种模式的说明、「当前」标记、不支持 continuable 的提示）、`panels.test.tsx`「v2.10 Background Mode help button」（「?」紧跟标签且在 `<label>` 之外、下拉框选项与选中值不变、只有这一个字段有、新建对话框与只读 ACP 行也有）；E2E `E2E_BROWSER_V210`：真实浏览器里对 fork 行和 ACP 行点「?」，气泡与按钮相距 6px、完整在视口内、各点 `elementFromPoint` 都落在气泡上、对话框 scrollHeight/scrollTop 不变；Escape 只关气泡且焦点回到按钮、点气泡外关闭且对话框不关、改下拉框后「当前」跟着变、ACP 行显示不支持提示、不保存直接关闭；`E2E_BROWSER_V210_MOBILE`：390×844 下气泡宽 340、在视口内 |
 | K14 模型能力 | `capacity.test.ts`、`validate.test.ts`、`efforts.test.ts`、`ops.test.ts`、`bulk.test.ts`、`place-menu.test.ts`、`store.test.ts` 共 110 个模型能力纯逻辑测试；`panel.test.tsx` 与 `panels.test.tsx` 的三 section、子 fiber 依赖、根 `inject` 和颜色扫描断言；`npx tsc -p tsconfig.client.json --noEmit`；完整 `npx vitest run` |
+| K15 模型能力导入导出 | `src/client/model-capabilities/io.test.ts`、`src/client/model-capabilities/store.test.ts`、`src/client/model-capabilities/panel.test.tsx`；`npx tsc -p tsconfig.client.json --noEmit` |
+| K16 Subagent 排序 | `subagent-manager.test.ts`、`http-routes.test.ts`、`subagent-panel-store.test.ts`、`panels.test.tsx`、`test/integration` routes/contract；`index.test` 仍为 9 条 |
 
 E2E 证据目录：`test/e2e/artifacts-v2.10/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.10 bash scripts/e2e-isolated-profile.sh`），截图 `browser-background-mode-help.png`、`browser-members.png`、`browser-members-scroll.png`、`browser-delete-team.png`。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
 

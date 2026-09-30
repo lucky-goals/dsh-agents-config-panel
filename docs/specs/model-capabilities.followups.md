@@ -51,6 +51,19 @@
 - `store.ts` 的 save 循环里，`inFlight.delete(ns)` 在分支前和 finally 各执行一次。行为没有影响，可以删掉一处。
 - 以下 R2 之前记录的 low 已在 R2 修复，这里不再列出：原型阶段的 #1–#4、#6–#9；W4 的 sel/undo、keepView、「llm-pi-ai 已写入」、transparent、空白失焦、length；R1 自查的 secretError 文案、回声竞态、headers 重复。
 
+## R3 遗留（low，导入导出与 Subagent 排序）
+- 列表头的「导入」使用共享的 `ImportFileButton`（内部是 `ui/Button`），和同一行的「导出」「添加提供方」（本目录的 `Btn`）尺寸、圆角略有差别。要统一，就得改 `ui/` 或给 `ImportFileButton` 加样式参数，R3 的范围不允许这样做。
+- 功能 2 改动了 Host，必须重启 DSH 才会生效。只 build client 不重启时，箭头按钮可以点，但旧 Host 会返回 400。
+- 审查备注：R3 的两路审查首次派给 `subagent_reviewer`（ACP）时都因 Connection stalled 中断，改由通用 subagent 按只读审查员口径重新审查。
+- R3F 复审遗留（low）：
+  - `subagent-manager.ts` 对 flow 写法的整行 `- { id: a, … }` 处理不完整：行尾换行和行尾注释会留在空隙里。没有注释时，往返后结尾换行丢失，行间多出一个空行；带行尾注释时会被拒绝为 INVALID（拒绝正确，不会写坏文件）。UI 和 fixture 都只用块写法。修法：第一步结束后，如果 end 落在行中，并且本行剩下的只有空白或注释，就把 end 延伸到这一行的换行之后。
+  - `subagent-manager.ts` 里前瞻延续的分支在所有样例和 fixture 中都没有触发过，里面还有一个潜在的 off-by-one：跳过了 continuationEnd 之后的那一行，那一行没有检查。可以删掉这个分支，或者修正后补一个能触发它的用例。
+  - `subagent-manager.ts` 判断换行风格用的是 `includes('\r\n')`，LF 和 CRLF 混用的文件可能补错换行类型。补上的换行最后会被去掉，影响很小。
+  - `io.ts` 里 `parseModelConfig` 的 `try { parse } catch (e) { throw e }` 多余；YAML 语法错误的提示也缺少契约 1.4 要求的前缀「YAML 解析失败：」。
+  - `io.ts` 只过滤模型上的 `_stash`，提供方和 DS 顶层 extra 里的 `_stash` 会被导出。这符合契约原文，但通常不需要，可以一起过滤掉。
+  - 已知限制：`computeOps` 本身不比较提供方的 extra。导入时覆盖提供方 extra，或者合并 DS 的 extra，这部分改动既不会被保存，也不算 dirty。
+  - 同一个文件里同时有 `providers.deepseek`（invalid）和 `deepseek` 节时，两个预览项的 id 都是 `'deepseek'`，DS 项勾选不上。自家导出的文件不会出现这种情况。
+
 ## 实现阶段
 - 不做「获取模型」（原型里用的是本地假数据）。
 - 官方「模型」页的 section order 未知。本 section 用 99，排在无忧 Subagent（100）前面。
