@@ -14,6 +14,7 @@ import { createSubagentStore } from './panel-a/subagent-panel-store';
 import { createMembersStore } from './panel-b/members-panel-store';
 import { SubagentPanel } from './panel-a/SubagentPanel';
 import { MembersPanel } from './panel-b/MembersPanel';
+import { MODEL_CAP_DEPS, registerModelCapabilities } from './model-capabilities/register';
 
 export const inject = ['slots'];
 
@@ -50,6 +51,12 @@ export function apply(ctx: any) {
       <MembersPanel {...props} store={membersStore} />
     )),
   );
+
+  // 模型能力 (spec A): a child fiber that waits for the settings services, so
+  // the two sections above keep working when those services are absent.
+  ctx.inject([...MODEL_CAP_DEPS], (sub: any) => {
+    registerModelCapabilities(sub);
+  });
 }
 
 // Default export for DSH ModuleLoader

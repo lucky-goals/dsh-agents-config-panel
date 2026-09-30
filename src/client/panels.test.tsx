@@ -22,7 +22,8 @@ import { SubagentPanel } from './panel-a/SubagentPanel';
 import { MembersPanel } from './panel-b/MembersPanel';
 import { createSubagentStore } from './panel-a/subagent-panel-store';
 import { createMembersStore } from './panel-b/members-panel-store';
-import { SECTIONS, apply } from './index';
+import { SECTIONS, apply, inject as rootInject } from './index';
+import { MODEL_CAP_DEPS, MODEL_CAP_SECTION } from './model-capabilities/register';
 import { PanelHeader } from './ui/PanelChrome';
 import { Button } from './ui/Button';
 import { nextFocusTarget } from './ui/focus-trap';
@@ -921,41 +922,111 @@ describe('v2.9 fixed columns and a reserved scrollbar gutter (real fixture)', ()
 
 describe('settings.section registration', () => {
   function fakeCtx() {
-    const registered: Array<{ options: Record<string, unknown>; component: (props: { close?: () => void }) => React.ReactElement }> = [];
+    const registered: Array<{ options: Record<string, unknown>; component: (props: { close?: () => void; store?: unknown }) => React.ReactElement }> = [];
     const disposers: Array<() => void> = [];
-    const ctx = {
-      slots: {
-        inject: vi.fn((name: string, factory: () => () => void) => {
-          expect(name).toBe('settings.section');
-          disposers.push(factory());
-        }),
-        register: vi.fn((options: Record<string, unknown>, component: (props: { close?: () => void }) => React.ReactElement) => {
-          registered.push({ options, component });
-          return () => {};
-        }),
+
+    /** slots: both fibers register through their own service object, same records. */
+    const slots = () => ({
+      inject: vi.fn((name: string, factory: () => () => void) => {
+        expect(name).toBe('settings.section');
+        disposers.push(factory());
+      }),
+      register: vi.fn((options: Record<string, unknown>, component: (props: { close?: () => void; store?: unknown }) => React.ReactElement) => {
+        registered.push({ options, component });
+        return () => {};
+      }),
+    });
+
+    // The sub fiber ctx.inject(MODEL_CAP_DEPS, cb) hands to cb (spec A): the same
+    // slots contract, plus the services named in the deps. Cordis exposes a
+    // dotted service name as sub['remote.settings'], so the fake carries that
+    // shape as well as the plain sub.remote one.
+    const sub = {
+      slots: slots(),
+      configForms: {
+        describe: vi.fn(() => ({ ensure: async () => ({ status: 'unavailable', writable: false, namespaces: [] }) })),
+        get: vi.fn(() => ({ getSnapshot: () => ({ mode: 'memory' }) })),
       },
+      remote: { $host: { isLoopback: true }, settings: {}, credentials: {} },
+      'remote.settings': {},
+      'remote.credentials': {},
+      on: vi.fn(() => () => {}),
     };
-    return { ctx, registered, disposers };
+
+    const injections: string[][] = [];
+    const ctx = {
+      slots: slots(),
+      inject: vi.fn((deps: readonly string[], cb: (sub: unknown) => void) => {
+        injections.push([...deps]);
+        cb(sub);
+      }),
+    };
+    return { ctx, sub, registered, disposers, injections };
   }
 
-  it('registers both sections with the D2 id/order and the v2.2 short labels', () => {
+  it('registers all three sections with the D2 id/order and the short labels', () => {
     expect(SECTIONS.subagents).toEqual({ name: 'settings.section', id: 'wuyou-subagents', order: 100, label: '无忧Subagent' });
     expect(SECTIONS.members).toEqual({ name: 'settings.section', id: 'wuyou-members', order: 101, label: '无忧Teams' });
+    expect(MODEL_CAP_SECTION).toEqual({ name: 'settings.section', id: 'wuyou-model-capabilities', order: 99, label: '模型能力' });
 
-    const { ctx, registered, disposers } = fakeCtx();
+    const { ctx, registered, disposers, injections } = fakeCtx();
     apply(ctx);
-    expect(registered.map((r) => r.options)).toEqual([SECTIONS.subagents, SECTIONS.members]);
+    // subagents, members, then the new section last — index.tsx registers it from
+    // the sub fiber, so it lands after the two root-fiber sections.
+    expect(registered.map((r) => r.options)).toEqual([SECTIONS.subagents, SECTIONS.members, MODEL_CAP_SECTION]);
+    expect(registered.map((r) => r.options.id)).toEqual(['wuyou-subagents', 'wuyou-members', 'wuyou-model-capabilities']);
+    expect(registered.map((r) => r.options.order)).toEqual([100, 101, 99]);
+    expect(registered.map((r) => r.options.label)).toEqual(['无忧Subagent', '无忧Teams', '模型能力']);
     expect(disposers.every((d) => typeof d === 'function')).toBe(true);
+
+    // The root fiber still asks for slots only; the new section waits for the
+    // settings services inside its own fiber (spec 0/A).
+    expect(rootInject).toEqual(['slots']);
+    expect(injections).toEqual([[...MODEL_CAP_DEPS]]);
   });
 
-  it('forwards the host close prop into both panels', () => {
+  /**
+   * The smallest 模型能力 store that can render: one snapshot with no providers,
+   * a no-op subscribe, vi.fn() for every action. The registered component binds
+   * a store built from the fake Cordis services; this one covers the panel's own
+   * `store` prop contract (spec D: ModelCapabilitiesPanel({store, close?})).
+   */
+  function modelCapStore() {
+    const snapshot = {
+      draft: { providers: {} },
+      revision: { pi: null, ds: null },
+      ops: { pi: [], ds: [], cred: [], dirty: 0, dirtySet: new Set<string>() },
+      errors: {},
+      ui: {
+        view: 'list', route: null, edit: null, bulk: null, wizard: null, dialog: null, menuIdx: null,
+        sel: {}, showAdv: {}, inputHint: null, undo: null, saving: false, saved: false,
+        conflict: 'hidden', readonly: false, loading: false, status: '', previewReturn: null, dsPrev: '',
+      },
+      loadError: null,
+      saveError: null,
+      defaultModel: null,
+      hasPi: false,
+      hasDs: false,
+      secretSet: {},
+    };
+    const store: Record<string, unknown> = { getSnapshot: () => snapshot, subscribe: () => () => {} };
+    return new Proxy(store, {
+      get: (target, prop) => (typeof prop === 'string' && !(prop in target) ? (target[prop] = vi.fn()) : (target as any)[prop]),
+    });
+  }
+
+  it('forwards the host close prop into every panel', () => {
     const { ctx, registered } = fakeCtx();
     apply(ctx);
+    expect(registered).toHaveLength(3);
     for (const { options, component } of registered) {
+      // The new panel takes its store as a prop; the registration binds its own,
+      // and a component that ignores the extra prop is unaffected by it.
+      const extra = String(options.id) === MODEL_CAP_SECTION.id ? { store: modelCapStore() } : {};
       // SSR does not run effects, so no request is issued.
-      const withClose = renderToString(component({ close: () => {} }));
+      const withClose = renderToString(component({ close: () => {}, ...extra }));
       expect(buttonTags(withClose, '关闭'), String(options.id)).toHaveLength(1);
-      const withoutClose = renderToString(component({}));
+      const withoutClose = renderToString(component({ ...extra }));
       expect(buttonTags(withoutClose, '关闭'), String(options.id)).toHaveLength(0);
     }
   });
@@ -1003,7 +1074,7 @@ describe('client source', () => {
     expect(sources.filter(({ text }) => /['"`]web['"`]/.test(text)).map(({ file }) => file)).toEqual([]);
   });
 
-  it('uses only --dsw-alias-* tokens declared by the theme and no color literals in ui/', () => {
+  it('uses only --dsw-alias-* tokens declared by the theme and no color literals in ui/ or model-capabilities/', () => {
     // The theme is a host package; point DSH_CLIENT_UI_THEME_DIR at it (e.g. the
     // DSH checkout's node_modules) when it is not installed in this repo.
     const theme = process.env.DSH_CLIENT_UI_THEME_DIR ?? join(REPO_ROOT, 'node_modules/@deepseek-ai/dsh-client-ui-theme');
@@ -1026,7 +1097,9 @@ describe('client source', () => {
     if (declared) expect([...used].filter((token) => !declared!.has(token))).toEqual([]);
 
     const uiLiterals = sources
-      .filter(({ file }) => file.includes(`${join('client', 'ui')}`))
+      // v2.11: the 模型能力 panel is inline-style only as well, so it is scanned
+      // with ui/. `sources` already walks all of src/client and skips *.test.*.
+      .filter(({ file }) => file.includes(`${join('client', 'ui')}`) || file.includes(`${join('client', 'model-capabilities')}`))
       .filter(({ text }) => /rgba?\(|hsla?\(|#[0-9a-fA-F]{3,8}\b/.test(text));
     expect(uiLiterals.map(({ file }) => file)).toEqual([]);
   });
