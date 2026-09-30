@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.10（v2.2–v2.10 的变更见文末 K 节）
+版本：2.11（v2.2–v2.11 的变更见文末 K 节）
 插件包名：`@nanmicoder/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -446,22 +446,33 @@ window.__ModuleLoader__.load({
 - `react` 和 `react/jsx-runtime` 通过 `require` 从宿主获取，不能打包进来。
 - 不能 require 任何 `@deepseek-ai/dsh-client-ui-*` 包。
 - 控件自己绘制；颜色和间距只使用 `--dsw-alias-*` CSS 变量。
+- 根 `inject` 仍为 `['slots']`。现有两个 section 在 `apply` 中直接注册；「模型能力」通过独立的子 fiber 等待设置服务：
+
+  ```ts
+  ctx.inject(
+    ['slots', 'configForms', 'remote', 'remote.settings', 'remote.credentials'],
+    (sub) => { registerModelCapabilities(sub); },
+  );
+  ```
+
+  子 fiber 的依赖未齐时不注册「模型能力」；依赖消失时只卸载该 section，不影响前两个 section。带点的服务名通过 `sub['remote.settings']` 与 `sub['remote.credentials']` 访问。
 
 ### D2. Settings sections
 
-注册两个 `settings.section`：
+注册三个 `settings.section`（模型能力由 D1 的子 fiber 注册）：
 
 ```ts
+{id:'wuyou-model-capabilities', order:99, label:'模型能力'}
 {id:'wuyou-subagents', order:100, label:'无忧Subagent'}
 {id:'wuyou-members', order:101, label:'无忧Teams'}
 ```
 
-两个 section 的组件 props 都是 `{ close }`。Panel A 对应 subagent 管理，Panel B 对应团队成员管理。
+三个 section 的组件 props 都是 `{ close }`。Panel A 对应 subagent 管理，Panel B 对应团队成员管理，Panel C 对应模型能力；Panel C 依赖设置服务，服务不可用时不显示且不影响前两个 section。
 
 ### D3. Store 与请求
 
 - Store 与框架无关，提供 `getSnapshot()`、`subscribe(fn)` 和 action 方法；React 侧使用 `useSyncExternalStore`。
-- 所有请求走 api-client 的 fetch，同源并设置 `credentials:'same-origin'`。
+- Panel A、Panel B 的请求走 api-client 的 fetch，同源并设置 `credentials:'same-origin'`；该约束只适用于这两个已有 section。Panel C「模型能力」不走 api-client，使用 D1 子 fiber 注入的 `configForms`、`remote.settings`、`remote.credentials`。
 - mutation 自动携带 `expectedRevision`。
 - 遇到 `409` 时自动刷新 state，并显示「配置已被其他地方修改，请刷新后重试」对应的冲突文案。
 - UI 必须能展示读取错误、保存错误、只读行和最后成员保护，不得因结构缺失而让整个 Settings 宿主崩溃。
@@ -498,7 +509,18 @@ spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning E
 
 当 `diagnostics.hostApi` 缺失或不为 `2` 时，新 Client 不使用 `subagentProviders`，provider 下拉退回只有 spawn/fork；ACP 行编辑、删除禁用且不发送 ACP 写入请求。Panel A 顶部显示「当前界面已更新，Subagent 的 ACP 编辑需要重启 DSH 后生效」，颜色使用 `var(--dsw-alias-label-secondary)`。旧 Host 仍以 422 `READ_ONLY` 拒绝 ACP 非法写入，不写出非法配置。该提示只挂在 SubagentPanel。
 
-## E. 构建与包
+### D7. Panel C 模型能力
+
+Panel C 的 section 为 `{id:'wuyou-model-capabilities', order:99, label:'模型能力'}`，由 D1 子 fiber 注册。它是 Client-only 的设置编辑器，不新增 Host 路由，也不使用 D3 的 api-client；通过注入的 `configForms` 读取 namespace snapshot，通过 `remote.settings` 和 `remote.credentials` 写入。
+
+- 支持 `llm-pi-ai` 自定义提供方与 `llm-deepseek` 官方提供方；缺少其中一个 namespace 时只隐藏对应卡片，section 仍显示。DeepSeek 的 UI route id 为 `deepseek-official`，但写入 path 不得包含该 id。
+- 读取时区分 `value` 与 `user`：只有 `user` 中出现的字段算显式覆盖，schema 默认值不能被无意写回。模型的输入类型、思考档位、上下文窗口和最大输出支持继承、单独设置、校验与批量编辑；未知的额外字段必须原样保留。
+- 凭证明文只在 store 私有闭包中保存，snapshot、草稿和预览只暴露是否已配置。凭证按 64 项分批读写；保存顺序为 Pi 设置、DeepSeek 设置、凭证。
+- `remote.settings.mutate` 返回 `{ok:true,value}` 或 `{ok:false,error}`，不以抛异常作为业务失败通道。设置事件与凭证事件分别处理；自身写入的 settings 回声静默，外部 settings 变更显示冲突并保留草稿。
+- 只读条件包括非本机、配置描述不可用、视图不可写或目标 config form 为 memory 模式。只读时仍可浏览、预览、取消和重新加载，所有写入按钮禁用。
+- 输入容量只接受正整数及 `K/k`、`M/m` 缩写；空值表示继承，非法或不安全的值阻止对应写入。批量编辑的 `scope='sel'` 使用进入批量编辑时的 `selSnapshot`，未进入结果的模型才计入 `L`。
+
+Panel C 不改变 Panel A、Panel B 的 store、Host 路由、section 注入边界或共享 UI 组件；设置服务不齐全时只有 Panel C 被卸载。
 
 - `package.json` 使用 `type: module`。
 - Host 产物为 `lib/index.js`（ESM），Client 产物为 `lib/client.js`。
@@ -868,7 +890,7 @@ v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有�
   - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
   - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
 
-## K. v2.2–v2.10 变更
+## K. v2.2–v2.11 变更
 
 ### K1. 菜单名（v2.2）
 
@@ -1022,7 +1044,9 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 - 关闭方式：再点一次「?」、Escape、在气泡外按下指针、焦点离开、对话框滚动。Escape 只关闭气泡，焦点回到「?」，对话框保持打开。实现上在 window 捕获阶段处理 Escape 并 `preventDefault`，对话框（`Modal.tsx`）和宿主设置对话框都会跳过已处理的事件。输入法组合中的按键不处理（同 `composition-guard.ts`）。
 - 点击区域 24×24，可见的圆圈 16px，不增加标签行的高度。颜色只用主题 token。主题没有阴影 token，阴影用 `--dsw-alias-bg-mask-2`。
 
-### K8. 团队 profile 下拉框（v2.5）
+### K14. 模型能力（v2.11）
+
+新增「模型能力」settings.section，order 为 99，位于无忧Subagent 和无忧Teams 之前；通过依赖 `slots`、`configForms`、`remote`、`remote.settings`、`remote.credentials` 的子 fiber 注册，服务不齐时不影响既有两个 section。Panel C 使用框架无关 store 和 `useSyncExternalStore`，支持 Pi/DeepSeek namespace 的模型能力读取、继承与覆盖、容量和思考档位校验、批量编辑、凭证引用、预览、冲突处理及保存。它只使用设置与凭证服务，不新增 Host 路由，也不把明文密钥放进 snapshot。完整映射、路径和函数契约见 `docs/specs/model-capabilities.md`。
 
 「团队 profile」下拉框从标题栏移到「新建成员」同一行，行容器 `display:flex; justify-content:space-between`：「新建成员」在左，`<label for="wuyou-team-profile">团队 profile</label>` + `<select id="wuyou-team-profile">` 在右，位于刷新、关闭按钮下方且右边缘与它们对齐。只要 `teamProfiles` 非空就显示下拉框（只有一个 profile 时也是），选项为 `teamProfiles` 全部，默认规则不变（请求值 → `standard-acp` → 第一个）。写入进行中（含 409 后的刷新）禁用，普通加载与切换时保持可用（v2.8，见 K11）；写入不可用时仍可切换（只读查看）；没有团队 profile 时不显示。
 
@@ -1051,6 +1075,7 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 | K12 固定列宽与预留滚动条 | `panels.test.tsx`「v2.9 fixed columns and a reserved scrollbar gutter (real fixture)」（两个面板根容器的 `scrollbar-gutter: stable`、colgroup 30%/自适应/136px、`table-layout: fixed` 与 420px 下限、长成员名省略号与 title）；E2E `E2E_BROWSER_V29`：把克隆团队扩到 8 个成员（含一个超长成员名）使其超出面板高度，与 3 个成员的 standard-acp 来回切换 6 次，逐帧记录：面板有滚动和无滚动两种状态都出现，面板内宽、工具栏、表格、表头宽度始终不变，面板与对话框之间的滚动容器从不溢出，CLS≤0.002，长成员名被截断且 title 为全名。浏览器以真实滚动条运行（去掉 headless 默认的 `--hide-scrollbars`） |
 
 | K13 Background Mode 说明 | `help-tip.test.tsx`（`placeHelpBubble`：下方、翻到上方、两侧都不够时限高、1440 与 390 视口的水平夹取；关闭时的标记：`aria-expanded="false"`、`aria-controls` 指向空的 `role="status"`、24×24 点击区域）、`background-mode-help.test.tsx`（两种模式的说明、「当前」标记、不支持 continuable 的提示）、`panels.test.tsx`「v2.10 Background Mode help button」（「?」紧跟标签且在 `<label>` 之外、下拉框选项与选中值不变、只有这一个字段有、新建对话框与只读 ACP 行也有）；E2E `E2E_BROWSER_V210`：真实浏览器里对 fork 行和 ACP 行点「?」，气泡与按钮相距 6px、完整在视口内、各点 `elementFromPoint` 都落在气泡上、对话框 scrollHeight/scrollTop 不变；Escape 只关气泡且焦点回到按钮、点气泡外关闭且对话框不关、改下拉框后「当前」跟着变、ACP 行显示不支持提示、不保存直接关闭；`E2E_BROWSER_V210_MOBILE`：390×844 下气泡宽 340、在视口内 |
+| K14 模型能力 | `capacity.test.ts`、`validate.test.ts`、`efforts.test.ts`、`ops.test.ts`、`bulk.test.ts`、`place-menu.test.ts`、`store.test.ts` 共 110 个模型能力纯逻辑测试；`panel.test.tsx` 与 `panels.test.tsx` 的三 section、子 fiber 依赖、根 `inject` 和颜色扫描断言；`npx tsc -p tsconfig.client.json --noEmit`；完整 `npx vitest run` |
 
 E2E 证据目录：`test/e2e/artifacts-v2.10/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.10 bash scripts/e2e-isolated-profile.sh`），截图 `browser-background-mode-help.png`、`browser-members.png`、`browser-members-scroll.png`、`browser-delete-team.png`。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
 

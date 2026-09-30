@@ -1,0 +1,2023 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型能力 · 设置原型</title>
+<style>
+/* ===== Token 定义（唯一允许出现字面色值的地方） ===== */
+body {
+  --dsw-alias-bg-base: #fff;
+  --dsw-alias-bg-layer-1: #fff;
+  --dsw-alias-bg-layer-2: #fff;
+  --dsw-alias-bg-layer-3: #fff;
+  --dsw-alias-label-primary: #0f1115;
+  --dsw-alias-label-secondary: #61666b;
+  --dsw-alias-label-tertiary: #81858c;
+  --dsw-alias-label-primary-foreground: #fff;
+  --dsw-alias-button-primary-fill: #0f1115;
+  --dsw-alias-button-primary-hover: #43454a;
+  --dsw-alias-border-l2: #0000001a;
+  --dsw-alias-border-l4: #00000029;
+  --dsw-alias-state-success-primary: #22c55e;
+  --dsw-alias-state-error-primary: #ec1313;
+  --dsw-alias-link: #4176e6;
+  --dsw-alias-specific-sidebar-fill: #f9fafb;
+  --dsw-focus-ring: #4176E6;
+  --dsw-radius-xs: 4px;
+  --dsw-radius-sm: 8px;
+  --dsw-radius-md: 12px;
+  --dsw-radius-lg: 16px;
+  --dsw-radius-xl: 20px;
+  --mc-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  --mc-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --mc-ease: 180ms ease;
+}
+body[data-ds-dark-theme] {
+  --dsw-alias-bg-base: #151517;
+  --dsw-alias-bg-layer-1: #232324;
+  --dsw-alias-bg-layer-2: #2c2c2e;
+  --dsw-alias-bg-layer-3: #353638;
+  --dsw-alias-label-primary: #f9fafb;
+  --dsw-alias-label-secondary: #cfd3d6;
+  --dsw-alias-label-tertiary: #adb2b8;
+  --dsw-alias-label-primary-foreground: #0f1115;
+  --dsw-alias-button-primary-fill: #f9fafb;
+  --dsw-alias-button-primary-hover: #ebeef2;
+  --dsw-alias-border-l2: #ffffff1f;
+  --dsw-alias-border-l4: #ffffff33;
+  --dsw-alias-state-error-primary: #f25a5a;
+  --dsw-alias-link: #7aaaff;
+  --dsw-alias-specific-sidebar-fill: #1b1b1c;
+  --dsw-focus-ring: #7AAAFF;
+}
+/* ===== 基础 ===== */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: var(--mc-font);
+  font-size: 14px; line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  min-width: 800px; min-height: 100vh;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled, input:disabled { cursor: not-allowed; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--dsw-focus-ring); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--mc-mono); }
+
+/* ===== 调试条（模态外） ===== */
+.debugbar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 16px; font-size: 12px; line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  border-bottom: 0.5px dashed var(--dsw-alias-border-l4);
+}
+.debugbar strong { font-weight: 500; color: var(--dsw-alias-label-secondary); margin-right: 4px; }
+.debugbar button {
+  height: 24px; padding: 0 8px; border-radius: var(--dsw-radius-xs);
+  border: 0.5px dashed var(--dsw-alias-border-l4); background: transparent;
+  color: var(--dsw-alias-label-secondary); font-size: 12px;
+}
+.debugbar button[aria-pressed="true"] { border-style: solid; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-3); }
+.debugbar .sep { width: 1px; height: 14px; background: var(--dsw-alias-border-l4); }
+
+/* ===== 模态壳 ===== */
+.stage { display: flex; justify-content: center; padding: 32px 16px 48px; }
+.modal {
+  width: 760px; height: 500px; flex: none;
+  display: flex; flex-direction: column;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-xl); overflow: hidden;
+}
+.modal-title {
+  height: 48px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 12px 0 20px; border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  font-size: 16px; font-weight: 500; line-height: 24px;
+}
+.modal-body { flex: 1; min-height: 0; display: flex; }
+.sidenav {
+  width: 168px; flex: none; padding: 8px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--dsw-alias-specific-sidebar-fill);
+  border-right: 0.5px solid var(--dsw-alias-border-l2);
+}
+.sidenav button {
+  height: 32px; text-align: left; padding: 0 10px; border: 0; background: transparent;
+  border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-label-secondary);
+}
+.sidenav button:hover { background: var(--dsw-alias-bg-layer-3); }
+.sidenav button[aria-current="page"] { background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.contentcol { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; }
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.savebar {
+  height: 48px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1);
+}
+.savebar .count { flex: 1; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+.savebar .count.err { color: var(--dsw-alias-state-error-primary); }
+.savebar .rev { font-size: 11px; color: var(--dsw-alias-label-tertiary); }
+
+/* ===== 排版 ===== */
+.h1 { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
+.h2 { margin: 0; font-size: 14px; font-weight: 500; line-height: 22px; }
+.desc { margin: 0; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-tertiary); }
+.small { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.hint { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); margin: 4px 0 0; }
+.err { color: var(--dsw-alias-state-error-primary); }
+.errtext { font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); margin: 4px 0 0; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row.wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+.head { display: flex; align-items: flex-start; gap: 12px; }
+.head > div:first-child { flex: 1; min-width: 0; }
+.statusline { font-size: 12px; color: var(--dsw-alias-label-tertiary); min-height: 18px; }
+
+/* ===== 按钮 ===== */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap;
+  height: 28px; padding: 0 10px; border-radius: var(--dsw-radius-sm);
+  border: 0.5px solid var(--dsw-alias-border-l4); background: transparent;
+  color: var(--dsw-alias-label-primary); font-size: 13px;
+  transition: background var(--mc-ease), color var(--mc-ease);
+}
+.btn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
+.btn.primary {
+  height: 36px; padding: 0 16px; border-radius: var(--dsw-radius-md); border: 0;
+  background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); font-size: 14px; font-weight: 500;
+}
+.btn.primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+.btn.primary.sm { height: 28px; padding: 0 12px; border-radius: var(--dsw-radius-sm); font-size: 13px; }
+.btn.danger { border: 0; color: var(--dsw-alias-state-error-primary); }
+.btn.ghost { border: 0; color: var(--dsw-alias-label-secondary); }
+.btn:disabled { opacity: .45; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--dsw-alias-link); font-size: 13px; }
+.linkbtn:hover:not(:disabled) { text-decoration: underline; }
+.linkbtn:disabled { opacity: .45; }
+.iconbtn { width: 28px; height: 28px; border: 0; background: transparent; border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-label-secondary); }
+.iconbtn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
+
+/* ===== 卡 ===== */
+.card {
+  border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-2);
+  border-radius: var(--dsw-radius-xl); padding: 12px 14px;
+}
+.pcard { display: flex; align-items: center; gap: 12px; }
+.pcard .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pcard .name { font-size: 14px; font-weight: 500; }
+.pcard .url { font-size: 12px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard .meta { font-size: 12px; color: var(--dsw-alias-label-secondary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tag {
+  display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: var(--dsw-radius-xs);
+  border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); font-weight: 400; vertical-align: 1px;
+}
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--dsw-alias-state-success-primary); }
+.dot.bad { background: var(--dsw-alias-state-error-primary); }
+.readonly-line { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.skeleton { height: 76px; border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l2); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .5; } }
+.empty { text-align: center; padding: 24px 12px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+
+/* ===== 信息条 ===== */
+.banner {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-2); font-size: 13px; line-height: 20px;
+}
+.banner.error { border-color: var(--dsw-alias-state-error-primary); }
+.banner .txt { flex: 1; }
+.banner .mark { width: 16px; height: 16px; border-radius: 50%; flex: none; margin-top: 2px; font-size: 11px; line-height: 16px; text-align: center; border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); }
+.banner.error .mark { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+
+/* ===== 表单 ===== */
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label, .field > .lbl { font-size: 13px; font-weight: 500; color: var(--dsw-alias-label-primary); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.input {
+  height: 32px; padding: 0 10px; border-radius: var(--dsw-radius-sm);
+  border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); width: 100%; min-width: 0;
+}
+.input.invalid { border-color: var(--dsw-alias-state-error-primary); }
+.input:disabled { color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-layer-3); }
+.input.sm { height: 28px; }
+.section { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-radius: var(--dsw-radius-lg); border: 0.5px solid var(--dsw-alias-border-l2); }
+.section-title { font-size: 13px; font-weight: 500; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.check input { margin: 0; accent-color: var(--dsw-alias-button-primary-fill); }
+
+/* 开关 */
+.switch { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; font-size: 13px; }
+.switch .trk { width: 32px; height: 18px; border-radius: 9px; background: var(--dsw-alias-bg-layer-3); border: 0.5px solid var(--dsw-alias-border-l4); position: relative; transition: background var(--mc-ease); }
+.switch .trk::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); transition: transform var(--mc-ease), background var(--mc-ease); }
+.switch[aria-checked="true"] .trk { background: var(--dsw-alias-button-primary-fill); }
+.switch[aria-checked="true"] .trk::after { transform: translateX(14px); background: var(--dsw-alias-label-primary-foreground); }
+
+/* 芯片 */
+.chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  height: 28px; padding: 0 12px; border-radius: var(--dsw-radius-sm); font-size: 13px;
+  border: 0.5px solid var(--dsw-alias-border-l4); background: transparent; color: var(--dsw-alias-label-secondary);
+  transition: background var(--mc-ease), color var(--mc-ease);
+}
+.chip[aria-pressed="true"] { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); border-color: transparent; }
+.chip.inherit, .chip.inherit[aria-pressed="true"] { border: 0.5px dashed var(--dsw-alias-border-l4); background: transparent; color: var(--dsw-alias-label-tertiary); cursor: default; }
+.chip.inherit.off { opacity: .5; }
+
+/* ===== 签名控件：思考档位轨道 ===== */
+.rail-wrap { display: inline-flex; align-items: flex-end; gap: 12px; }
+.rail-grp { display: flex; flex-direction: column; gap: 2px; }
+.rail-grp .cap { font-size: 11px; line-height: 14px; color: var(--dsw-alias-label-tertiary); padding-left: 4px; }
+.rail {
+  display: flex; height: 32px; padding: 2px; border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-3); gap: 0;
+}
+.rn {
+  width: 64px; height: 28px; padding: 0; margin-left: 3px; font-size: 13px;
+  border: 0.5px solid var(--dsw-alias-border-l4); background: transparent; color: var(--dsw-alias-label-secondary);
+  border-radius: 6px; transition: background var(--mc-ease), color var(--mc-ease);
+}
+.rn:first-child { margin-left: 0; }
+.rn:hover:not(:disabled):not(.on) { color: var(--dsw-alias-label-primary); }
+.rn.on { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); border-color: transparent; }
+/* 相邻已选贴合成台阶：中间无缝，圆角只在段两端 */
+.rn.on.join-l { margin-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.rn.on.join-r { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.rn:disabled { opacity: .4; }
+.rail-marks { display: flex; padding: 0 2px; height: 14px; }
+.rail-marks span { width: 64px; margin-left: 3px; text-align: center; font-size: 11px; line-height: 14px; color: var(--dsw-alias-label-tertiary); }
+.rail-marks span:first-child { margin-left: 0; }
+.rail-marks span.j { margin-left: 0; }
+
+/* ===== 模型表 ===== */
+/* 表头与数据行共用 .mtable 这一套列轨道（subgrid），auto 列按全表最宽内容统一定宽 */
+/* 左右内边距放在 .mtable 上（subgrid 行不再吃掉首尾列宽度）；行分隔线用伪元素铺满整表宽 */
+.mtable {
+  border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-lg); overflow: visible; padding: 0 12px;
+  display: grid; grid-template-columns: 24px minmax(120px,1.6fr) minmax(100px,1fr) minmax(64px,1.2fr) minmax(104px,max-content) max-content; column-gap: 8px;
+}
+.mrow {
+  grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; column-gap: 8px;
+  padding: 8px 0; font-size: 13px; position: relative;
+}
+.mrow::before, .mfoot::before { content: ""; position: absolute; top: 0; left: -12px; right: -12px; border-top: 0.5px solid var(--dsw-alias-border-l2); pointer-events: none; }
+.mrow > * { min-width: 0; }
+.mrow > .selcell { display: flex; align-items: center; justify-content: flex-start; }
+.mrow > .selcell input { margin: 0; accent-color: var(--dsw-alias-button-primary-fill); }
+.mrow .think { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .cap .bad { color: var(--dsw-alias-state-error-primary); }
+.mfoot { grid-column: 1 / -1; position: relative; }
+.mrow:first-child::before { display: none; }
+.mrow.hdr { font-size: 12px; color: var(--dsw-alias-label-tertiary); padding: 6px 0; }
+.mrow .mid { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .mname { font-size: 12px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .ops { display: flex; gap: 4px; justify-content: flex-end; }
+.mrow .sum { color: var(--dsw-alias-label-secondary); }
+.mrow .sum.legacy { color: var(--dsw-alias-label-tertiary); }
+.mrow .cap { white-space: nowrap; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.mrow .cap .ex { color: var(--dsw-alias-label-secondary); }
+.mrow .cap .inh { color: var(--dsw-alias-label-tertiary); }
+.mrow .cap .slash { color: var(--dsw-alias-label-tertiary); white-space: pre; }
+.tag.old { margin-left: 4px; color: var(--dsw-alias-label-tertiary); border-style: dashed; }
+/* 容量控件 */
+.capf { display: flex; flex-direction: column; gap: 4px; }
+.capf .capline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.capf .capline .input { width: 140px; flex: none; }
+.capf .abbr { font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.capf .chips { margin-top: 2px; }
+.chip.sm { height: 24px; padding: 0 8px; font-size: 12px; }
+.mfoot { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+/* 选择工具条（表格正上方） */
+.seltool { display: flex; align-items: center; gap: 12px; min-height: 28px; }
+.seltool .selcount { font-size: 14px; font-weight: 500; line-height: 22px; font-variant-numeric: tabular-nums; }
+/* 行菜单：挂在 #app 末尾，fixed 定位，位置由脚本按模态安全区计算 */
+.menu {
+  position: fixed; left: 0; top: 0; z-index: 40; min-width: 132px; padding: 4px;
+  display: flex; flex-direction: column; border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1); border: 0.5px solid var(--dsw-alias-border-l4);
+  overflow-y: auto;
+}
+.menu > * { flex: none; }
+.menu button { text-align: left; height: 30px; padding: 0 10px; border: 0; background: transparent; border-radius: 6px; font-size: 13px; }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--dsw-alias-bg-layer-3); }
+.menu button.danger { color: var(--dsw-alias-state-error-primary); }
+.menu button:disabled { opacity: .4; }
+.menu hr { border: 0; border-top: 0.5px solid var(--dsw-alias-border-l2); margin: 4px 0; width: 100%; }
+/* 批量层：几何同编辑层，中间滚动，底部摘要钉住 */
+.bradios { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.bradios .check.dis { opacity: .45; cursor: not-allowed; }
+.bsub { display: flex; flex-direction: column; gap: 6px; }
+.bsrc { display: flex; flex-direction: column; gap: 4px; }
+.bulkfoot {
+  flex: none; display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1);
+}
+.bulkfoot .bsum { flex: 1; min-width: 0; margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+.bulkfoot .bsum.err { color: var(--dsw-alias-state-error-primary); }
+
+/* 线上拼写 */
+.spell { display: grid; grid-template-columns: 64px 1fr auto auto; gap: 8px; align-items: center; }
+.spell .lvl { font-size: 13px; color: var(--dsw-alias-label-secondary); }
+
+/* ===== 覆盖层 / 对话框 ===== */
+.layer {
+  position: absolute; inset: 0 0 48px 0; z-index: 10; display: flex; flex-direction: column;
+  background: var(--dsw-alias-bg-layer-1);
+}
+.layer.enter { animation: slidein 220ms ease; }
+@keyframes slidein { from { transform: translateX(100%); } to { transform: none; } }
+.scrim { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: var(--dsw-alias-border-l4); }
+.dialog {
+  width: 400px; max-width: calc(100% - 32px); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--dsw-alias-bg-layer-1); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-lg);
+}
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.toast { font-size: 12px; color: var(--dsw-alias-label-secondary); display: flex; align-items: center; gap: 8px; }
+
+/* 向导 */
+.steps { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--dsw-alias-label-tertiary); list-style: none; margin: 0; padding: 0; }
+.steps li { display: flex; align-items: center; gap: 6px; }
+.steps .n { width: 20px; height: 20px; border-radius: 50%; font-size: 11px; line-height: 19px; text-align: center; border: 0.5px solid var(--dsw-alias-border-l4); }
+.steps li[aria-current="step"] { color: var(--dsw-alias-label-primary); font-weight: 500; }
+.steps li[aria-current="step"] .n, .steps li.done .n { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); border-color: transparent; }
+.steps .line { width: 24px; height: 0; border-top: 0.5px solid var(--dsw-alias-border-l4); }
+.optcard { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; cursor: pointer; }
+.optcard input { margin: 4px 0 0; accent-color: var(--dsw-alias-button-primary-fill); }
+.optcard.sel { border-color: var(--dsw-alias-label-primary); }
+
+/* 预览 */
+.diff { margin: 0; padding: 12px 14px; font-family: var(--mc-mono); font-size: 12px; line-height: 18px; white-space: pre; overflow-x: auto; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); border: 0.5px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
+.diffgroup .gh { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .layer.enter { animation: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="debugbar" role="toolbar" aria-label="原型调试（不属于产品界面）">
+  <strong>原型调试</strong>
+  <button type="button" data-dbg="theme" aria-pressed="false">暗色</button>
+  <span class="sep" aria-hidden="true"></span>
+  <button type="button" data-dbg="conflict" aria-pressed="false">模拟冲突</button>
+  <button type="button" data-dbg="unconflict">解除冲突</button>
+  <button type="button" data-dbg="readonly" aria-pressed="false">模拟只读</button>
+  <button type="button" data-dbg="loading" aria-pressed="false">模拟加载</button>
+  <button type="button" data-dbg="empty">清空自定义提供方</button>
+  <span id="dbg-note" aria-live="polite"></span>
+</div>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<div class="stage">
+  <div class="modal" role="dialog" aria-modal="false" aria-labelledby="modal-title">
+    <div class="modal-title">
+      <span id="modal-title">设置</span>
+      <button type="button" class="iconbtn" aria-label="关闭设置（原型中不可用）" data-nav="close">✕</button>
+    </div>
+    <div class="modal-body">
+      <nav class="sidenav" aria-label="设置分区">
+        <button type="button" data-nav="通用">通用</button>
+        <button type="button" data-nav="模型">模型</button>
+        <button type="button" data-nav="模型能力" aria-current="page">模型能力</button>
+        <button type="button" data-nav="无忧Subagent">无忧Subagent</button>
+        <button type="button" data-nav="无忧Teams">无忧Teams</button>
+      </nav>
+      <div class="contentcol" id="app"></div>
+    </div>
+  </div>
+</div>
+<script>
+'use strict';
+/* ================= 常量与 mock ================= */
+const MAIN = ['low', 'medium', 'high', 'xhigh', 'max'];
+const ADV = ['off', 'minimal'];
+const ALL = ADV.concat(MAIN);
+const DS_LEVELS = ['off', 'low', 'high', 'max'];
+const API_OPTS = [
+  { v: 'openai-completions', t: 'OpenAI Chat Completions' },
+  { v: 'openai-responses', t: 'OpenAI Responses' },
+  { v: 'anthropic-messages', t: 'Anthropic Messages' }
+];
+const apiName = (v) => { const o = API_OPTS.find(x => x.v === v); return o ? o.t : (v || ''); };
+const RUNTIME_CW = 262144, RUNTIME_MT = 32768;
+const DS_RUNTIME_CW = 1000000, DS_RUNTIME_MT = 256000;
+const CAP_PRESETS = [['128K', 128000], ['200K', 200000], ['272K', 272000], ['1M', 1000000]];
+const same = (arr) => Object.fromEntries(arr.map(l => [l, l]));
+
+function mockInitial() {
+  const gpt = (id) => ({ id, name: id, contextWindow: '272000', maxTokens: '128000', inputModalities: ['text', 'image'], reasoningEfforts: same(MAIN) });
+  const ccEff = same(['low', 'medium', 'high', 'max']);
+  return {
+    routes: {
+      'gpt-gateway': {
+        ns: 'llm-pi-ai', api: 'openai-responses', baseURL: 'https://magic-api.up.railway.app/v1',
+        apiKeyEnv: 'GPT_GATEWAY_API_KEY', cred: true,
+        models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-terra', 'gpt-6-luna'].map(gpt)
+      },
+      'cc-gateway': {
+        ns: 'llm-pi-ai', api: 'anthropic-messages', baseURL: 'https://example.invalid',
+        apiKeyEnv: 'CC_GATEWAY_API_KEY', cred: false, reasoning: 'high', defaultInput: ['text'],
+        models: [
+          { id: 'claude-fable-5-1', name: 'Fable 5.1', contextWindow: '1000000', maxTokens: '128000', inputModalities: ['text', 'image'], reasoningEfforts: { ...ccEff } },
+          { id: 'claude-opus-5-5', name: 'Opus 5.5', contextWindow: '1000000', maxTokens: '128000', reasoningEfforts: { ...ccEff } },
+          { id: 'claude-haiku-4-6', name: 'Haiku 4.6', contextWindow: '20000', maxTokens: '20000', reasoningEfforts: false }
+        ]
+      },
+      'deepseek-official': {
+        ns: 'llm-deepseek', cred: true, thinking: 'enabled', reasoningEffort: 'high',
+        models: [
+          { id: 'deepseek-flash', name: 'V41-Flash', inputModalities: ['text', 'image'] },
+          { id: 'deepseek-v4-pro', inputModalities: ['text'] }
+        ]
+      }
+    }
+  };
+}
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const DS_ID = 'deepseek-official';
+
+/* ================= 状态 ================= */
+let base = mockInitial();
+let draft = clone(base);
+let revision = 17;
+const secrets = {};            // routeId -> 密钥（仅内存，永不渲染、永不进 diff 文本）
+const wizSecret = { v: '' };
+const ui = {
+  view: 'list', route: null,   // list | detail | wizard | preview
+  edit: null,                  // { kind:'model', route, idx, enter } | { kind:'access', route, enter }
+  showAdv: {},                 // railKey -> bool
+  sel: {},                     // route -> Set(idx)
+  menu: null,                  // 'row:<idx>'（行菜单，fixed 定位）
+  bulk: null,                  // 批量层草稿，见 newBulk()
+  dialog: null,
+  undo: null,                  // { route, model, idx }
+  saving: false, saved: false, conflictArmed: false, conflictShown: false, conflictKept: false,
+  readonly: false, loading: false, status: '', inputHint: null, wizard: null,
+  dsHints: {}, touched: {}
+};
+let returnFocus = null;
+
+/* ================= 工具 ================= */
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const isPi = (r) => r && r.ns === 'llm-pi-ai';
+const deriveEnv = (id) => (id || '').toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY';
+const orderLevels = (obj) => ALL.filter(l => Object.prototype.hasOwnProperty.call(obj, l));
+function orderedEfforts(obj) { const o = {}; orderLevels(obj).forEach(l => { o[l] = obj[l]; }); return o; }
+function customIds(d) { return Object.keys(d.routes).filter(k => k !== DS_ID); }
+function routeOrder(d) { const c = customIds(d); return d.routes[DS_ID] ? c.concat(DS_ID) : c; }
+
+function resolvedInput(r, m) {
+  if (m.input) return { v: m.input, src: 'model' };
+  if (r.defaultInput) return { v: r.defaultInput, src: 'route' };
+  return { v: ['text'], src: 'runtime' };
+}
+const inputText = (arr) => arr.includes('image') ? (arr.includes('text') ? '文本+图片' : '图片') : '文本';
+// 输入列：生效值。继承链只看 input → 路由 defaultInput → 运行默认；不读 inputModalities
+function inputSummary(r, m) {
+  if (!isPi(r)) return inputText(m.inputModalities || ['text']);
+  if (m.input) return inputText(m.input);
+  return '继承·' + inputText(resolvedInput(r, m).v);
+}
+
+/* ---------- 容量 ---------- */
+const hasKey = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+// 解析容量输入：undefined = 空（恢复继承），null = 格式错误，数字 = 合法
+function parseCap(s) {
+  const t = String(s == null ? '' : s).trim();
+  if (t === '') return undefined;
+  let m = /^([1-9]\d*)$/.exec(t), n;
+  if (m) n = Number(m[1]);
+  else if ((m = /^([1-9]\d*)[Kk]$/.exec(t))) n = Number(m[1]) * 1000;
+  else if ((m = /^([1-9]\d*)[Mm]$/.exec(t))) n = Number(m[1]) * 1000000;
+  else return null;
+  return Number.isSafeInteger(n) ? n : null;
+}
+function abbr(n) {
+  if (n % 1000000 === 0) return (n / 1000000) + 'M';
+  if (n % 1000 === 0) return (n / 1000) + 'K';
+  return String(n);
+}
+const canAbbr = (n) => abbr(n) !== String(n);
+// 路由级字段名：pi-ai 用 defaultMaxTokens，DeepSeek 用 maxTokens
+const routeCwKey = () => 'defaultContextWindow';
+const routeMtKey = (r) => isPi(r) ? 'defaultMaxTokens' : 'maxTokens';
+const runtimeCap = (pi) => pi ? { cw: RUNTIME_CW, mt: RUNTIME_MT } : { cw: DS_RUNTIME_CW, mt: DS_RUNTIME_MT };
+// 路由（或向导）两侧的容量状态
+function routeCap(r) {
+  const rt = runtimeCap(isPi(r));
+  const side = (key, rtv) => {
+    const explicit = hasKey(r, key);
+    const parsed = explicit ? parseCap(r[key]) : undefined;
+    return { key, explicit: explicit && parsed !== undefined, raw: explicit ? r[key] : '', parsed, fallback: rtv, src: 'runtime', eff: typeof parsed === 'number' ? parsed : rtv };
+  };
+  return { cw: side(routeCwKey(), rt.cw), mt: side(routeMtKey(r), rt.mt) };
+}
+// 模型两侧的容量状态（回退值来自路由默认，路由默认非法时用运行默认）
+function modelCap(r, m) {
+  const rc = routeCap(r);
+  const side = (key, rs) => {
+    const explicit = hasKey(m, key);
+    const parsed = explicit ? parseCap(m[key]) : undefined;
+    const rok = rs.explicit && typeof rs.parsed === 'number';
+    const fallback = rok ? rs.parsed : rs.fallback;
+    return { key, explicit: explicit && parsed !== undefined, raw: explicit ? m[key] : '', parsed, fallback, src: rok ? 'route' : 'runtime', eff: typeof parsed === 'number' ? parsed : fallback };
+  };
+  return { cw: side('contextWindow', rc.cw), mt: side('maxTokens', rc.mt) };
+}
+const CAP_FMT_ERR = '填正整数，可用 K 或 M 后缀（如 128K、1M），或留空以恢复继承。';
+const CAP_FMT_ERR_ROUTE = '填正整数，可用 K 或 M 后缀（如 128K、1M），或留空以使用运行默认。';
+// 最大输出 > 上下文窗口是否阻止保存：
+// pi-ai 只有最大输出为显式值时才阻止（继承来的只是能力上限，不会成为请求默认）；
+// DeepSeek 按生效值比较（留空会用提供方 maxTokens，是真实生效的上限）
+const capFmtBad = (c) => c.cw.parsed === null || c.mt.parsed === null;
+const capOver = (c) => !capFmtBad(c) && c.mt.eff > c.cw.eff;
+const capBlocks = (c, pi) => capOver(c) && (!pi || c.mt.explicit);
+// 不阻止但需要提示的情况：pi-ai 继承的最大输出大于生效上下文
+function capWarn(c, pi) {
+  return pi && capOver(c) && !c.mt.explicit
+    ? '继承的最大输出（' + c.mt.eff + '）大于上下文窗口（' + c.cw.eff + '）。这只是能力上限，不影响保存；需要时单独设置最大输出。' : '';
+}
+// 容量校验：格式错误挂在各自一侧；最大输出 > 上下文窗口挂在最大输出
+function capErrors(c, fmtMsg, pi) {
+  const e = {};
+  if (c.cw.parsed === null) e.cw = fmtMsg;
+  if (c.mt.parsed === null) e.mt = fmtMsg;
+  if (!e.cw && !e.mt && capBlocks(c, pi)) e.mt = '最大输出大于上下文窗口（' + c.mt.eff + ' > ' + c.cw.eff + '）。输出不能超过上下文窗口。';
+  return e;
+}
+function capCell(r, m) {
+  const c = modelCap(r, m);
+  const fmtBad = (s) => s.parsed === null;
+  const cut = (t) => { const s = String(t); return s.length > 8 ? s.slice(0, 8) + '…' : s; };
+  const side = (s) => fmtBad(s) ? '<span class="bad">' + esc(cut(s.raw)) + '</span>'
+    : s.explicit ? '<span class="ex">' + abbr(s.parsed) + '</span>' : '<span class="inh">继承</span>';
+  const desc = (name, s) => fmtBad(s) ? name + '格式错误：' + s.raw
+    : s.explicit ? name + ' ' + s.parsed + '，模型显式' : name + '继承，生效 ' + s.eff + '（' + srcName(s.src) + '）';
+  const lbl = desc('上下文', c.cw) + '；' + desc('输出', c.mt);
+  return '<span role="cell" class="cap" aria-label="' + esc(lbl) + '" title="' + esc(lbl) + '">' + side(c.cw) + '<span class="slash" aria-hidden="true"> / </span>' + side(c.mt) + '</span>';
+}
+function effortSummary(eff) {
+  if (!eff) return '不思考';
+  const ls = orderLevels(eff);
+  if (!ls.length) return '未选档位';
+  if (ls.length === 1) return ls[0];
+  const idx = ls.map(l => ALL.indexOf(l));
+  const contiguous = idx.every((v, i) => i === 0 || v === idx[i - 1] + 1);
+  return contiguous ? ls[0] + '–' + ls[ls.length - 1] : ls.join('、');
+}
+function hasLegacy(r) { return isPi(r) && r.models.some(m => m.inputModalities); }
+
+/* ================= 校验 ================= */
+function modelErrors(r, m, idx) {
+  const e = {};
+  const id = m.id;
+  if (!id || !id.trim()) e.id = '填写模型 ID';
+  else if (/\s/.test(id)) e.id = 'ID 不能包含空格';
+  else if (r.models.some((o, j) => j !== idx && o.id === id)) e.id = '这个提供方里已有同名模型';
+  const ce = capErrors(modelCap(r, m), CAP_FMT_ERR, isPi(r));
+  if (ce.cw) e.contextWindow = ce.cw;
+  if (ce.mt) e.maxTokens = ce.mt;
+  if (isPi(r)) {
+    if (m.reasoningEfforts && typeof m.reasoningEfforts === 'object') {
+      const ls = orderLevels(m.reasoningEfforts);
+      if (!ls.length) e.efforts = '勾选至少一档，或改为不思考。';
+      ls.forEach(l => { if (m.reasoningEfforts[l] === '') e['spell_' + l] = '线上拼写不能为空；与档名相同或写成 null。'; });
+    }
+  }
+  return e;
+}
+function routeErrors(r) {
+  const e = {};
+  const ce = capErrors(routeCap(r), CAP_FMT_ERR_ROUTE, isPi(r));
+  if (ce.cw) e[routeCwKey()] = ce.cw;
+  if (ce.mt) e[routeMtKey(r)] = ce.mt;
+  if (isPi(r) && hasKey(r, 'apiKeyEnv') && !String(r.apiKeyEnv).trim()) e.apiKeyEnv = '填写密钥环境变量名。';
+  return e;
+}
+// 容量校验失败时，这一处的两个容量键一起不写入预览
+const modelCapBad = (r, m) => { const ce = capErrors(modelCap(r, m), CAP_FMT_ERR, isPi(r)); return !!(ce.cw || ce.mt); };
+const routeCapBad = (r) => { const ce = capErrors(routeCap(r), CAP_FMT_ERR_ROUTE, isPi(r)); return !!(ce.cw || ce.mt); };
+function allErrors(d) {
+  const out = {};
+  Object.keys(d.routes).forEach(rid => {
+    const r = d.routes[rid];
+    const re = routeErrors(r);
+    const me = r.models.map((m, i) => modelErrors(r, m, i));
+    if (Object.keys(re).length || me.some(x => Object.keys(x).length)) out[rid] = { route: re, models: me };
+  });
+  return out;
+}
+function idWarn(id) { return id && /[A-Z_]/.test(id) ? '建议只用小写字母、数字和连字符。' : ''; }
+const PROVIDER_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// 顺序：空 → 字符集 → 重复
+function providerIdError(id) {
+  if (!id.trim()) return '填写提供方 ID';
+  if (!PROVIDER_ID_RE.test(id)) return '提供方 ID 只能用小写字母、数字和连字符，且不能以连字符开头或结尾。不能含点号，否则配置路径会歧义。';
+  if (draft.routes[id]) return '已有这个提供方 ID';
+  return '';
+}
+
+/* ================= 序列化 / diff ================= */
+// 只输出显式且合法的容量值
+function capOut(o, c) {
+  if (c.cw.explicit && typeof c.cw.parsed === 'number') o[c.cw.key] = c.cw.parsed;
+  if (c.mt.explicit && typeof c.mt.parsed === 'number') o[c.mt.key] = c.mt.parsed;
+}
+function modelOut(r, m) {
+  const o = { id: m.id };
+  if (m.name) o.name = m.name;
+  const capOk = !modelCapBad(r, m);
+  if (isPi(r)) {
+    // 键顺序：id, name, contextWindow, maxTokens, input, inputModalities, reasoningEfforts
+    if (capOk) capOut(o, modelCap(r, m));
+    if (m.input) o.input = m.input.slice();
+    if (m.inputModalities) o.inputModalities = m.inputModalities.slice();
+    const eff = m.reasoningEfforts;
+    if (eff === false) o.reasoningEfforts = false;
+    else if (eff && typeof eff === 'object' && orderLevels(eff).length) o.reasoningEfforts = orderedEfforts(eff);
+    // 零档对象：不输出这个键（校验失败，保存已禁用）
+  } else {
+    // 键顺序：id, name, inputModalities, contextWindow, maxTokens
+    if (m.inputModalities) o.inputModalities = m.inputModalities.slice();
+    if (capOk) capOut(o, modelCap(r, m));
+  }
+  return o;
+}
+const PI_FIELDS = ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens', 'headers'];
+const DS_FIELDS = ['thinking', 'reasoningEffort', 'defaultContextWindow', 'maxTokens'];
+const CAP_ROUTE_KEYS = ['defaultContextWindow', 'defaultMaxTokens', 'maxTokens'];
+// 返回 undefined 表示「不写」；SKIP 表示校验失败，这个字段既不 set 也不 unset
+const SKIP = { skip: true };
+function fieldOut(r, k) {
+  if (CAP_ROUTE_KEYS.includes(k)) {
+    if (routeCapBad(r)) return SKIP;
+    const c = routeCap(r);
+    const s = c.cw.key === k ? c.cw : c.mt;
+    return s.explicit && typeof s.parsed === 'number' ? s.parsed : undefined;
+  }
+  const v = r[k];
+  if (k === 'apiKeyEnv' && hasKey(r, k) && !String(v).trim()) return SKIP;
+  if (v == null) return undefined;
+  if ((k === 'displayName' || k === 'baseURL') && String(v).trim() === '') return undefined;
+  if (k === 'headers') { const h = {}; v.forEach(p => { if (p.k.trim()) h[p.k.trim()] = p.v; }); return Object.keys(h).length ? h : undefined; }
+  return v;
+}
+function routeOut(r) {
+  const o = {};
+  PI_FIELDS.forEach(k => { const v = fieldOut(r, k); if (v !== undefined && v !== SKIP) o[k] = v; });
+  o.models = r.models.map(m => modelOut(r, m));
+  return o;
+}
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// 返回改动字段数（含校验失败被 SKIP 的字段：不产出 op，但仍计入 dirty，才能放弃）
+function fieldOps(list, fields, b, d, p) {
+  let n = 0;
+  fields.forEach(k => {
+    const dv = fieldOut(d, k);
+    if (dv === SKIP) { if (!eq(b[k], d[k])) n++; return; }
+    const bv = fieldOut(b, k);
+    if (eq(bv === SKIP ? undefined : bv, dv)) return;
+    n++;
+    list.push(dv === undefined ? { op: 'unset', path: p + '.' + k } : { op: 'set', path: p + '.' + k, value: dv });
+  });
+  return n;
+}
+// modelOut 在容量非法时省略容量键，整表可能与 base 相同；此时比较原始容量值，
+// 某模型容量非法且原文与 base 同下标模型不同 → 计入 dirty（不产出 op）。合法写法差异不走这里。
+function capBadDirty(b, d) {
+  return d.models.some((m, i) => {
+    if (!modelCapBad(d, m)) return false;
+    const bmod = b.models[i] || {};
+    return !eq(bmod.contextWindow, m.contextWindow) || !eq(bmod.maxTokens, m.maxTokens);
+  });
+}
+function computeOps() {
+  const ops = { pi: [], ds: [], cred: [] };
+  const dirty = new Set();
+  const ids = new Set(Object.keys(base.routes).concat(Object.keys(draft.routes)));
+  ids.forEach(rid => {
+    const b = base.routes[rid], d = draft.routes[rid];
+    const p = 'config.providers.' + rid;
+    if (rid === DS_ID) {
+      if (!b || !d) return;
+      // models 是整表替换：任一模型的 inputModalities / contextWindow / maxTokens 变了就整表 set
+      if (fieldOps(ops.ds, DS_FIELDS, b, d, p)) dirty.add(rid);
+      const bm = b.models.map(m => modelOut(b, m)), dm = d.models.map(m => modelOut(d, m));
+      if (!eq(bm, dm)) { ops.ds.push({ op: 'set', path: p + '.models', value: dm }); dirty.add(rid); }
+      else if (capBadDirty(b, d)) dirty.add(rid);
+      return;
+    }
+    if (!d) { ops.pi.push({ op: 'unset', path: p }); dirty.add(rid); return; }
+    if (!b) { ops.pi.push({ op: 'set', path: p, value: routeOut(d) }); dirty.add(rid); }
+    else {
+      if (fieldOps(ops.pi, PI_FIELDS, b, d, p)) dirty.add(rid);
+      const bm = b.models.map(m => modelOut(b, m)), dm = d.models.map(m => modelOut(d, m));
+      if (!eq(bm, dm)) { ops.pi.push({ op: 'set', path: p + '.models', value: dm }); dirty.add(rid); }
+      else if (capBadDirty(b, d)) dirty.add(rid);
+    }
+  });
+  Object.keys(secrets).forEach(rid => {
+    const r = draft.routes[rid];
+    if (secrets[rid] && r) { ops.cred.push((r.apiKeyEnv && String(r.apiKeyEnv).trim()) || deriveEnv(rid)); dirty.add(rid); }
+  });
+  return { ops, dirty: dirty.size, dirtySet: dirty };
+}
+// 对象键与标量用同一套规则：只有安全字符且不是 YAML 1.1 布尔/空值的才裸写
+function yScalar(v) {
+  if (v === null) return 'null';
+  if (typeof v === 'boolean' || typeof v === 'number') return String(v);
+  const s = String(v);
+  return /^[A-Za-z0-9._\-/:]+$/.test(s) && !/^(true|false|null|yes|no|on|off)$/i.test(s) ? s : JSON.stringify(s);
+}
+function yaml(v, ind) {
+  const pad = ' '.repeat(ind);
+  if (Array.isArray(v)) {
+    if (v.every(x => typeof x !== 'object' || x === null)) return ' [' + v.map(yScalar).join(', ') + ']';
+    return '\n' + v.map(x => {
+      const inner = yaml(x, ind + 2).replace(/^\n/, '');
+      return pad + '- ' + inner.slice(ind + 2);
+    }).join('\n');
+  }
+  if (v && typeof v === 'object') {
+    const ks = Object.keys(v);
+    if (!ks.length) return ' {}';
+    return '\n' + ks.map(k => pad + yScalar(k) + ':' + yaml(v[k], ind + 2)).join('\n');
+  }
+  return ' ' + yScalar(v);
+}
+function opText(o) {
+  let t = '- op: ' + o.op + '\n  path: ' + o.path;
+  if (o.op === 'set') t += '\n  value:' + yaml(o.value, 4);
+  return t;
+}
+
+/* ================= 渲染：通用部件 ================= */
+const MODS = [['text', '文本'], ['image', '图片']];
+function chipsHTML(o) {
+  // o: { scope, arr, inherited, label, hintKey }
+  let h = '<div class="chips" role="group" aria-label="' + esc(o.label) + '">';
+  MODS.forEach(([k, t]) => {
+    const on = o.arr.includes(k);
+    if (o.inherited) {
+      h += '<button type="button" class="chip inherit' + (on ? '' : ' off') + '" aria-pressed="' + on + '" aria-disabled="true" data-act="chip-inh" data-scope="' + o.scope + '" data-mod="' + k + '">继承 · ' + t + '</button>';
+    } else {
+      h += '<button type="button" class="chip" aria-pressed="' + on + '" data-act="chip" data-scope="' + o.scope + '" data-mod="' + k + '">' + t + '</button>';
+    }
+  });
+  h += '</div>';
+  if (ui.inputHint === o.hintKey) h += '<p class="errtext" role="status">' + esc(ui.inputHintText || '至少保留一种输入类型') + '</p>';
+  return h;
+}
+
+function railHTML(o) {
+  // o: { key, mode:'multi'|'single'|'ds', sel:[], def, label, disabled, isDis(l), clearable }
+  const isDis = (l) => !!o.disabled || (o.isDis ? o.isDis(l) : false);
+  const selAdv = o.sel.some(l => ADV.includes(l));
+  const showAdv = o.mode !== 'ds' && (ui.showAdv[o.key] || selAdv || ADV.includes(o.def));
+  const groups = o.mode === 'ds' ? [['', DS_LEVELS]] : (showAdv ? [['高级', ADV], ['', MAIN]] : [['', MAIN]]);
+  const role = o.mode === 'multi' ? 'checkbox' : 'radio';
+  const flat = groups.flatMap(g => g[1]);
+  const tabLvl = flat.find(l => o.sel.includes(l) && !isDis(l)) || flat.find(l => !isDis(l));
+  let h = '<div class="row wrap" style="align-items:flex-end;gap:12px">';
+  h += '<div class="rail-wrap" role="' + (o.mode === 'multi' ? 'group' : 'radiogroup') + '" aria-label="' + esc(o.label) + '" data-mode="' + o.mode + '">';
+  groups.forEach(([cap, lv]) => {
+    h += cap
+      ? '<div class="rail-grp" role="group" aria-label="' + cap + '档位"><span class="cap">' + cap + '</span><div class="rail">'
+      : '<div class="rail-grp"><span class="cap" aria-hidden="true">&nbsp;</span><div class="rail">';
+    let marks = '';
+    lv.forEach((l, i) => {
+      const on = o.sel.includes(l);
+      const jl = on && i > 0 && o.sel.includes(lv[i - 1]);
+      const jr = on && i < lv.length - 1 && o.sel.includes(lv[i + 1]);
+      const cls = 'rn' + (on ? ' on' : '') + (jl ? ' join-l' : '') + (jr ? ' join-r' : '');
+      h += '<button type="button" class="' + cls + '" role="' + role + '" aria-checked="' + on + '"' +
+        (l === o.def ? ' aria-describedby="' + esc(o.key) + '-def"' : '') +
+        ' tabindex="' + (l === tabLvl ? 0 : -1) + '"' + (isDis(l) ? ' disabled' : '') +
+        ' data-act="rail" data-rail="' + esc(o.key) + '" data-lvl="' + l + '">' + l + '</button>';
+      marks += '<span class="' + (jl ? 'j' : '') + '"' + (l === o.def ? ' id="' + esc(o.key) + '-def"' : '') + '>' + (l === o.def ? '默认' : '') + '</span>';
+    });
+    h += '</div><div class="rail-marks" aria-hidden="' + (o.def ? 'false' : 'true') + '">' + marks + '</div></div>';
+  });
+  h += '</div>';
+  if (o.mode !== 'ds') {
+    if (!showAdv) h += '<button type="button" class="linkbtn" style="margin-bottom:18px" data-act="adv" data-rail="' + esc(o.key) + '"' + (o.disabled ? ' disabled' : '') + '>显示 off、minimal</button>';
+    else if (!selAdv && !ADV.includes(o.def)) h += '<button type="button" class="linkbtn" style="margin-bottom:18px" data-act="adv" data-rail="' + esc(o.key) + '">隐藏 off、minimal</button>';
+  }
+  if (o.clearable && o.sel.length) h += '<button type="button" class="linkbtn" style="margin-bottom:18px" data-act="rail-clear" data-clear="' + esc(o.key) + '">清除默认档</button>';
+  return h + '</div>';
+}
+function singleRailHint(has) {
+  return '<p class="hint">' + (has ? '再点已选的档，或点「清除默认档」。' : '未设置。用方向键或点击选择一档。') + '</p>';
+}
+
+/* 容量控件：一侧（上下文窗口或最大输出）
+   o: { scope:'m'|'r'|'w', side:'cw'|'mt', s, label, err, hints:[] } */
+function capControl(o) {
+  const s = o.s;
+  const id = 'cap-' + o.scope + '-' + o.side;
+  const exp = s.explicit;
+  const n = typeof s.parsed === 'number' ? s.parsed : null;
+  const dataAttrs = ' data-scope="' + o.scope + '" data-side="' + o.side + '"';
+  let h = '<div class="field capf"><label for="' + id + '">' + esc(o.label) + '</label><div class="capline">';
+  h += '<input class="input mono' + (o.err ? ' invalid' : '') + '" id="' + id + '" type="text" inputmode="numeric" autocomplete="off"' +
+    ' data-field="cap"' + dataAttrs + ' value="' + esc(exp ? s.raw : String(s.fallback)) + '"' + (exp ? '' : ' disabled') +
+    (o.err ? ' aria-invalid="true" aria-describedby="' + id + '-e"' : '') + '>';
+  if (exp) {
+    if (n != null && canAbbr(n)) h += '<span class="abbr" aria-hidden="true">= ' + abbr(n) + '</span>';
+    h += '<button type="button" class="linkbtn" data-act="cap-inherit"' + dataAttrs + '>恢复继承</button>';
+  } else {
+    h += '<span class="tag">继承中</span><button type="button" class="linkbtn" data-act="cap-set"' + dataAttrs + '>单独设置</button>';
+  }
+  h += '</div>';
+  if (exp) {
+    h += '<div class="chips" role="group" aria-label="' + esc(o.label) + '预设">' + CAP_PRESETS.map(([t, v]) =>
+      '<button type="button" class="chip sm" aria-pressed="' + (n === v) + '" data-act="cap-preset"' + dataAttrs + ' data-arg="' + v + '">' + t + '</button>').join('') + '</div>';
+  }
+  h += fieldErr(o.err, id + '-e');
+  (o.hints || []).forEach(t => { if (t) h += '<p class="hint">' + esc(t) + '</p>'; });
+  return h + '</div>';
+}
+const srcName = (src) => src === 'route' ? '提供方默认' : '运行默认';
+const EXPLICIT_NOTE = '这是模型显式值。保存后目录和提供方默认都不会覆盖它。';
+function modelCapSection(r, m, e) {
+  const pi = isPi(r);
+  const c = modelCap(r, m);
+  const cwHints = c.cw.explicit ? [EXPLICIT_NOTE] : ['当前回退：' + srcName(c.cw.src) + ' ' + c.cw.fallback + '。'];
+  let mtHints;
+  if (c.mt.explicit) mtHints = pi ? ['显式写入后，这个值会成为该模型每次请求的默认输出上限。', EXPLICIT_NOTE] : [EXPLICIT_NOTE];
+  else mtHints = [(pi ? '继承时只作为能力上限，不会成为请求的默认输出上限。' : '留空则使用提供方的 maxTokens。') + '当前回退：' + srcName(c.mt.src) + ' ' + c.mt.fallback + '。'];
+  mtHints.push(capWarn(c, pi));
+  return '<div class="section" data-sec="cap"><div class="section-title">容量</div>' +
+    '<p class="hint" style="margin:0">缺省顺序：模型显式，然后已安装目录，然后提供方默认。这里看不到目录；继承中的数字是提供方默认或运行默认。</p>' +
+    '<p class="hint" style="margin:0">上下文窗口是请求与响应合计的 token 上限。</p>' +
+    '<div class="grid2">' +
+    capControl({ scope: 'm', side: 'cw', s: c.cw, label: '上下文窗口', err: e.contextWindow, hints: cwHints }) +
+    capControl({ scope: 'm', side: 'mt', s: c.mt, label: '最大输出', err: e.maxTokens, hints: mtHints }) +
+    '</div></div>';
+}
+// 路由级（详情页「提供方默认值」与向导第 3 步共用）
+function routeCapFields(target, scope, pi) {
+  const c = routeCap(target);
+  const e = capErrors(c, CAP_FMT_ERR_ROUTE, pi);
+  const rt = runtimeCap(pi);
+  const mtHints = [pi ? '模型没单独写最大输出时，这里只是能力上限，不会变成请求默认。运行默认 ' + rt.mt + '。' : '模型没单独写最大输出时，用这个值。运行默认 ' + rt.mt + '。'];
+  if (!pi) mtHints.push('配置字段名是 maxTokens，不是 defaultMaxTokens。');
+  mtHints.push(capWarn(c, pi));
+  return '<div class="grid2">' +
+    capControl({ scope, side: 'cw', s: c.cw, label: '上下文窗口默认', err: e.cw, hints: ['模型没单独写上下文窗口时回退到这里。运行默认 ' + rt.cw + '。'] }) +
+    capControl({ scope, side: 'mt', s: c.mt, label: '最大输出默认', err: e.mt, hints: mtHints }) + '</div>';
+}
+
+function statusHTML(r) {
+  return r.cred
+    ? '<span class="dot ok" aria-hidden="true"></span>已配置'
+    : '<span class="dot bad" aria-hidden="true"></span>凭证缺失';
+}
+function fieldErr(msg, id) { return msg ? '<p class="errtext" id="' + id + '">' + esc(msg) + '</p>' : ''; }
+function textField(o) {
+  // o: { label, field, value, err, hint, type, placeholder, readonly, mono, inputmode, extra }
+  const id = 'f-' + o.field.replace(/[^a-z0-9]/gi, '-');
+  return '<div class="field"><label for="' + id + '">' + esc(o.label) + '</label>' +
+    '<input class="input' + (o.err ? ' invalid' : '') + (o.mono ? ' mono' : '') + '" id="' + id + '" type="' + (o.type || 'text') + '"' +
+    ' data-field="' + esc(o.field) + '" value="' + esc(o.value) + '"' +
+    (o.placeholder ? ' placeholder="' + esc(o.placeholder) + '"' : '') +
+    (o.inputmode ? ' inputmode="' + o.inputmode + '"' : '') +
+    (o.readonly ? ' disabled' : '') + (o.err ? ' aria-invalid="true" aria-describedby="' + id + '-e"' : '') + (o.extra || '') + '>' +
+    fieldErr(o.err, id + '-e') + (o.hint ? '<p class="hint">' + o.hint + '</p>' : '') + '</div>';
+}
+function defaultModelLine() {
+  return '<p class="readonly-line">默认模型（只读）：gpt-gateway / gpt-6-luna · max</p>';
+}
+
+/* ================= 渲染：视图 ================= */
+const LIST_DESC = '补充官方「模型」页：输入类型、思考档位、上下文窗口和最大输出，以及提供方和模型的增删改。';
+function viewList(st) {
+  let h = '<div class="head"><div><h2 class="h1">模型能力</h2><p class="desc">' + LIST_DESC + '</p></div>' +
+    '<button type="button" class="btn primary" data-act="add-provider">添加提供方</button></div>';
+  const custom = customIds(draft);
+  if (!custom.length) {
+    h += '<div class="card empty"><p class="desc" style="color:var(--dsw-alias-label-secondary)">还没有自定义提供方。</p><button type="button" class="btn primary" data-act="add-provider">添加提供方</button></div>';
+  }
+  routeOrder(draft).forEach(rid => {
+    const r = draft.routes[rid];
+    const pi = isPi(r);
+    let summary;
+    if (pi) {
+      summary = hasLegacy(r) ? '有旧字段' : (r.reasoning ? '默认档 ' + r.reasoning : '未设默认档');
+      if (hasLegacy(r)) summary += ' · ' + (r.reasoning ? '默认档 ' + r.reasoning : '未设默认档');
+    } else {
+      summary = (r.thinking === 'enabled' ? '思考 ' + r.reasoningEffort : '不思考') + ' · 不可删除';
+    }
+    const name = pi ? (r.displayName || rid) : 'DeepSeek 官方';
+    h += '<div class="card pcard"><div class="main">' +
+      '<div class="name">' + esc(name) + ' <span class="tag">' + (pi ? esc(apiName(r.api)) : '官方') + '</span>' +
+      (pi && r.displayName ? ' <span class="small">' + esc(rid) + '</span>' : '') +
+      (st.dirtySet.has(rid) ? ' <span class="tag">未保存</span>' : '') + (base.routes[rid] ? '' : ' <span class="tag">新</span>') + '</div>' +
+      (pi ? '<div class="url">' + esc(r.baseURL || '未填 baseURL') + '</div>' : '') +
+      '<div class="meta">' + statusHTML(r) + '<span aria-hidden="true">·</span>' + r.models.length + ' 个模型<span aria-hidden="true">·</span>' + esc(summary) + '</div>' +
+      '</div><button type="button" class="btn" data-act="enter" data-arg="' + esc(rid) + '" data-navok="1" aria-label="进入 ' + esc(name) + '">进入 →</button></div>';
+  });
+  h += defaultModelLine();
+  return h;
+}
+
+function tableHTML(rid, r) {
+  const pi = isPi(r);
+  const sel = ui.sel[rid] || new Set();
+  const all = r.models.length > 0 && sel.size === r.models.length;
+  let h = '<div class="mtable" role="table" aria-label="模型列表">';
+  h += '<div class="mrow hdr" role="row"><span role="columnheader" class="selcell"><input type="checkbox" aria-label="全选模型" data-field="selall"' + (all ? ' checked' : '') + (r.models.length ? '' : ' disabled') + '></span>' +
+    '<span role="columnheader">模型</span><span role="columnheader">输入</span><span role="columnheader">思考</span>' +
+    '<span role="columnheader" aria-label="上下文 / 输出">容量</span><span role="columnheader"><span class="sr-only">操作</span></span></div>';
+  r.models.forEach((m, i) => {
+    const errs = modelErrors(r, m, i);
+    const bad = Object.keys(errs).length > 0;
+    const think = pi ? effortSummary(m.reasoningEfforts) : '跟随提供方：' + (draft.routes[DS_ID].reasoningEffort);
+    const old = pi && m.inputModalities ? '<span class="tag old" role="img" aria-label="旧字段 inputModalities，自定义提供方会忽略" title="旧字段 inputModalities，自定义提供方会忽略">旧</span>' : '';
+    h += '<div class="mrow" role="row">' +
+      '<span role="cell" class="selcell"><input type="checkbox" aria-label="选择 ' + esc(m.id || '未命名模型') + '" data-field="sel" data-idx="' + i + '"' + (sel.has(i) ? ' checked' : '') + '></span>' +
+      '<span role="cell" style="min-width:0"><div class="mid" title="' + esc(m.id) + '">' + (m.id ? esc(m.id) : '<span class="err">未填 ID</span>') + '</div>' +
+      (m.name && m.name !== m.id ? '<div class="mname" title="' + esc(m.name) + '">' + esc(m.name) + '</div>' : '') +
+      (bad ? '<div class="errtext" style="margin:0">' + esc(Object.values(errs)[0]) + '</div>' : '') + '</span>' +
+      '<span role="cell" class="sum' + (pi && !m.input ? ' legacy' : '') + '">' + esc(inputSummary(r, m)) + old + '</span>' +
+      '<span role="cell" class="sum think" title="' + esc(think) + '">' + esc(think) + '</span>' +
+      capCell(r, m) +
+      '<span role="cell" class="ops"><button type="button" class="btn" data-act="edit-model" data-idx="' + i + '" aria-label="编辑 ' + esc(m.id) + '">编辑</button>';
+    if (pi) {
+      const open = ui.menu === 'row:' + i;
+      h += '<button type="button" class="iconbtn" data-act="row-menu" data-idx="' + i + '" aria-haspopup="menu" aria-expanded="' + open + '" aria-controls="row-menu-pop" aria-label="更多操作：' + esc(m.id) + '">···</button>';
+    }
+    h += '</span></div>';
+  });
+  if (!r.models.length) h += '<div class="mrow"><span></span><span class="small" style="grid-column:2/-1">还没有模型。</span></div>';
+  if (pi) {
+    h += '<div class="mfoot"><button type="button" class="btn" data-act="add-model">+ 添加模型</button><span class="spacer"></span>';
+    if (ui.undo && ui.undo.route === rid) h += '<span class="toast" role="status">已删除 ' + esc(ui.undo.model.id || '未命名模型') + '<button type="button" class="linkbtn" data-act="undo">撤销</button></span>';
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
+/* ================= 行菜单（fixed，挂在 #app 末尾，是 .scroll 的兄弟节点） ================= */
+function rowMenuHTML() {
+  if (!ui.menu || ui.view !== 'detail' || ui.edit || ui.bulk || ui.dialog) { ui.menu = null; return ''; }
+  const r = draft.routes[ui.route];
+  const i = Number(ui.menu.slice(4));
+  const m = r && isPi(r) ? r.models[i] : null;
+  if (!m) { ui.menu = null; return ''; }
+  const item = (act, txt, dis, cls) => '<button type="button" role="menuitem" tabindex="-1"' + (cls ? ' class="' + cls + '"' : '') + ' data-act="' + act + '" data-idx="' + i + '"' + (dis ? ' disabled' : '') + '>' + txt + '</button>';
+  return '<div class="menu" id="row-menu-pop" role="menu" aria-label="' + esc(m.id || '未命名模型') + ' 的操作" data-menu-idx="' + i + '">' +
+    item('row-copy', '复制') + item('row-up', '上移', i === 0) + item('row-down', '下移', i === r.models.length - 1) +
+    '<hr role="separator">' + item('row-del', '删除', false, 'danger') + '</div>';
+}
+// 安全区 = 模态矩形四边内收 8px。水平：右缘对齐按钮右缘，越界贴边；垂直：下方 → 上方 → 贴顶并内部滚动
+let menuScrollTop = null;
+function placeMenu() {
+  const menu = app.querySelector('#row-menu-pop');
+  const main = app.querySelector(':scope > .scroll');
+  if (!menu) { menuScrollTop = null; return; }
+  menuScrollTop = main ? main.scrollTop : null;
+  const btn = app.querySelector('[data-act="row-menu"][data-idx="' + menu.dataset.menuIdx + '"]');
+  if (!btn) return;
+  const M = document.querySelector('.modal').getBoundingClientRect();
+  const safe = { l: M.left + 8, r: M.right - 8, t: M.top + 8, b: M.bottom - 8 };
+  const B = btn.getBoundingClientRect();
+  menu.style.maxHeight = '';
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  const left = Math.max(safe.l, Math.min(B.right - w, safe.r - w));
+  let top;
+  if (B.bottom + 4 + h <= safe.b) top = B.bottom + 4;
+  else if (B.top - 4 - h >= safe.t) top = B.top - 4 - h;
+  else {
+    top = safe.t;
+    const above = B.top - 4 - safe.t;
+    menu.style.maxHeight = (above >= 96 ? above : safe.b - safe.t) + 'px';
+  }
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+function closeMenu() {
+  const i = ui.menu ? ui.menu.slice(4) : null;
+  ui.menu = null;
+  render({ focus: i != null ? '[data-act="row-menu"][data-idx="' + i + '"]' : null, preventScroll: true });
+}
+
+/* ================= 批量层 ================= */
+const BULK_NOTE = '只改你动过的项。未动的项保持每个模型现在的值。';
+const BULK_CAP_EMPTY = '填写数值，或改为「不修改」「恢复继承」。';
+const BULK_SKIP = '最大输出会大于上下文窗口。';
+function newBulk(rid) {
+  const n = (ui.sel[rid] || new Set()).size;
+  return { route: rid, scope: n ? 'sel' : 'all', inMode: 'none', inArr: ['text'], th: 'none', thSel: [], cw: 'none', cwRaw: '', mt: 'none', mtRaw: '', copy: 'none', src: null, enter: true };
+}
+function bulkTargets(r, b) {
+  const sel = ui.sel[b.route] || new Set();
+  return b.scope === 'sel' && sel.size ? [...sel].filter(i => i < r.models.length).sort((x, y) => x - y) : r.models.map((_, i) => i);
+}
+// 试算：与应用共用同一套每模型循环。套用顺序：输入 → 思考 → 上下文 → 最大输出（复制不叠加）
+function bulkPlan(r, b) {
+  const pi = isPi(r);
+  const copy = pi && b.copy === 'copy';
+  const P = { pi, copy, touched: false, errs: {}, err: '', targets: [], results: [], C: 0, S: 0, L: 0, srcM: null, cw: null, mt: null };
+  P.touched = copy || b.inMode !== 'none' || (pi && b.th !== 'none') || b.cw !== 'none' || b.mt !== 'none';
+  if (copy) {
+    if (b.src == null || !r.models[b.src]) P.errs.src = '先选择源模型。';
+    else {
+      P.srcM = r.models[b.src];
+      const se = P.srcM.reasoningEfforts;
+      if (se && typeof se === 'object' && !orderLevels(se).length) P.errs.src = '源模型的思考档位不完整，不能复制。';
+    }
+  } else {
+    if (pi && b.th === 'set' && !b.thSel.length) P.errs.th = '勾选至少一档，或改为不思考。';
+    ['cw', 'mt'].forEach(k => {
+      if (b[k] !== 'set') return;
+      const p = parseCap(b[k + 'Raw']);
+      if (p === undefined) P.errs[k] = BULK_CAP_EMPTY;
+      else if (p === null) P.errs[k] = CAP_FMT_ERR;
+      else P[k] = p;
+    });
+  }
+  P.err = P.errs.src || P.errs.th || P.errs.cw || P.errs.mt || '';
+  let T = bulkTargets(r, b);
+  if (copy && b.src != null) T = T.filter(i => i !== b.src);
+  P.targets = T;
+  if (!P.touched || P.err) return P;
+  const capTouched = copy || b.cw !== 'none' || b.mt !== 'none';
+  T.forEach(i => {
+    const m = r.models[i];
+    const next = clone(m);
+    if (copy) {
+      // 复制设置状态：源继承则目标也继承；不复制 ID、名称、inputModalities
+      const s = P.srcM;
+      if (s.input) next.input = s.input.slice(); else delete next.input;
+      if (s.reasoningEfforts === undefined) delete next.reasoningEfforts; else next.reasoningEfforts = clone(s.reasoningEfforts);
+      delete next._stash;
+      const sc = modelCap(r, s);
+      capSet(next, 'contextWindow', sc.cw.explicit && typeof sc.cw.parsed === 'number' ? sc.cw.parsed : undefined);
+      capSet(next, 'maxTokens', sc.mt.explicit && typeof sc.mt.parsed === 'number' ? sc.mt.parsed : undefined);
+    } else {
+      if (b.inMode === 'set') { if (pi) next.input = b.inArr.slice(); else next.inputModalities = b.inArr.slice(); }
+      else if (b.inMode === 'inherit' && pi) delete next.input;   // 不删除 inputModalities
+      if (pi && b.th === 'set') {
+        const o = {}; ALL.filter(l => b.thSel.includes(l)).forEach(l => { o[l] = l; });
+        next.reasoningEfforts = o; delete next._stash;
+      } else if (pi && b.th === 'off') {
+        if (next.reasoningEfforts && typeof next.reasoningEfforts === 'object') next._stash = next.reasoningEfforts;
+        next.reasoningEfforts = false;
+      }
+      if (b.cw === 'set') capSet(next, 'contextWindow', P.cw); else if (b.cw === 'inherit') delete next.contextWindow;
+      if (b.mt === 'set') capSet(next, 'maxTokens', P.mt); else if (b.mt === 'inherit') delete next.maxTokens;
+    }
+    // 整份跳过：结果会让最大输出大于上下文窗口（pi-ai 仅显式最大输出；DeepSeek 按生效值）
+    if (capTouched && capBlocks(modelCap(r, next), pi)) { P.S++; return; }
+    if (pi && !copy && b.inMode === 'inherit' && !m.input && m.inputModalities) P.L++;
+    if (rawPersist(next) === rawPersist(m)) return;
+    P.results.push({ i, next }); P.C++;
+  });
+  return P;
+}
+function bulkSummary(b, P) {
+  if (!P.touched) return { t: '还没有要修改的项目。', ok: false };
+  if (P.err) return { t: P.err, ok: false, err: true };
+  if (!P.targets.length) return { t: '没有可修改的模型。', ok: false };
+  let t;
+  if (P.C && !P.S) t = '将修改 ' + P.C + ' 个模型。';
+  else if (P.C) t = '将修改 ' + P.C + ' 个模型。另有 ' + P.S + ' 个会跳过：' + BULK_SKIP;
+  else if (P.S) t = '没有需要修改的模型。' + P.S + ' 个模型未改：' + BULK_SKIP;
+  else t = '没有需要修改的模型。';
+  if (!P.copy && b.inMode === 'inherit' && !P.C && P.L) t += '旧字段 inputModalities 不会被「恢复继承」清掉，请用「迁移为 input」。';
+  if (P.C && P.L) t += '另有 ' + P.L + ' 个模型只有旧字段，不会改动。';
+  return { t, ok: P.C > 0 };
+}
+const capName = (n) => { const p = CAP_PRESETS.find(x => x[1] === n); return p ? p[0] : abbr(n); };
+function bulkPhrase(b, P) {
+  if (P.copy) return '从 ' + (P.srcM.id || '未命名模型') + ' 复制';
+  const f = [];
+  if (b.inMode === 'set') f.push(b.inArr.length === 2 ? '输入改为文本和图片' : b.inArr[0] === 'image' ? '输入改为仅图片' : '输入改为仅文本');
+  else if (b.inMode === 'inherit') f.push('输入恢复继承');
+  if (P.pi && b.th === 'set') {
+    const ls = ALL.filter(l => b.thSel.includes(l));
+    f.push(eq(ls, MAIN) ? '开启 low、medium、high、xhigh、max' : '思考档位改为 ' + effortSummary(same(ls)));
+  } else if (P.pi && b.th === 'off') f.push('改为不思考');
+  if (b.cw === 'inherit' && b.mt === 'inherit') f.push('容量恢复继承');
+  else {
+    if (b.cw === 'set') f.push('上下文窗口设为 ' + capName(P.cw)); else if (b.cw === 'inherit') f.push('上下文窗口恢复继承');
+    if (b.mt === 'set') f.push('最大输出设为 ' + capName(P.mt)); else if (b.mt === 'inherit') f.push('最大输出恢复继承');
+  }
+  return f.join('；');
+}
+function bulkResultMsg(b, P) {
+  let msg = '已修改 ' + P.C + ' 个模型：' + bulkPhrase(b, P) + '。';
+  if (P.copy && !P.srcM.input) msg += '源没有 input，目标改为继承' + (P.srcM.inputModalities ? '；未复制旧字段。' : '。');
+  if (P.S) msg += P.S + ' 个模型未改：' + BULK_SKIP;
+  if (!P.copy && b.inMode === 'inherit' && P.L) msg += P.L + ' 个模型只有旧字段，未改动。';
+  return msg;
+}
+function radioGroup(field, label, cur, opts, lockAll) {
+  let h = '<div class="bradios" role="radiogroup" aria-label="' + esc(label) + '">';
+  opts.forEach(([v, t, dis]) => {
+    const d = lockAll || dis;
+    h += '<label class="check' + (d ? ' dis' : '') + '"><input type="radio" name="' + field + '" data-field="' + field + '" value="' + v + '"' +
+      (cur === v ? ' checked' : '') + (d ? ' disabled' : '') + '>' + esc(t) + '</label>';
+  });
+  return h + '</div>';
+}
+const bulkSection = (grp, title, inner) => '<div class="section" data-bgrp="' + grp + '"><div class="section-title">' + title + '</div>' + inner + '</div>';
+function bulkCapSide(b, P, side, label, lock) {
+  const mode = lock ? 'none' : b[side];
+  let h = '<div class="field capf"><span class="lbl">' + label + '</span>' +
+    radioGroup('bulk-' + side, label, mode, [['none', '不修改'], ['set', '设置为'], ['inherit', '恢复继承']], lock);
+  if (mode === 'set') {
+    const raw = b[side + 'Raw'], n = parseCap(raw), err = P.errs[side], fmt = n === null;
+    const id = 'bulk-cap-' + side;
+    h += '<div class="capline"><input class="input mono' + (fmt ? ' invalid' : '') + '" id="' + id + '" type="text" inputmode="numeric" autocomplete="off" aria-label="' + label + '数值"' +
+      ' data-field="bulk-cap" data-side="' + side + '" value="' + esc(raw) + '"' + (err ? ' aria-describedby="' + id + '-e"' : '') + (fmt ? ' aria-invalid="true"' : '') + '>';
+    if (typeof n === 'number' && canAbbr(n)) h += '<span class="abbr" aria-hidden="true">= ' + abbr(n) + '</span>';
+    h += '</div><div class="chips" role="group" aria-label="' + label + '预设">' + CAP_PRESETS.map(([t, v]) =>
+      '<button type="button" class="chip sm" aria-pressed="' + (n === v) + '" data-act="bulk-preset" data-side="' + side + '" data-arg="' + v + '">' + t + '</button>').join('') + '</div>';
+    if (err) h += '<p class="' + (fmt ? 'errtext' : 'hint') + '" id="' + id + '-e">' + esc(err) + '</p>';
+  }
+  return h + '</div>';
+}
+function layerBulk() {
+  const b = ui.bulk, r = draft.routes[b.route];
+  if (!r || ui.view !== 'detail' || ui.route !== b.route || !r.models.length) { ui.bulk = null; return ''; }
+  const pi = isPi(r);
+  const nsel = (ui.sel[b.route] || new Set()).size;
+  if (!nsel && b.scope === 'sel') b.scope = 'all';
+  const P = bulkPlan(r, b);
+  const S = bulkSummary(b, P);
+  const lock = P.copy;
+  let h = '<div class="layer' + (b.enter ? ' enter' : '') + '" role="region" aria-label="批量设置" data-layer="bulk">' +
+    '<div class="scroll" data-scroll="layer:bulk:' + esc(b.route) + '">' + bannersHTML() +
+    '<div class="row"><button type="button" class="linkbtn" data-act="bulk-close" data-arg="back">← 返回模型列表</button></div>' +
+    '<div><h2 class="h1">批量设置</h2><p class="desc">' + BULK_NOTE + '</p></div>';
+  h += bulkSection('scope', '范围', radioGroup('bulk-scope', '范围', b.scope, [['all', '所有模型（' + r.models.length + '）'], ['sel', '已勾选（' + nsel + '）', !nsel]]));
+  // 输入类型
+  let inner = radioGroup('bulk-in', '输入类型', lock ? 'none' : b.inMode, [['none', '不修改'], ['set', '设置为']].concat(pi ? [['inherit', '恢复继承']] : []), lock);
+  if (!lock && b.inMode === 'set') inner += chipsHTML({ scope: 'bulk', arr: b.inArr, inherited: false, label: '批量输入类型', hintKey: 'bulk' });
+  h += bulkSection('in', '输入类型', inner);
+  // 思考（仅 pi-ai）
+  if (pi) {
+    inner = radioGroup('bulk-th', '思考', lock ? 'none' : b.th, [['none', '不修改'], ['set', '设置档位'], ['off', '不思考']], lock);
+    if (!lock && b.th === 'set') {
+      inner += '<div class="field"><span class="lbl">支持的档位</span>' + railHTML({ key: 'bulk', mode: 'multi', sel: b.thSel, label: '批量设置的思考档位' }) +
+        fieldErr(P.errs.th, 'bulk-th-e') + '</div>';
+    }
+    h += bulkSection('th', '思考', inner);
+  }
+  // 容量
+  h += bulkSection('cap', '容量', '<div class="grid2">' + bulkCapSide(b, P, 'cw', '上下文窗口', lock) + bulkCapSide(b, P, 'mt', '最大输出', lock) + '</div>');
+  // 从模型复制（仅 pi-ai）
+  if (pi) {
+    inner = radioGroup('bulk-copy', '从模型复制', b.copy, [['none', '不修改'], ['copy', '从模型复制']]);
+    if (lock) {
+      inner += '<p class="hint" style="margin:0">复制输入、思考和容量的设置状态。源在继承时，目标也改为继承，不复制回退值，也不复制 ID 和名称。</p>' +
+        '<div class="bsrc" role="radiogroup" aria-label="源模型">' + r.models.map((m, i) =>
+          '<label class="check mono"><input type="radio" name="bulk-src" data-field="bulk-src" value="' + i + '"' + (b.src === i ? ' checked' : '') + '>' + esc(m.id || '未命名模型') + '</label>').join('') + '</div>';
+      if (P.errs.src) inner += '<p class="' + (b.src == null ? 'hint' : 'errtext') + '" style="margin:0">' + esc(P.errs.src) + '</p>';
+      inner += '<p class="hint" style="margin:0">复制会一起覆盖输入、思考和容量。取消复制后才能分别设置。</p>';
+    }
+    h += bulkSection('copy', '从模型复制', inner);
+  }
+  h += '</div><div class="bulkfoot"><p class="bsum' + (S.err ? ' err' : '') + '" aria-live="polite">' + esc(S.t) + '</p>' +
+    '<button type="button" class="btn" data-act="bulk-close" data-arg="cancel">取消</button>' +
+    '<button type="button" class="btn primary sm" data-act="bulk-apply"' + (S.ok ? '' : ' disabled') + '>应用到 ' + P.C + ' 个模型</button></div></div>';
+  return h;
+}
+function closeBulk() { ui.bulk = null; ui.inputHint = null; render({ focus: '[data-act="bulk-toggle"]' }); }
+
+function viewDetail(rid) {
+  const r = draft.routes[rid];
+  if (!r) { ui.view = 'list'; return viewList(computeOps()); }
+  const pi = isPi(r);
+  const re = routeErrors(r);
+  let h = '<div><button type="button" class="linkbtn" data-act="back-list" data-navok="1">← 返回提供方</button></div>';
+  if (pi) {
+    h += '<div class="head"><div><h2 class="h1 mono">' + esc(rid) + '</h2><p class="desc">ID 写入后不能修改。它是配置键，也是密钥环境变量名的词干。</p>' +
+      '<div class="meta small row" style="margin-top:4px"><span class="tag">' + esc(apiName(r.api)) + '</span>' + statusHTML(r) + (r.displayName ? '<span>· 显示名 ' + esc(r.displayName) + '</span>' : '') + '</div>' +
+      '<div class="small mono" style="margin-top:2px">' + esc(r.baseURL || '未填 baseURL') + '</div></div>' +
+      '<div class="row"><button type="button" class="btn" data-act="edit-access">编辑接入</button><button type="button" class="btn danger" data-act="del-provider">删除提供方</button></div></div>';
+    const rk = 'r:' + rid + ':detail';
+    h += '<div class="section"><div class="section-title">提供方默认值</div>' +
+      '<div class="field"><span class="lbl">默认输入</span><div class="row wrap">' +
+      chipsHTML({ scope: 'route', arr: r.defaultInput || ['text'], inherited: !r.defaultInput, label: '默认输入', hintKey: 'route:' + rid }) +
+      (r.defaultInput ? '<button type="button" class="linkbtn" data-act="di-inherit">恢复继承</button>' : '<button type="button" class="linkbtn" data-act="di-override">单独设置</button>') + '</div>' +
+      (r.defaultInput ? '' : '<p class="hint">未写入 defaultInput，运行默认：文本。</p>') + '</div>' +
+      '<div class="field"><span class="lbl">路由默认档</span>' +
+      railHTML({ key: rk, mode: 'single', sel: r.reasoning ? [r.reasoning] : [], def: r.reasoning, label: '路由默认档', clearable: true }) +
+      singleRailHint(!!r.reasoning) + '</div>' +
+      routeCapFields(r, 'r', true) +
+      (re.apiKeyEnv ? '<p class="errtext">' + esc(re.apiKeyEnv) + '（在「编辑接入」里修改）</p>' : '') + '</div>';
+    if (hasLegacy(r)) {
+      h += '<div class="banner" role="note"><span class="mark" aria-hidden="true">i</span><span class="txt">这些模型写了 inputModalities。自定义提供方不认这个字段，会忽略。已有 input 时以 input 为准。</span>' +
+        '<button type="button" class="linkbtn" data-act="migrate">迁移为 input</button></div>';
+    }
+  } else {
+    h += '<div class="head"><div><h2 class="h1">DeepSeek 官方 <span class="tag mono">' + rid + '</span></h2><p class="desc">官方提供方由「模型」页接入，这里改思考、输入类型和容量。接入本身不在这里改。</p>' +
+      '<div class="meta small row" style="margin-top:4px">' + statusHTML(r) + '</div></div></div>';
+    const off = r.thinking === 'disabled';
+    h += '<div class="section"><div class="row"><div class="section-title spacer">思考</div>' +
+      '<button type="button" class="switch" role="switch" aria-checked="' + !off + '" data-act="ds-thinking"><span class="trk" aria-hidden="true"></span>' + (off ? '已关闭' : '已开启') + '</button></div>' +
+      railHTML({ key: 'ds', mode: 'ds', sel: [r.reasoningEffort], label: '思考档位', isDis: (l) => off && l !== 'off' }) +
+      '<p class="hint">' + (off ? '关闭思考时只能是 off。' : '四档单选，所有模型共用。') + '</p></div>';
+    h += '<div class="section"><div class="section-title">提供方默认值</div>' + routeCapFields(r, 'r', false) + '</div>';
+  }
+  // 选择工具条：常驻表格正上方，与表头/行勾选框共用 ui.sel[route]
+  const nsel = (ui.sel[rid] || new Set()).size, nm = r.models.length;
+  h += '<div class="seltool" role="group" aria-label="模型选择">' +
+    '<span class="selcount" role="status">' + (nsel ? '已选 ' + nsel + ' 个' : '模型') + '</span>' +
+    '<button type="button" class="linkbtn" data-act="sel-all"' + (!nm || nsel === nm ? ' disabled' : '') + '>全选</button>' +
+    '<button type="button" class="linkbtn" data-act="sel-clear"' + (nsel ? '' : ' disabled') + '>清除</button>' +
+    '<span class="spacer"></span>' +
+    '<button type="button" class="btn" data-act="bulk-toggle"' + (nm ? '' : ' disabled') + '>批量设置</button></div>';
+  h += tableHTML(rid, r);
+  return h;
+}
+
+function layerModel() {
+  const { route: rid, idx } = ui.edit;
+  const r = draft.routes[rid], m = r && r.models[idx];
+  if (!m) { ui.edit = null; return ''; }
+  const pi = isPi(r);
+  const e = modelErrors(r, m, idx);
+  let h = '<div class="layer' + (ui.edit.enter ? ' enter' : '') + '" role="region" aria-label="编辑模型 ' + esc(m.id) + '">' +
+    '<div class="scroll" data-scroll="layer">' +
+    '<div class="row"><button type="button" class="linkbtn" data-act="close-layer" data-navok="1">← 返回模型列表</button></div>' +
+    '<h2 class="h1">编辑 <span class="mono">' + esc(m.id || '新模型') + '</span></h2>';
+  if (!pi) {
+    h += '<div class="grid2">' + textField({ label: '模型 ID', field: 'm-id', value: m.id, readonly: true, mono: true }) +
+      textField({ label: '名称', field: 'm-name-ro', value: m.name || m.id, readonly: true, hint: '官方模型的 ID 和名称由提供方给出。' }) + '</div>';
+    h += '<div class="section"><div class="section-title">输入类型</div>' +
+      chipsHTML({ scope: 'model', arr: m.inputModalities || ['text'], inherited: false, label: '输入类型', hintKey: 'model' }) + '</div>';
+    h += '<p class="desc">思考档位在提供方上统一设置。</p>';
+    h += modelCapSection(r, m, e);
+    return h + '</div></div>';
+  }
+  const w = idWarn(m.id);
+  h += '<div class="grid2">' +
+    textField({ label: '模型 ID', field: 'm-id', value: m.id, err: e.id, mono: true, placeholder: '例如 gpt-6-nova', hint: !e.id && w ? w : '' }) +
+    textField({ label: '名称', field: 'm-name', value: m.name || '', placeholder: '可留空', hint: '留空时界面显示 ID。' }) + '</div>';
+  // 输入类型
+  const ri = resolvedInput(r, m);
+  h += '<div class="section"><div class="row"><div class="section-title spacer">输入类型</div>' +
+    (m.input ? '<button type="button" class="linkbtn" data-act="m-inherit">恢复继承</button>' : '<button type="button" class="linkbtn" data-act="m-override">单独设置</button>') + '</div>';
+  if (!m.input) h += '<p class="desc" style="font-size:13px">未单独设置。当前继承·' + inputText(ri.v) + '（' + (ri.src === 'route' ? '提供方默认' : '运行默认') + '）。若目录里另有声明，运行时目录优先。</p>';
+  h += chipsHTML({ scope: 'model', arr: ri.v, inherited: !m.input, label: '输入类型', hintKey: 'model' });
+  if (m.inputModalities) h += '<p class="hint">配置里还有旧字段 inputModalities: [' + m.inputModalities.join(', ') + ']，自定义提供方会忽略它，不参与上面的继承。可在模型列表上方「迁移为 input」。</p>';
+  h += '</div>';
+  // 思考
+  const eff = m.reasoningEfforts;
+  const isObj = eff && typeof eff === 'object';
+  h += '<div class="section" data-sec="think"><div class="row"><div class="section-title spacer">思考</div>' +
+    '<button type="button" class="switch" role="switch" aria-checked="' + !isObj + '" data-act="m-nothink"><span class="trk" aria-hidden="true"></span>不思考</button></div>';
+  if (eff === undefined) h += '<p class="hint" style="margin:0">配置里还没有 reasoningEfforts。</p>';
+  h += '<div class="field"><span class="lbl">支持的档位</span>' +
+    railHTML({ key: 'm:' + rid + ':' + idx, mode: 'multi', sel: isObj ? orderLevels(eff) : [], def: r.reasoning, label: '支持的思考档位', disabled: !isObj }) +
+    (r.reasoning ? '<p class="hint">「默认」是提供方的路由默认档。</p>' : '') + fieldErr(e.efforts, 'eff-e') + '</div>';
+  if (isObj && orderLevels(eff).length) {
+    h += '<div class="field"><span class="lbl">线上拼写</span><p class="hint" style="margin:0 0 4px">发给提供方的实际字符串。</p>';
+    orderLevels(eff).forEach(l => {
+      const v = eff[l];
+      const isNull = v === null;
+      const err = e['spell_' + l];
+      h += '<div class="spell"><span class="lvl">' + l + '</span>' +
+        '<input class="input sm mono' + (err ? ' invalid' : '') + '" aria-label="' + l + ' 的线上拼写" data-field="spell" data-lvl="' + l + '" value="' + (isNull ? 'null' : esc(v)) + '"' + (isNull ? ' disabled' : '') + (err ? ' aria-invalid="true"' : '') + '>' +
+        '<button type="button" class="btn" data-act="spell-same" data-lvl="' + l + '"' + (v === l ? ' disabled' : '') + '>与档名相同</button>' +
+        '<button type="button" class="btn" data-act="spell-null" data-lvl="' + l + '">' + (isNull ? '改为字符串' : '写成 null') + '</button></div>' +
+        (err ? '<p class="errtext" style="margin:0 0 0 72px">' + esc(err) + '</p>' : '');
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  h += modelCapSection(r, m, e);
+  return h + '</div></div>';
+}
+
+function headersHTML(list, prefix) {
+  let h = '';
+  list.forEach((p, i) => {
+    h += '<div class="row"><input class="input sm mono" aria-label="请求头名称 ' + (i + 1) + '" placeholder="名称" data-field="' + prefix + 'hk" data-idx="' + i + '" value="' + esc(p.k) + '">' +
+      '<input class="input sm mono" aria-label="请求头值 ' + (i + 1) + '" placeholder="值" data-field="' + prefix + 'hv" data-idx="' + i + '" value="' + esc(p.v) + '">' +
+      '<button type="button" class="btn ghost" data-act="' + prefix + 'hdel" data-idx="' + i + '" aria-label="删除第 ' + (i + 1) + ' 行请求头">删除</button></div>';
+  });
+  return h + '<div><button type="button" class="btn" data-act="' + prefix + 'hadd">+ 添加请求头</button></div>';
+}
+function apiSelect(field, val) {
+  return '<select class="input" id="f-' + field + '" data-field="' + field + '">' + API_OPTS.map(o => '<option value="' + o.v + '"' + (o.v === val ? ' selected' : '') + '>' + o.t + '（' + o.v + '）</option>').join('') + '</select>';
+}
+
+function layerAccess() {
+  const rid = ui.edit.route, r = draft.routes[rid];
+  if (!r) { ui.edit = null; return ''; }
+  const re = routeErrors(r);
+  let h = '<div class="layer' + (ui.edit.enter ? ' enter' : '') + '" role="region" aria-label="编辑接入 ' + esc(rid) + '"><div class="scroll" data-scroll="layer">' +
+    '<div class="row"><button type="button" class="linkbtn" data-act="close-layer" data-navok="1">← 返回提供方详情</button></div>' +
+    '<h2 class="h1">编辑接入 <span class="mono">' + esc(rid) + '</span></h2>' +
+    '<div class="grid2">' + textField({ label: '提供方 ID', field: 'a-id', value: rid, readonly: true, mono: true, hint: '写入后不能修改。' }) +
+    textField({ label: '显示名', field: 'a-name', value: r.displayName || '', placeholder: '可留空' }) + '</div>' +
+    '<div class="field"><label for="f-a-api">协议</label>' + apiSelect('a-api', r.api) + '<p class="hint">换协议不会改 ID。</p></div>' +
+    textField({ label: 'baseURL', field: 'a-url', value: r.baseURL || '', mono: true, placeholder: 'https://…', hint: r.baseURL ? '' : '未填 baseURL。留空时不写这个字段。' }) +
+    '<div class="grid2">' + textField({ label: '密钥环境变量名', field: 'a-env', value: r.apiKeyEnv || '', err: re.apiKeyEnv, mono: true }) +
+    textField({ label: '密钥', field: 'a-secret', value: '', type: 'password', placeholder: r.cred ? '已保存，留空则不更改' : '未配置', extra: ' autocomplete="new-password"', hint: '只写入凭证库，不进配置。' }) + '</div>' +
+    '<div class="section"><div class="section-title">默认值</div>' +
+    '<div class="field"><span class="lbl">默认输入</span><div class="row wrap">' +
+    chipsHTML({ scope: 'route', arr: r.defaultInput || ['text'], inherited: !r.defaultInput, label: '默认输入', hintKey: 'route:' + rid }) +
+    (r.defaultInput ? '<button type="button" class="linkbtn" data-act="di-inherit">恢复继承</button>' : '<button type="button" class="linkbtn" data-act="di-override">单独设置</button>') + '</div></div>' +
+    '<div class="field"><span class="lbl">路由默认档</span>' + railHTML({ key: 'r:' + rid + ':access', mode: 'single', sel: r.reasoning ? [r.reasoning] : [], def: r.reasoning, label: '路由默认档', clearable: true }) +
+    singleRailHint(!!r.reasoning) + '</div>' +
+    '<p class="hint" style="margin:0">上下文窗口和最大输出的默认值在提供方详情的「提供方默认值」里改。</p></div>' +
+    '<div class="section"><div class="section-title">请求头</div>' + headersHTML(r.headers || [], 'a-') + '</div>';
+  return h + '</div></div>';
+}
+
+function wizardErrors(w) {
+  const e = {};
+  const idErr = providerIdError(w.id);
+  if (idErr) e.id = idErr;
+  const ids = w.models.map(x => x.trim()).filter(Boolean).concat(w.picks);
+  const dup = ids.find((x, i) => ids.indexOf(x) !== i);
+  if (dup) e.models = '这个提供方里已有同名模型：' + dup;
+  if (w.models.some(x => /\s/.test(x.trim()))) e.models = 'ID 不能包含空格';
+  const ce = capErrors(routeCap(w.cap), CAP_FMT_ERR_ROUTE, true);
+  if (ce.cw) e.cw = ce.cw;
+  if (ce.mt) e.mt = ce.mt;
+  return e;
+}
+function viewWizard() {
+  const w = ui.wizard;
+  const e = wizardErrors(w);
+  const names = ['协议', '接入', '模型'];
+  let h = '<div><button type="button" class="linkbtn" data-act="wiz-cancel">← 取消添加</button></div><h2 class="h1">添加提供方</h2>' +
+    '<ol class="steps" aria-label="步骤">' + names.map((n, i) => (i ? '<li aria-hidden="true"><span class="line"></span></li>' : '') +
+      '<li' + (w.step === i + 1 ? ' aria-current="step"' : '') + (w.step > i + 1 ? ' class="done"' : '') + '><span class="n">' + (i + 1) + '</span>' + n + '</li>').join('') + '</ol>';
+  if (w.step === 1) {
+    h += '<fieldset style="border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:8px"><legend class="h2" style="margin-bottom:8px">选择协议</legend>';
+    API_OPTS.forEach(o => {
+      h += '<label class="card optcard' + (w.api === o.v ? ' sel' : '') + '"><input type="radio" name="wizapi" data-field="w-api" value="' + o.v + '"' + (w.api === o.v ? ' checked' : '') + '>' +
+        '<span><span class="h2" style="display:block">' + o.t + '</span><span class="small mono">' + o.v + '</span></span></label>';
+    });
+    h += '</fieldset><div class="row"><span class="spacer"></span><button type="button" class="btn primary" data-act="wiz-next"' + (w.api ? '' : ' disabled') + '>下一步</button></div>';
+  } else if (w.step === 2) {
+    const showIdErr = w.id !== '' || w.tried2;
+    h += textField({ label: '提供方 ID', field: 'w-id', value: w.id, err: showIdErr ? e.id : '', mono: true, placeholder: '例如 my-gateway', hint: '小写字母、数字和连字符。保存后不能修改。' }) +
+      '<label class="check"><input type="checkbox" data-field="w-ack"' + (w.ack ? ' checked' : '') + '>我知道保存后不能改这个 ID</label>' +
+      textField({ label: '显示名（可选）', field: 'w-name', value: w.displayName, placeholder: '可留空' }) +
+      textField({ label: 'baseURL', field: 'w-url', value: w.baseURL, mono: true, placeholder: 'https://…' }) +
+      '<div class="grid2">' + textField({ label: '密钥环境变量名', field: 'w-env', value: w.env, mono: true, hint: w.envTouched ? (w.env.trim() ? '' : '留空时用 ' + (w.id.trim() ? deriveEnv(w.id.trim()) : '由 ID 生成的名字') + '。') : '随 ID 自动生成，可改。' }) +
+      textField({ label: '密钥', field: 'w-secret', value: '', type: 'password', placeholder: '留空则暂不写入凭证', extra: ' autocomplete="new-password"' }) + '</div>' +
+      '<div><button type="button" class="linkbtn" data-act="wiz-adv" aria-expanded="' + w.headersOpen + '">' + (w.headersOpen ? '收起高级' : '高级：请求头') + '</button></div>' +
+      (w.headersOpen ? '<div class="section">' + headersHTML(w.headers, 'w-') + '</div>' : '') +
+      '<div class="row"><button type="button" class="btn" data-act="wiz-prev">上一步</button><span class="spacer"></span>' +
+      '<button type="button" class="btn primary" data-act="wiz-next"' + (!e.id && w.ack ? '' : ' disabled') + '>下一步</button></div>';
+  } else {
+    h += '<div class="section"><div class="row"><div class="section-title spacer">模型</div><button type="button" class="btn" data-act="wiz-addm">手动添加</button>' +
+      '<button type="button" class="btn" data-act="wiz-fetch"' + (w.fetched ? ' disabled' : '') + '>获取模型</button></div>';
+    w.models.forEach((x, i) => {
+      h += '<div class="row"><input class="input sm mono" aria-label="模型 ID ' + (i + 1) + '" placeholder="模型 ID" data-field="w-model" data-idx="' + i + '" value="' + esc(x) + '">' +
+        '<button type="button" class="btn ghost" data-act="wiz-delm" data-idx="' + i + '" aria-label="移除第 ' + (i + 1) + ' 个模型">移除</button></div>';
+    });
+    const mw = w.models.map(x => idWarn(x.trim())).find(Boolean);
+    if (mw && !e.models) h += '<p class="hint" style="margin:0">' + mw + '</p>';
+    if (w.fetched) {
+      h += '<fieldset style="border:0;margin:0;padding:0"><legend class="small">获取到 2 个模型（原型本地示例数据，没有发请求）。勾选要加入的：</legend>';
+      ['preview-alpha', 'preview-beta'].forEach(id => {
+        h += '<label class="check mono" style="display:flex;margin-top:4px"><input type="checkbox" data-field="w-pick" value="' + id + '"' + (w.picks.includes(id) ? ' checked' : '') + '>' + id + '</label>';
+      });
+      h += '</fieldset>';
+    }
+    if (!w.models.length && !w.picks.length) h += '<p class="hint" style="margin:0">可以先不加模型，之后在提供方详情里添加。</p>';
+    h += fieldErr(e.models, 'wm-e') + '</div>';
+    h += '<div class="section"><div class="section-title">默认值</div>' +
+      '<div class="field"><span class="lbl">默认输入</span><div class="row wrap">' +
+      chipsHTML({ scope: 'wiz', arr: w.defaultInput || ['text'], inherited: !w.defaultInput, label: '默认输入', hintKey: 'wiz' }) +
+      (w.defaultInput ? '<button type="button" class="linkbtn" data-act="wiz-di-inherit">恢复继承</button>' : '<button type="button" class="linkbtn" data-act="wiz-di-override">单独设置</button>') + '</div></div>' +
+      '<div class="field"><span class="lbl">路由默认档</span>' + railHTML({ key: 'wiz', mode: 'single', sel: w.reasoning ? [w.reasoning] : [], def: w.reasoning, label: '路由默认档', clearable: true }) +
+      singleRailHint(!!w.reasoning) + '</div>' +
+      routeCapFields(w.cap, 'w', true) + '</div>' +
+      '<div class="row"><button type="button" class="btn" data-act="wiz-prev">上一步</button><span class="spacer"></span>' +
+      '<button type="button" class="btn primary" data-act="wiz-finish"' + (e.models || e.cw || e.mt ? ' disabled' : '') + '>完成添加</button></div>';
+  }
+  return h;
+}
+
+function viewPreview(st) {
+  let h = '<div><button type="button" class="linkbtn" data-act="close-preview" data-navok="1">← 返回</button></div>' +
+    '<div><h2 class="h1">预览变更</h2><p class="desc">按 namespace 列出这次保存会写入的操作，基于 revision ' + revision + '。</p></div>';
+  const { pi, ds, cred } = st.ops;
+  const errs = allErrors(draft);
+  const modelBad = Object.values(errs).some(x => x.models.some(me => Object.keys(me).length));
+  const routeBad = Object.values(errs).some(x => Object.keys(x.route).length);
+  if (modelBad || routeBad) h += '<div class="banner error" role="note"><span class="mark" aria-hidden="true">!</span><span class="txt">有字段未通过校验。空的思考档位、非法容量和未通过校验的提供方字段不会写入下面的预览；其余错误（如模型 ID）仍按草稿显示。保存已禁用。</span></div>';
+  if (!pi.length && !ds.length && !cred.length) {
+    // 有改动但全部被校验拦下（不产出 op）
+    const blocked = st.dirty && Object.keys(errs).length;
+    return h + '<p class="desc">' + (blocked ? '有 ' + st.dirty + ' 处修改未通过校验，暂不能写入。' : '没有未保存的更改。') + '</p>';
+  }
+  if (pi.length) h += '<div class="diffgroup"><div class="gh"><span class="h2 mono">llm-pi-ai</span><span class="small">' + pi.length + ' 条</span></div><pre class="diff">' + esc(pi.map(opText).join('\n')) + '</pre></div>';
+  if (ds.length) h += '<div class="diffgroup"><div class="gh"><span class="h2 mono">llm-deepseek</span><span class="small">models 为整表替换目录；thinking、reasoningEffort、defaultContextWindow、maxTokens 为提供方字段。</span></div><pre class="diff">' + esc(ds.map(opText).join('\n')) + '</pre></div>';
+  if (cred.length) h += '<div class="diffgroup"><div class="gh"><span class="h2">凭证</span><span class="small">只写入凭证库</span></div><pre class="diff">' + esc(cred.map(k => 'credentials.set  ' + k + '  （值不展示）').join('\n')) + '</pre></div>';
+  return h;
+}
+
+function dialogHTML(st) {
+  const d = ui.dialog;
+  if (!d) return '';
+  let title = '', body = '', ok = '', okCls = 'btn primary sm', okDis = false, cancel = '取消';
+  if (d.type === 'delete') {
+    title = '删除提供方 ' + d.route;
+    body = '<p class="desc" style="font-size:13px">配置键会被移除；已存密钥还在凭证库里，不会一起删。</p>' +
+      '<div class="field"><label for="f-del-confirm">输入 <span class="mono">' + esc(d.route) + '</span> 确认</label><input class="input mono" id="f-del-confirm" data-field="del-confirm" value="' + esc(d.text || '') + '" autocomplete="off"></div>';
+    ok = '删除提供方'; okCls = 'btn danger'; okDis = (d.text || '') !== d.route;
+  } else if (d.type === 'discard') {
+    title = '放弃未保存的更改？'; body = '<p class="desc" style="font-size:13px">' + st.dirty + ' 处修改会被丢弃，恢复到 revision ' + revision + '。</p>'; ok = '放弃更改'; okCls = 'btn danger';
+  } else if (d.type === 'reload') {
+    title = '重新加载配置？'; body = '<p class="desc" style="font-size:13px">重新加载会丢掉当前草稿，换成最新配置。</p>'; ok = '重新加载'; okCls = 'btn danger';
+  } else if (d.type === 'wiz-cancel') {
+    title = '取消添加提供方？'; body = '<p class="desc" style="font-size:13px">已填写的内容不会保留。</p>'; ok = '取消添加'; okCls = 'btn danger'; cancel = '继续填写';
+  } else if (d.type === 'save-wiz') {
+    title = '还没添加完'; body = '<p class="desc" style="font-size:13px">先完成或取消添加提供方，再保存。</p>'; ok = ''; cancel = '知道了';
+  }
+  return '<div class="scrim" data-act="scrim"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-t" data-dialog="1">' +
+    '<h3 class="h2" id="dlg-t">' + esc(title) + '</h3>' + body +
+    '<div class="actions"><button type="button" class="btn" data-act="dlg-cancel">' + cancel + '</button>' +
+    (ok ? '<button type="button" class="' + okCls + '" data-act="dlg-ok"' + (okDis ? ' disabled' : '') + '>' + ok + '</button>' : '') + '</div></div></div>';
+}
+
+function savebarHTML(st, errCount) {
+  let txt, cls = 'count';
+  if (ui.readonly) txt = '只读模式，不能保存。';
+  else if (ui.saving) txt = '保存中…';
+  else if (ui.saved && !st.dirty) txt = '已保存';
+  else if (errCount) { txt = st.dirty + ' 处无法保存'; cls += ' err'; }
+  else txt = st.dirty ? '未保存 ' + st.dirty + ' 处' : '没有未保存的更改';
+  const busy = ui.saving || ui.loading;
+  return '<div class="savebar"><span class="' + cls + '" role="status" aria-live="polite">' + txt + '</span><span class="rev">revision ' + revision + '</span>' +
+    '<button type="button" class="btn" data-act="preview"' + (busy ? ' disabled' : '') + ' aria-pressed="' + (ui.view === 'preview') + '" data-rook="1">预览变更</button>' +
+    '<button type="button" class="btn" data-act="discard"' + (busy || ui.readonly || !st.dirty ? ' disabled' : '') + '>放弃</button>' +
+    '<button type="button" class="btn primary" data-act="save"' + (busy || ui.readonly || !st.dirty || errCount ? ' disabled' : '') + '>' + (ui.saving ? '保存中' : '保存') + '</button></div>';
+}
+
+/* ================= 主渲染 + 焦点保持 ================= */
+const app = document.getElementById('app');
+let rendering = false;
+const live = document.getElementById('live');
+function fkey(el) {
+  if (!el || !el.dataset) return '';
+  const d = el.dataset;
+  return [el.tagName, d.act, d.field, d.arg, d.idx, d.lvl, d.rail, d.mod, d.scope, d.side, d.clear, el.id, el.name || '', (el.type === 'radio' || el.type === 'checkbox') ? el.value : ''].join('|');
+}
+function findKey(k) { return k ? [...app.querySelectorAll('button,input,select')].find(e => fkey(e) === k) : null; }
+function bannersHTML() {
+  let h = '';
+  if (ui.readonly) h += '<div class="banner" role="note"><span class="mark" aria-hidden="true">i</span><span class="txt">只能在本机上修改设置。</span></div>';
+  if (ui.conflictShown && ui.conflictKept) h += '<div class="banner error" role="status"><span class="mark" aria-hidden="true">!</span><span class="txt">这份配置刚刚被别处改过。草稿还在，但解除冲突前保存会失败。</span>' +
+    '<button type="button" class="btn" data-act="conflict-reload">重新加载</button></div>';
+  else if (ui.conflictShown) h += '<div class="banner error" role="alert"><span class="mark" aria-hidden="true">!</span><span class="txt">这份配置刚刚被别处改过，这次没写入。你的修改还在。</span>' +
+    '<button type="button" class="btn" data-act="conflict-reload">重新加载</button><button type="button" class="btn" data-act="conflict-keep">保留草稿</button></div>';
+  if (ui.status) h += '<div class="statusline">' + esc(ui.status) + '</div>';
+  return h;
+}
+function render(opts) {
+  opts = opts || {};
+  const act = document.activeElement;
+  let fk = null, ss = null, se = null;
+  if (act && app.contains(act)) {
+    fk = fkey(act);
+    try { ss = act.selectionStart; se = act.selectionEnd; } catch (_) { /* 非文本输入 */ }
+  }
+  const scrolls = {};
+  app.querySelectorAll('[data-scroll]').forEach(s => { scrolls[s.dataset.scroll] = s.scrollTop; });
+  const st = computeOps();
+  const errCount = Object.keys(allErrors(draft)).length;
+  let main;
+  if (ui.loading) {
+    main = '<div class="head"><div><h2 class="h1">模型能力</h2><p class="desc">' + LIST_DESC + '</p></div>' +
+      '<button type="button" class="btn primary" disabled>添加提供方</button></div>' +
+      '<div class="skeleton" aria-hidden="true"></div><div class="skeleton" aria-hidden="true"></div><div class="skeleton" aria-hidden="true"></div><span class="sr-only" role="status">正在加载配置</span>';
+  } else if (ui.view === 'detail') main = viewDetail(ui.route);
+  else if (ui.view === 'wizard') main = viewWizard();
+  else if (ui.view === 'preview') main = viewPreview(st);
+  else main = viewList(st);
+  const scrollKey = 'main:' + ui.view + ':' + (ui.route || '') + ':' + (ui.wizard ? ui.wizard.step : '');
+  let layer = '';
+  if (ui.edit && !ui.loading) {
+    layer = ui.edit.kind === 'model' ? layerModel() : layerAccess();
+    if (layer) layer = layer.replace('<div class="scroll" data-scroll="layer">', '<div class="scroll" data-scroll="layer:' + ui.edit.kind + ':' + ui.edit.idx + '">' + bannersHTML());
+  } else if (ui.bulk && !ui.loading) layer = layerBulk();   // 批量层与编辑层互相替换，不叠加
+  // 编辑层打开：主区 inert；对话框打开：主区、编辑层、保存条都 inert
+  const INERT = ' inert aria-hidden="true"';
+  const dlg = !!ui.dialog;
+  if (layer && dlg) layer = layer.replace('<div class="layer', '<div' + INERT + ' class="layer');
+  let bar = savebarHTML(st, errCount);
+  if (dlg) bar = bar.replace('<div class="savebar"', '<div class="savebar"' + INERT);
+  rendering = true;
+  const menu = layer || dlg ? (ui.menu = null, '') : rowMenuHTML();
+  app.innerHTML = '<div class="scroll"' + (layer || dlg ? INERT : '') + ' data-scroll="' + esc(scrollKey) + '">' + bannersHTML() + main + '</div>' + layer + bar + dialogHTML(st) + menu;
+  rendering = false;
+  app.querySelectorAll('[data-scroll]').forEach(s => { if (scrolls[s.dataset.scroll] != null) s.scrollTop = scrolls[s.dataset.scroll]; });
+  placeMenu();
+  // 密钥只放进 DOM 属性值，不进 HTML 文本、不进 diff
+  const as = app.querySelector('[data-field="a-secret"]');
+  if (as && ui.edit) as.value = secrets[ui.edit.route] || '';
+  const ws = app.querySelector('[data-field="w-secret"]');
+  if (ws) ws.value = wizSecret.v;
+  if (ui.saving || ui.loading) {
+    app.querySelectorAll('button,input,select').forEach(el => { if (!el.dataset.navok || ui.saving) el.disabled = true; });
+  } else if (ui.readonly) {
+    // 只读仍可：导航、预览、取消添加、对话框的取消/确认
+    const keep = (el) => el.dataset.navok || el.dataset.rook || el.dataset.act === 'wiz-cancel' || el.closest('.dialog');
+    app.querySelectorAll('button,input,select').forEach(el => { if (!keep(el)) el.disabled = true; });
+  }
+  if (ui.edit) ui.edit.enter = false;
+  if (ui.bulk) ui.bulk.enter = false;
+  let target = null;
+  if (opts.focus) target = app.querySelector(opts.focus);
+  else if (opts.focusKey) target = findKey(opts.focusKey);
+  if (!target && fk) {
+    target = findKey(fk);
+    if (target && ss != null) { target.focus({ preventScroll: true }); try { target.setSelectionRange(ss, se); } catch (_) { /* 忽略 */ } return; }
+  }
+  if (target && !target.disabled) target.focus({ preventScroll: !!(opts.preventScroll || (fk && !opts.focus && !opts.focusKey)) });
+}
+let statusTimer = 0;
+function say(msg) {
+  ui.status = msg; live.textContent = msg;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { ui.status = ''; render(); }, 4000);
+}
+
+/* ================= 草稿操作 ================= */
+const curRoute = () => draft.routes[ui.edit ? ui.edit.route : ui.route];
+const curModel = () => { const r = draft.routes[ui.edit.route]; return r && r.models[ui.edit.idx]; };
+function uniqueCopyId(r, id) {
+  let n = id + '-copy', k = 2;
+  while (r.models.some(m => m.id === n)) n = id + '-copy-' + (k++);
+  return n;
+}
+function toggleIn(arr, k, hintKey) {
+  const has = arr.includes(k);
+  if (has && arr.length === 1) { ui.inputHint = hintKey; ui.inputHintText = '至少保留一种输入类型'; return null; }
+  const next = has ? arr.filter(x => x !== k) : arr.concat(k);
+  return MODS.map(x => x[0]).filter(x => next.includes(x));
+}
+function newWizard() {
+  // cap：向导里的路由级容量，结构与路由相同（缺键 = 用运行默认）
+  return { step: 1, api: '', id: '', ack: false, displayName: '', baseURL: '', env: '', envTouched: false, headersOpen: false, headers: [], models: [], fetched: false, picks: [], defaultInput: null, reasoning: null, cap: { ns: 'llm-pi-ai' } };
+}
+function openDialog(d, trigger) {
+  ui.dialog = d; ui.menu = null;
+  returnFocus = trigger ? fkey(trigger) : null;
+  render({ focus: '.dialog input:not([disabled]), .dialog button:not([disabled])' });
+}
+function closeDialog(focusKey) { ui.dialog = null; render({ focusKey: focusKey || returnFocus }); }
+function exitWizard() { ui.wizard = null; wizSecret.v = ''; ui.view = 'list'; render({ focus: '[data-act="add-provider"]' }); }
+function openLayer(edit, trigger, focusSel) {
+  ui.menu = null; ui.bulk = null; ui.edit = Object.assign({ enter: true }, edit);
+  returnFocus = trigger ? fkey(trigger) : null;
+  render({ focus: focusSel || '.layer [data-act="close-layer"]' });
+}
+function closeLayer() {
+  const k = returnFocus; ui.edit = null; ui.inputHint = null;
+  render({ focusKey: k, focus: k && findKey(k) ? null : '[data-act="back-list"]' });
+}
+function doSave() {
+  ui.saving = true; ui.menu = null; render();
+  setTimeout(() => {
+    ui.saving = false;
+    if (ui.conflictArmed) { ui.conflictShown = true; ui.conflictKept = false; render({ focus: '[data-act="conflict-reload"]' }); return; }
+    Object.keys(secrets).forEach(rid => { if (draft.routes[rid]) draft.routes[rid].cred = true; delete secrets[rid]; });
+    base = clone(draft); revision += 1;
+    ui.undo = null; ui.saved = true; ui.conflictShown = false; ui.conflictKept = false; ui.sel = {};
+    render();
+    setTimeout(() => { ui.saved = false; render(); }, 2000);
+  }, 800);
+}
+// 持久字段快照：只有它变了才算「已修改」
+function rawPersist(m) { const o = clone(m); delete o._stash; return JSON.stringify(o); }
+function capSet(m, k, v) { if (v === undefined) delete m[k]; else m[k] = String(v); }
+// 应用批量层：用 bulkPlan 的同一套每模型循环；整份应用或整份跳过
+function applyBulk() {
+  const b = ui.bulk, r = draft.routes[b.route];
+  const P = bulkPlan(r, b);
+  if (!bulkSummary(b, P).ok) return false;
+  P.results.forEach(x => { r.models[x.i] = x.next; });
+  say(bulkResultMsg(b, P));
+  return true;
+}
+
+// 容量控件的目标对象：m = 编辑中的模型，r = 当前路由，w = 向导
+function capTarget(scope, side) {
+  if (scope === 'm') {
+    const r = draft.routes[ui.edit.route], m = r.models[ui.edit.idx];
+    const c = modelCap(r, m);
+    return { obj: m, key: side === 'cw' ? 'contextWindow' : 'maxTokens', state: c[side] };
+  }
+  const obj = scope === 'w' ? ui.wizard.cap : curRoute();
+  const c = routeCap(obj);
+  return { obj, key: c[side].key, state: c[side] };
+}
+// 单选轨道：选中（radiogroup 方向键用，不做取消）
+function railSelect(key, lvl) {
+  if (key === 'ds') { draft.routes[DS_ID].reasoningEffort = lvl; return; }
+  if (key === 'wiz') { ui.wizard.reasoning = lvl; return; }
+  if (key.startsWith('r:')) { routeOfRail(key).reasoning = lvl; }
+}
+function railClear(key) {
+  if (key === 'wiz') ui.wizard.reasoning = null;
+  else if (key.startsWith('r:')) delete routeOfRail(key).reasoning;
+}
+// r:<id>:detail / r:<id>:access → 路由
+const routeOfRail = (key) => draft.routes[key.slice(2, key.lastIndexOf(':'))];
+function onRail(key, lvl) {
+  if (key === 'bulk') { const s = ui.bulk.thSel; ui.bulk.thSel = s.includes(lvl) ? s.filter(x => x !== lvl) : s.concat(lvl); return; }
+  if (key === 'ds') { const r = draft.routes[DS_ID]; if (r.reasoningEffort !== lvl) r.reasoningEffort = lvl; return; }
+  if (key === 'wiz') { ui.wizard.reasoning = ui.wizard.reasoning === lvl ? null : lvl; return; }
+  if (key.startsWith('r:')) { const r = routeOfRail(key); if (r.reasoning === lvl) delete r.reasoning; else r.reasoning = lvl; return; }
+  if (key.startsWith('m:')) {
+    const m = curModel(); const eff = m.reasoningEfforts;
+    if (!eff || typeof eff !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(eff, lvl)) delete eff[lvl]; else eff[lvl] = lvl;
+    m.reasoningEfforts = orderedEfforts(eff);
+  }
+}
+
+/* ================= 点击 ================= */
+app.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (ui.menu && !e.target.closest('.menu') && !(t && t.dataset.act === 'row-menu')) {
+    ui.menu = null;
+    if (!t) { render(); return; }
+  }
+  if (!t || t.disabled || t.dataset.act === 'scrim') return;
+  const a = t.dataset.act, arg = t.dataset.arg, idx = t.dataset.idx != null ? Number(t.dataset.idx) : null, lvl = t.dataset.lvl;
+  if (a !== 'chip' && a !== 'chip-inh') ui.inputHint = null;
+  const r = curRoute();
+  const w = ui.wizard;
+  switch (a) {
+    case 'enter': ui.view = 'detail'; ui.route = arg; ui.menu = null; ui.bulk = null; return render({ focus: '[data-act="back-list"]' });
+    case 'back-list': { const rid = ui.route; ui.view = 'list'; ui.route = null; ui.bulk = null; return render({ focus: '[data-act="enter"][data-arg="' + CSS.escape(rid) + '"]' }); }
+    case 'add-provider': ui.wizard = newWizard(); wizSecret.v = ''; ui.view = 'wizard'; ui.edit = null; return render({ focus: '[data-field="w-api"]' });
+    case 'wiz-cancel': return (w.api || w.step > 1) ? openDialog({ type: 'wiz-cancel' }, t) : exitWizard();
+    case 'wiz-next': w.step += 1; return render({ focus: w.step === 2 ? '[data-field="w-id"]' : '[data-act="wiz-addm"]' });
+    case 'wiz-prev': w.step -= 1; return render({ focus: w.step === 1 ? '[data-field="w-api"]:checked' : '[data-field="w-id"]' });
+    case 'wiz-adv': w.headersOpen = !w.headersOpen; if (w.headersOpen && !w.headers.length) w.headers.push({ k: '', v: '' }); break;
+    case 'w-hadd': w.headers.push({ k: '', v: '' }); return render({ focus: '[data-field="w-hk"][data-idx="' + (w.headers.length - 1) + '"]' });
+    case 'w-hdel': w.headers.splice(idx, 1); return render({ focus: '[data-act="w-hadd"]' });
+    case 'wiz-addm': w.models.push(''); return render({ focus: '[data-field="w-model"][data-idx="' + (w.models.length - 1) + '"]' });
+    case 'wiz-delm': w.models.splice(idx, 1); return render({ focus: '[data-act="wiz-addm"]' });
+    case 'wiz-fetch': w.fetched = true; return render({ focus: '[data-field="w-pick"]' });
+    case 'wiz-di-override': w.defaultInput = ['text']; return render({ focus: '[data-scope="wiz"]' });
+    case 'wiz-di-inherit': w.defaultInput = null; return render({ focus: '[data-act="wiz-di-override"]' });
+    case 'wiz-finish': {
+      const id = w.id.trim();
+      const route = { ns: 'llm-pi-ai', api: w.api, apiKeyEnv: w.env.trim() || deriveEnv(id), cred: false, models: [] };
+      if (w.displayName.trim()) route.displayName = w.displayName.trim();
+      if (w.baseURL.trim()) route.baseURL = w.baseURL.trim();
+      if (w.defaultInput) route.defaultInput = w.defaultInput.slice();
+      if (w.reasoning) route.reasoning = w.reasoning;
+      const wc = routeCap(w.cap);
+      if (wc.cw.explicit) route.defaultContextWindow = String(wc.cw.parsed);
+      if (wc.mt.explicit) route.defaultMaxTokens = String(wc.mt.parsed);
+      const hs = w.headers.filter(p => p.k.trim());
+      if (hs.length) route.headers = hs;
+      route.models = w.models.map(x => x.trim()).filter(Boolean).concat(w.picks).map(mid => ({ id: mid, name: '', reasoningEfforts: false }));
+      draft.routes[id] = route;
+      if (wizSecret.v) secrets[id] = wizSecret.v;
+      ui.wizard = null; wizSecret.v = ''; ui.view = 'list';
+      say('已添加 ' + id + '，保存后生效。');
+      return render({ focus: '[data-act="enter"][data-arg="' + CSS.escape(id) + '"]' });
+    }
+    case 'edit-access': return openLayer({ kind: 'access', route: ui.route, idx: 'a' }, t);
+    case 'del-provider': return openDialog({ type: 'delete', route: ui.route, text: '' }, t);
+    case 'di-override': r.defaultInput = ['text']; return render({ focus: '[data-scope="route"][data-mod="text"]' });
+    case 'di-inherit': delete r.defaultInput; return render({ focus: '[data-act="di-override"]' });
+    case 'migrate': {
+      let n = 0;
+      r.models.forEach(m => { if (m.inputModalities) { if (!m.input) m.input = m.inputModalities.slice(); delete m.inputModalities; n++; } });
+      say('已把 ' + n + ' 个模型的 inputModalities 迁移为 input。');
+      return render({ focus: '[data-act="bulk-toggle"]' });
+    }
+    case 'ds-thinking': {
+      const d = draft.routes[DS_ID];
+      if (d.thinking === 'enabled') { ui.dsPrev = d.reasoningEffort !== 'off' ? d.reasoningEffort : 'high'; d.thinking = 'disabled'; d.reasoningEffort = 'off'; }
+      else { d.thinking = 'enabled'; if (d.reasoningEffort === 'off') d.reasoningEffort = ui.dsPrev || 'high'; }
+      break;
+    }
+    case 'rail': onRail(t.dataset.rail, lvl); break;
+    case 'rail-clear': { const k = t.dataset.clear; railClear(k); return render({ focus: '.rn[data-rail="' + CSS.escape(k) + '"]:not([disabled])' }); }
+    case 'cap-set': {
+      const tg = capTarget(t.dataset.scope, t.dataset.side);
+      tg.obj[tg.key] = String(tg.state.fallback);
+      return render({ focus: '[data-field="cap"][data-scope="' + t.dataset.scope + '"][data-side="' + t.dataset.side + '"]' });
+    }
+    case 'cap-inherit': {
+      const tg = capTarget(t.dataset.scope, t.dataset.side);
+      delete tg.obj[tg.key];
+      return render({ focus: '[data-act="cap-set"][data-scope="' + t.dataset.scope + '"][data-side="' + t.dataset.side + '"]' });
+    }
+    case 'cap-preset': { const tg = capTarget(t.dataset.scope, t.dataset.side); tg.obj[tg.key] = String(arg); break; }
+    case 'adv': ui.showAdv[t.dataset.rail] = !ui.showAdv[t.dataset.rail]; return render({ focus: '[data-rail="' + CSS.escape(t.dataset.rail) + '"][data-lvl="' + (ui.showAdv[t.dataset.rail] ? 'off' : 'low') + '"]' });
+    case 'chip': {
+      const k = t.dataset.mod, sc = t.dataset.scope;
+      if (sc === 'wiz') { const n = toggleIn(w.defaultInput, k, 'wiz'); if (n) w.defaultInput = n; }
+      else if (sc === 'bulk') { const n = toggleIn(ui.bulk.inArr, k, 'bulk'); if (n) ui.bulk.inArr = n; }
+      else if (sc === 'route') { const n = toggleIn(r.defaultInput, k, 'route:' + (ui.edit ? ui.edit.route : ui.route)); if (n) r.defaultInput = n; }
+      else { const m = curModel(); const pi = isPi(draft.routes[ui.edit.route]); const cur = pi ? m.input : (m.inputModalities || ['text']); const n = toggleIn(cur, k, 'model'); if (n) { if (pi) m.input = n; else m.inputModalities = n; } }
+      break;
+    }
+    case 'chip-inh': ui.inputHint = t.dataset.scope === 'route' ? 'route:' + ui.route : t.dataset.scope; ui.inputHintText = '这是继承的值。先点「单独设置」再改。'; break;
+    case 'sel-all': ui.sel[ui.route] = new Set(r.models.map((_, i) => i)); return render({ focus: '[data-act="sel-clear"]' });
+    case 'sel-clear': ui.sel[ui.route] = new Set(); return render({ focus: r.models.length ? '[data-act="sel-all"]' : '[data-act="bulk-toggle"]' });
+    case 'bulk-toggle':
+      ui.menu = null; ui.edit = null; ui.inputHint = null; ui.bulk = newBulk(ui.route);
+      return render({ focus: '.layer[data-layer="bulk"] input[data-field="bulk-scope"]:checked' });
+    case 'bulk-close': return closeBulk();
+    case 'bulk-preset': ui.bulk[t.dataset.side + 'Raw'] = String(arg); break;
+    case 'bulk-apply': if (applyBulk()) return closeBulk(); break;
+    case 'row-menu':
+      ui.menu = ui.menu === 'row:' + idx ? null : 'row:' + idx;
+      return render({ focus: ui.menu ? '#row-menu-pop button:not([disabled])' : '[data-act="row-menu"][data-idx="' + idx + '"]', preventScroll: true });
+    case 'row-copy': {
+      // 整行克隆（含容量；缺的键继续缺），不带 _stash
+      const m = clone(r.models[idx]); delete m._stash; m.id = uniqueCopyId(r, r.models[idx].id);
+      r.models.splice(idx + 1, 0, m); ui.sel[ui.route] = new Set(); ui.menu = null;
+      return openLayer({ kind: 'model', route: ui.route, idx: idx + 1 }, app.querySelector('[data-act="add-model"]'), '[data-field="m-id"]');
+    }
+    case 'row-up': case 'row-down': {
+      const j = a === 'row-up' ? idx - 1 : idx + 1;
+      const tmp = r.models[idx]; r.models[idx] = r.models[j]; r.models[j] = tmp;
+      ui.sel[ui.route] = new Set(); ui.menu = null;
+      return render({ focus: '[data-act="row-menu"][data-idx="' + j + '"]' });
+    }
+    case 'row-del': {
+      const [m] = r.models.splice(idx, 1);
+      ui.undo = { route: ui.route, model: m, idx }; ui.sel[ui.route] = new Set(); ui.menu = null;
+      say('已删除 ' + (m.id || '未命名模型') + '。');
+      return render({ focus: '[data-act="undo"]' });
+    }
+    case 'undo': {
+      const u = ui.undo; draft.routes[u.route].models.splice(u.idx, 0, u.model); ui.undo = null; ui.sel[u.route] = new Set();
+      say('已恢复 ' + (u.model.id || '未命名模型') + '。');
+      return render({ focus: '[data-act="edit-model"][data-idx="' + u.idx + '"]' });
+    }
+    case 'edit-model': return openLayer({ kind: 'model', route: ui.route, idx }, t);
+    case 'add-model': {
+      r.models.push({ id: '', name: '', reasoningEfforts: false });
+      ui.sel[ui.route] = new Set();
+      return openLayer({ kind: 'model', route: ui.route, idx: r.models.length - 1 }, t, '[data-field="m-id"]');
+    }
+    case 'close-layer': return closeLayer();
+    case 'm-override': { const m = curModel(); m.input = resolvedInput(r, m).v.slice(); return render({ focus: '[data-scope="model"][data-mod="text"]' }); }
+    case 'm-inherit': delete curModel().input; return render({ focus: '[data-act="m-override"]' });
+    case 'm-nothink': {
+      const m = curModel(); const eff = m.reasoningEfforts;
+      if (eff && typeof eff === 'object') { m._stash = eff; m.reasoningEfforts = false; }
+      else { m.reasoningEfforts = m._stash || {}; delete m._stash; }
+      break;
+    }
+    case 'spell-same': curModel().reasoningEfforts[lvl] = lvl; return render({ focus: '[data-field="spell"][data-lvl="' + lvl + '"]' });
+    case 'spell-null': {
+      const eff = curModel().reasoningEfforts;
+      if (eff[lvl] === null) { eff[lvl] = lvl; return render({ focus: '[data-field="spell"][data-lvl="' + lvl + '"]' }); }
+      eff[lvl] = null; break;
+    }
+    case 'preview':
+      if (ui.view === 'preview') { ui.view = ui.prev.view; ui.route = ui.prev.route; return render({ focus: '[data-act="preview"]' }); }
+      ui.prev = { view: ui.view, route: ui.route }; ui.edit = null; ui.bulk = null; ui.menu = null; ui.view = 'preview';
+      return render({ focus: '[data-act="close-preview"]' });
+    case 'close-preview': ui.view = ui.prev.view; ui.route = ui.prev.route; return render({ focus: '[data-act="preview"]' });
+    case 'discard': return openDialog({ type: 'discard' }, t);
+    case 'save':
+      if (ui.wizard) return openDialog({ type: 'save-wiz' }, t);
+      return doSave();
+    case 'conflict-reload': return openDialog({ type: 'reload' }, t);
+    case 'conflict-keep': ui.conflictKept = true; say('草稿已保留。解除冲突前，保存仍会失败。'); return render({ focus: '[data-act="conflict-reload"]' });
+    case 'dlg-cancel': return closeDialog();
+    case 'dlg-ok': {
+      const d = ui.dialog;
+      ui.dialog = null;
+      if (d.type === 'delete') {
+        delete draft.routes[d.route]; delete secrets[d.route]; delete ui.sel[d.route];
+        ui.view = 'list'; ui.route = null; ui.edit = null; ui.bulk = null;
+        say('已删除提供方 ' + d.route + '，保存后生效。');
+        return render({ focus: '[data-act="add-provider"]' });
+      }
+      if (d.type === 'discard') {
+        draft = clone(base); Object.keys(secrets).forEach(k => delete secrets[k]);
+        ui.edit = null; ui.bulk = null; ui.undo = null; ui.sel = {};
+        if (ui.view === 'detail' && !draft.routes[ui.route]) { ui.view = 'list'; ui.route = null; }
+        say('已放弃未保存的更改。');
+        return render({ focus: '[data-act="preview"]' });
+      }
+      if (d.type === 'reload') {
+        base = mockInitial(); draft = clone(base); revision += 1;
+        Object.keys(secrets).forEach(k => delete secrets[k]);
+        ui.conflictArmed = false; ui.conflictShown = false; ui.conflictKept = false; ui.edit = null; ui.bulk = null; ui.undo = null; ui.sel = {}; ui.wizard = null;
+        ui.view = 'list'; ui.route = null; syncDebug();
+        say('已重新加载最新配置（revision ' + revision + '）。');
+        return render({ focus: '[data-act="add-provider"]' });
+      }
+      if (d.type === 'wiz-cancel') return exitWizard();
+      return closeDialog();
+    }
+    default: return;
+  }
+  render();
+});
+
+/* ================= 输入 ================= */
+function onField(el) {
+  const f = el.dataset.field;
+  if (!f) return;
+  const v = el.type === 'checkbox' ? el.checked : el.value;
+  const idx = el.dataset.idx != null ? Number(el.dataset.idx) : null;
+  const w = ui.wizard;
+  const rset = (obj, k, val) => { if (val === '' || val == null) delete obj[k]; else obj[k] = val; };
+  switch (f) {
+    case 'selall': { const r = curRoute(); ui.sel[ui.route] = v ? new Set(r.models.map((_, i) => i)) : new Set(); break; }
+    case 'sel': { const s = ui.sel[ui.route] || (ui.sel[ui.route] = new Set()); if (v) s.add(idx); else s.delete(idx); break; }
+    case 'bulk-scope': ui.bulk.scope = v; break;
+    // 切回「不修改」时丢弃这组的层内草稿
+    case 'bulk-in': { const b = ui.bulk; b.inMode = v; ui.inputHint = null; if (v === 'none') b.inArr = ['text']; break; }
+    case 'bulk-th': { const b = ui.bulk; b.th = v; if (v === 'none') { b.thSel = []; delete ui.showAdv.bulk; } break; }
+    case 'bulk-cw': case 'bulk-mt': { const b = ui.bulk, k = f.slice(5); b[k] = v; if (v === 'none') b[k + 'Raw'] = ''; break; }
+    case 'bulk-copy': {
+      const b = ui.bulk; b.copy = v; b.src = null;
+      if (v === 'copy') { b.inMode = 'none'; b.inArr = ['text']; b.th = 'none'; b.thSel = []; b.cw = 'none'; b.cwRaw = ''; b.mt = 'none'; b.mtRaw = ''; ui.inputHint = null; }
+      break;
+    }
+    case 'bulk-src': ui.bulk.src = Number(v); break;
+    case 'bulk-cap': ui.bulk[el.dataset.side + 'Raw'] = v; break;
+    case 'm-id': curModel().id = v; break;
+    case 'm-name': curModel().name = v; break;
+    case 'cap': {
+      // 输入过程中保留原文；清空（含纯空白）= 恢复继承，删键
+      const tg = capTarget(el.dataset.scope, el.dataset.side);
+      if (String(v).trim() === '') delete tg.obj[tg.key]; else tg.obj[tg.key] = v;
+      break;
+    }
+    case 'spell': curModel().reasoningEfforts[el.dataset.lvl] = v; break;
+    case 'a-name': rset(curRoute(), 'displayName', v); break;
+    case 'a-api': curRoute().api = v; break;
+    case 'a-url': rset(curRoute(), 'baseURL', String(v).trim() === '' ? '' : v); break;
+    case 'a-env': curRoute().apiKeyEnv = v; break;
+    case 'a-secret': if (v) secrets[ui.edit.route] = v; else delete secrets[ui.edit.route]; break;
+    case 'a-hk': case 'a-hv': curRoute().headers[idx][f === 'a-hk' ? 'k' : 'v'] = v; break;
+    case 'w-api': w.api = v; break;
+    case 'w-id': w.id = v; if (!w.envTouched) w.env = v.trim() ? deriveEnv(v.trim()) : ''; break;
+    case 'w-ack': w.ack = v; break;
+    case 'w-name': w.displayName = v; break;
+    case 'w-url': w.baseURL = v; break;
+    case 'w-env': w.env = v; w.envTouched = true; break;
+    case 'w-secret': wizSecret.v = v; break;
+    case 'w-hk': case 'w-hv': w.headers[idx][f === 'w-hk' ? 'k' : 'v'] = v; break;
+    case 'w-model': w.models[idx] = v; break;
+    case 'w-pick': { const id = el.value; w.picks = w.picks.filter(x => x !== id); if (el.checked) w.picks.push(id); break; }
+    case 'del-confirm': ui.dialog.text = v; break;
+    default: return;
+  }
+  render();
+}
+// 容量框失焦时规范化成十进制整数字符串；格式错误保持原文
+let pointerDown = false, pendingRender = false;
+document.addEventListener('pointerdown', () => { pointerDown = true; }, true);
+document.addEventListener('pointerup', () => {
+  pointerDown = false;
+  if (pendingRender) setTimeout(() => { if (pendingRender) { pendingRender = false; render(); } }, 0);
+}, true);
+app.addEventListener('focusout', (e) => {
+  const el = e.target;
+  if (rendering || !el.isConnected || el.dataset.field !== 'cap' || el.disabled) return;
+  const tg = capTarget(el.dataset.scope, el.dataset.side);
+  const p = parseCap(el.value);
+  if (p === undefined) delete tg.obj[tg.key];
+  else if (p !== null) tg.obj[tg.key] = String(p);
+  else return;
+  // 鼠标按下期间不重建 DOM，避免吞掉这次点击；由随后的 click/pointerup 渲染
+  if (pointerDown) { pendingRender = true; return; }
+  render({ focusKey: e.relatedTarget ? fkey(e.relatedTarget) : null });
+});
+app.addEventListener('input', (e) => { const el = e.target; if (el.type !== 'checkbox' && el.type !== 'radio' && el.tagName !== 'SELECT') onField(el); });
+app.addEventListener('change', (e) => { const el = e.target; if (el.type === 'checkbox' || el.type === 'radio' || el.tagName === 'SELECT') onField(el); });
+// 请求头在 access 层的增删
+app.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act="a-hadd"],[data-act="a-hdel"]');
+  if (!t || t.disabled) return;
+  const r = curRoute();
+  if (t.dataset.act === 'a-hadd') { (r.headers || (r.headers = [])).push({ k: '', v: '' }); render({ focus: '[data-field="a-hk"][data-idx="' + (r.headers.length - 1) + '"]' }); }
+  else { r.headers.splice(Number(t.dataset.idx), 1); if (!r.headers.length) delete r.headers; render({ focus: '[data-act="a-hadd"]' }); }
+});
+
+/* ================= 键盘 ================= */
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (e.key === 'Escape') {
+    if (ui.dialog) { e.preventDefault(); return closeDialog(); }
+    if (ui.menu) { e.preventDefault(); return closeMenu(); }
+    if (ui.edit) { e.preventDefault(); return closeLayer(); }
+    if (ui.bulk) { e.preventDefault(); return closeBulk(); }
+    if (ui.view === 'preview') { e.preventDefault(); ui.view = ui.prev.view; ui.route = ui.prev.route; return render({ focus: '[data-act="preview"]' }); }
+    if (ui.view === 'wizard') { e.preventDefault(); const b = app.querySelector('[data-act="wiz-cancel"]'); if (b) b.click(); return; }
+    return;
+  }
+  if (e.key === 'Tab' && ui.dialog) {
+    const f = [...app.querySelectorAll('.dialog input:not([disabled]), .dialog button:not([disabled])')];
+    if (!f.length) return;
+    const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+    else if (i === -1) { e.preventDefault(); f[0].focus(); }
+    return;
+  }
+  if (t.classList && t.classList.contains('rn') && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) {
+    e.preventDefault();
+    const wrap = t.closest('.rail-wrap');
+    const nodes = [...wrap.querySelectorAll('.rn:not([disabled])')];
+    if (!nodes.length) return;
+    let i = nodes.indexOf(t);
+    if (e.key === 'Home') i = 0; else if (e.key === 'End') i = nodes.length - 1;
+    else i = (i + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1) + nodes.length) % nodes.length;
+    const n = nodes[i];
+    if (wrap.dataset.mode === 'multi') {
+      // 多选：方向键只移动焦点，Space 切换
+      nodes.forEach(x => { x.tabIndex = -1; });
+      n.tabIndex = 0; n.focus();
+      return;
+    }
+    // radiogroup：方向键移动焦点并同时选中
+    railSelect(n.dataset.rail, n.dataset.lvl);
+    return render({ focus: '.rn[data-rail="' + CSS.escape(n.dataset.rail) + '"][data-lvl="' + n.dataset.lvl + '"]' });
+  }
+  // 行菜单：方向键在可用项间循环（跳过禁用项），Home/End 到首尾；Tab/Shift+Tab 关闭且不激活
+  if (ui.menu && t.closest && t.closest('#row-menu-pop')) {
+    if (e.key === 'Tab') { e.preventDefault(); return closeMenu(); }
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+      e.preventDefault();
+      const items = [...t.closest('#row-menu-pop').querySelectorAll('[role="menuitem"]:not([disabled])')];
+      if (!items.length) return;
+      let i = items.indexOf(t);
+      if (e.key === 'Home') i = 0; else if (e.key === 'End') i = items.length - 1;
+      else i = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[i].focus({ preventScroll: true });
+    }
+  }
+});
+// 行菜单打开时：主区滚动或窗口 resize → 关闭并回焦「···」
+app.addEventListener('scroll', (e) => {
+  if (!ui.menu || rendering || menuScrollTop == null) return;
+  const main = app.querySelector(':scope > .scroll');
+  if (e.target !== main || Math.abs(main.scrollTop - menuScrollTop) < 1) return;
+  closeMenu();
+}, true);
+window.addEventListener('resize', () => { if (ui.menu) closeMenu(); });
+
+/* ================= 导航 + 调试条 ================= */
+document.querySelector('.modal').addEventListener('click', (e) => {
+  const n = e.target.closest('[data-nav]');
+  if (!n) return;
+  if (n.dataset.nav === 'close') say('原型里不能关闭设置。');
+  else if (n.dataset.nav !== '模型能力') say('原型只做了模型能力。');
+  render();
+});
+const mq = window.matchMedia('(prefers-color-scheme: dark)');
+let themeManual = null;
+const dbg = (k) => document.querySelector('[data-dbg="' + k + '"]');
+function applyTheme() {
+  const dark = themeManual === null ? mq.matches : themeManual;
+  document.body.toggleAttribute('data-ds-dark-theme', dark);
+  const b = dbg('theme');
+  b.setAttribute('aria-pressed', String(dark));
+  b.textContent = (dark ? '暗色' : '亮色') + (themeManual === null ? '（跟随系统）' : '（手动）');
+}
+if (mq.addEventListener) mq.addEventListener('change', () => { if (themeManual === null) applyTheme(); });
+function syncDebug() {
+  dbg('conflict').setAttribute('aria-pressed', String(ui.conflictArmed));
+  dbg('readonly').setAttribute('aria-pressed', String(ui.readonly));
+  dbg('loading').setAttribute('aria-pressed', String(ui.loading));
+}
+document.querySelector('.debugbar').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-dbg]');
+  if (!b) return;
+  const note = document.getElementById('dbg-note');
+  switch (b.dataset.dbg) {
+    case 'theme': themeManual = !document.body.hasAttribute('data-ds-dark-theme'); applyTheme(); return;
+    case 'conflict': ui.conflictArmed = true; note.textContent = '下一次保存会遇到冲突。'; break;
+    case 'unconflict': ui.conflictArmed = false; ui.conflictShown = false; ui.conflictKept = false; note.textContent = '已解除冲突。'; break;
+    case 'readonly': ui.readonly = !ui.readonly; ui.menu = null; ui.dialog = null; ui.bulk = null; note.textContent = ''; break;
+    case 'loading': ui.loading = !ui.loading; ui.menu = null; ui.dialog = null; ui.bulk = null; note.textContent = ''; break;
+    case 'empty':
+      customIds(base).forEach(k => delete base.routes[k]);
+      customIds(draft).forEach(k => delete draft.routes[k]);
+      Object.keys(secrets).forEach(k => delete secrets[k]);
+      ui.view = 'list'; ui.route = null; ui.edit = null; ui.bulk = null; ui.wizard = null; ui.undo = null;
+      note.textContent = '已模拟一份没有自定义提供方的配置。刷新页面复位。'; break;
+  }
+  syncDebug(); render();
+});
+applyTheme(); syncDebug(); render();
+</script>
+</body>
+</html>
