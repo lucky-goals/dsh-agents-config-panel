@@ -1,6 +1,12 @@
 /**
- * efforts.ts 用例清单（docs/specs/model-capabilities.tests.md）。
- * W1a：现在应为红，失败原因是桩抛 `not implemented`。
+ * efforts.ts 用例清单。
+ *
+ * R2 增量（docs/specs/model-capabilities.r2.md 第 1.3、5 节）：
+ * - resolvedInput 是 `(p, m) => { v, set }`，不再有 src，也不再有「继承·」前缀；
+ * - pi 取 input，DS 取 inputModalities；缺键返回 `{v:[], set:false}`，
+ *   DS 缺键不再当作 text。
+ *
+ * R2-5 / R2-20 的逐字文案断言在 regression-r2.test.ts 里。
  */
 import { describe, expect, it } from 'vitest';
 import { deriveEnv, effortSummary, hasLegacy, inputSummary, orderedEfforts, resolvedInput } from './efforts';
@@ -36,33 +42,54 @@ describe('efforts.effortSummary', () => {
   });
 });
 
-describe('efforts.resolvedInput / inputSummary', () => {
-  it('Given pi 模型没有 input、路由有 defaultInput=文本+图片 When inputSummary Then 「继承·文本+图片」', () => {
-    const p = draftProvider({ id: 'cc-gateway', defaultInput: ['text', 'image'] });
-    const m = draftModel({ id: 'claude-haiku-4-6' });
-    expect(resolvedInput(p, m)).toEqual({ v: ['text', 'image'], src: 'route' });
-    expect(inputSummary(p, m)).toBe('继承·文本+图片');
-  });
-
-  it('Given pi 模型和路由都没有输入声明 When inputSummary Then 「继承·文本」', () => {
+describe('efforts.resolvedInput / inputSummary（只是「已设置 / 未设置」）', () => {
+  it('Given pi 模型没有 input When inputSummary Then 「未设置」且 set=false', () => {
     const p = draftProvider({ id: 'gpt-gateway' });
     const m = draftModel({ id: 'gpt-6-astra' });
-    expect(resolvedInput(p, m)).toEqual({ v: ['text'], src: 'runtime' });
-    expect(inputSummary(p, m)).toBe('继承·文本');
+    expect(resolvedInput(p, m)).toEqual({ v: [], set: false });
+    expect(inputSummary(p, m)).toBe('未设置');
   });
 
-  it('Given pi 模型自己写了 input When inputSummary Then 直接用模型值，不带继承前缀', () => {
-    const p = draftProvider({ id: 'gpt-gateway', defaultInput: ['text'] });
+  it('Given pi 模型写了 input When inputSummary Then 直接用模型值', () => {
+    const p = draftProvider({ id: 'gpt-gateway' });
     const m = draftModel({ id: 'gpt-6-astra', input: ['image'] });
-    expect(resolvedInput(p, m)).toEqual({ v: ['image'], src: 'model' });
+    expect(resolvedInput(p, m)).toEqual({ v: ['image'], set: true });
     expect(inputSummary(p, m)).toBe('图片');
   });
 
-  it('Given DeepSeek 模型带 inputModalities When inputSummary Then 读 inputModalities，不带继承前缀', () => {
+  it('Given pi 模型没有 input、路由有 defaultInput When inputSummary Then 只看模型（不再有「继承·」）', () => {
+    const p = draftProvider({ id: 'cc-gateway' });
+    const m = draftModel({ id: 'claude-haiku-4-6' });
+    expect(resolvedInput(p, m)).toEqual({ v: [], set: false });
+    expect(inputSummary(p, m)).toBe('未设置');
+    expect(inputSummary(p, m)).not.toContain('继承');
+  });
+
+  it('Given pi 模型的 input 是空数组 When inputSummary Then 「未设置」（空数组的 set 仍为 true）', () => {
+    const p = draftProvider({ id: 'gpt-gateway' });
+    const m = draftModel({ id: 'gpt-6-astra', input: [] });
+    expect(resolvedInput(p, m)).toEqual({ v: [], set: true });
+    expect(inputSummary(p, m)).toBe('未设置');
+  });
+
+  it('Given DeepSeek 模型写 inputModalities When inputSummary Then 读 inputModalities', () => {
     const p = draftProvider({ id: 'deepseek-official', ns: 'llm-deepseek' });
     expect(inputSummary(p, draftModel({ id: 'deepseek-flash', inputModalities: ['text', 'image'] }))).toBe('文本+图片');
     expect(inputSummary(p, draftModel({ id: 'deepseek-v4-pro', inputModalities: ['text'] }))).toBe('文本');
-    expect(inputSummary(p, draftModel({ id: 'deepseek-v4-pro' }))).toBe('文本');
+    expect(inputSummary(p, draftModel({ id: 'deepseek-v4-pro', inputModalities: ['image'] }))).toBe('图片');
+  });
+
+  it('Given DeepSeek 模型没有 inputModalities When inputSummary Then 「未设置」（不再当作 text）', () => {
+    const p = draftProvider({ id: 'deepseek-official', ns: 'llm-deepseek' });
+    const m = draftModel({ id: 'deepseek-v4-pro' });
+    expect(resolvedInput(p, m)).toEqual({ v: [], set: false });
+    expect(inputSummary(p, m)).toBe('未设置');
+  });
+
+  it('Given pi 模型只有旧字段 inputModalities When inputSummary Then 「未设置」（pi 只读 input）', () => {
+    const p = draftProvider({ id: 'gpt-gateway' });
+    const m = draftModel({ id: 'gpt-6-astra', inputModalities: ['text', 'image'] });
+    expect(inputSummary(p, m)).toBe('未设置');
   });
 });
 

@@ -1,9 +1,28 @@
-import { capErrors, modelCap, capFmtBad, routeCap } from './capacity';
+import { capErrors, modelCap, capFmtBad, capBlocks } from './capacity';
 import { deriveEnv } from './efforts';
-import { CAP_FMT_ERR, CAP_FMT_ERR_ROUTE, type DraftState, type FieldErrors, type ModelDraft, type ProviderDraft, type WizardDraft, type AllErrors, ALL_EFFORTS } from './types';
+import { CAP_FMT_ERR, type DraftState, type FieldErrors, type HeaderPair, type ModelDraft, type ProviderDraft, type WizardDraft, type AllErrors, ALL_EFFORTS } from './types';
 
 const has = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 const isPi = (p: ProviderDraft): boolean => p.ns === 'llm-pi-ai';
+const duplicateHeaderNames = (headers: HeaderPair[]): string[] => {
+  const counts = new Map<string, number>();
+  for (const header of headers) {
+    const name = header.k.trim();
+    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const duplicates: string[] = [];
+  for (const header of headers) {
+    const name = header.k.trim();
+    if (!name || (counts.get(name) ?? 0) < 2 || duplicates.includes(name)) continue;
+    duplicates.push(name);
+  }
+  return duplicates;
+};
+
+const duplicateHeadersError = (headers: HeaderPair[]): string => {
+  const names = duplicateHeaderNames(headers);
+  return `请求头名称「${names.join('」、「')}」重复。请改成不同的名称后再保存。`;
+};
 
 export function modelErrors(p: ProviderDraft, m: ModelDraft, idx: number): FieldErrors {
   const e: FieldErrors = {};
@@ -11,7 +30,7 @@ export function modelErrors(p: ProviderDraft, m: ModelDraft, idx: number): Field
   if (!id) e.id = '填写模型 ID';
   else if (/\s/.test(m.id)) e.id = 'ID 不能包含空格';
   else if (p.models.some((other, i) => i < idx && other.id === m.id)) e.id = '这个提供方里已有同名模型';
-  const caps = capErrors(modelCap(p, m), CAP_FMT_ERR, isPi(p));
+  const caps = capErrors(modelCap(m), CAP_FMT_ERR);
   if (caps.cw) e.contextWindow = caps.cw;
   if (caps.mt) e.maxTokens = caps.mt;
   if (isPi(p) && m.reasoningEfforts && typeof m.reasoningEfforts === 'object') {
@@ -27,9 +46,7 @@ export function modelErrors(p: ProviderDraft, m: ModelDraft, idx: number): Field
 export function routeErrors(p: ProviderDraft): FieldErrors {
   const e: FieldErrors = {};
   if (isPi(p) && has(p, 'apiKeyEnv') && !String(p.apiKeyEnv ?? '').trim()) e.apiKeyEnv = '填写密钥环境变量名。';
-  const caps = capErrors(routeCap(p), CAP_FMT_ERR_ROUTE, isPi(p));
-  if (caps.cw) e.defaultContextWindow = caps.cw;
-  if (caps.mt) e[isPi(p) ? 'defaultMaxTokens' : 'maxTokens'] = caps.mt;
+  if (p.headers && duplicateHeaderNames(p.headers).length) e.headers = duplicateHeadersError(p.headers);
   return e;
 }
 
@@ -56,33 +73,21 @@ export function providerIdError(id: string, d: DraftState): string {
   return '';
 }
 
-export function wizardErrors(w: WizardDraft, d: DraftState): { id?: string; models?: string; cw?: string; mt?: string } {
-  const e: { id?: string; models?: string; cw?: string; mt?: string } = {};
+export function wizardErrors(w: WizardDraft, d: DraftState): { id?: string; models?: string; headers?: string } {
+  const e: { id?: string; models?: string; headers?: string } = {};
   const idError = providerIdError(w.id, d);
   if (idError) e.id = idError;
   const trimmed = w.models.map((model) => model.trim());
   const duplicate = trimmed.find((id, i) => id && trimmed.indexOf(id) !== i);
   if (duplicate) e.models = `这个提供方里已有同名模型：${duplicate}`;
   else if (w.models.some((model) => /\s/.test(model.trim()))) e.models = 'ID 不能包含空格';
-  const temporary: ProviderDraft = {
-    id: w.id.trim(),
-    ns: 'llm-pi-ai',
-    models: [],
-    extra: {},
-    credConfigured: false,
-    credWritable: true,
-    defaultContextWindow: w.cap.defaultContextWindow,
-    defaultMaxTokens: w.cap.defaultMaxTokens,
-  };
-  const caps = capErrors(routeCap(temporary), CAP_FMT_ERR_ROUTE, true);
-  if (caps.cw) e.cw = caps.cw;
-  if (caps.mt) e.mt = caps.mt;
+  if (duplicateHeaderNames(w.headers).length) e.headers = duplicateHeadersError(w.headers);
   return e;
 }
 
 export function secretError(value: string): string {
   if (!value) return '';
-  const error = '密钥只能包含 ASCII 非空白字符，不能包含引号或等号。';
+  const error = '密钥只能包含 ASCII 非空白字符，不能写成环境变量赋值，也不能首尾用同一种引号包住。';
   if (!/^[\x21-\x7E]+$/.test(value)) return error;
   if (/^[A-Z][A-Z0-9_]*=[^=]/.test(value)) return error;
   const first = value[0];
@@ -91,14 +96,9 @@ export function secretError(value: string): string {
   return '';
 }
 
-export function modelCapBad(p: ProviderDraft, m: ModelDraft): boolean {
-  const c = modelCap(p, m);
-  return capFmtBad(c.cw) || capFmtBad(c.mt) || Boolean(capErrors(c, CAP_FMT_ERR, isPi(p)).mt && !capFmtBad(c.mt));
-}
-
-export function routeCapBad(p: ProviderDraft): boolean {
-  const c = routeCap(p);
-  return capFmtBad(c.cw) || capFmtBad(c.mt) || Boolean(capErrors(c, CAP_FMT_ERR_ROUTE, isPi(p)).mt && !capFmtBad(c.mt));
+export function modelCapBad(m: ModelDraft): boolean {
+  const c = modelCap(m);
+  return capFmtBad(c.cw) || capFmtBad(c.mt) || capBlocks(c);
 }
 
 export { deriveEnv };

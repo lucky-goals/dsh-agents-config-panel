@@ -3,8 +3,10 @@
  *
  * 这里的 namespace 形状贴近真实结构：
  * - value 是解析后的值（含 schema 默认），user 只放真实覆盖过的键。
- * - pi 的提供方级容量默认值只出现在 value 上，用来验证「value 有默认值但 user 没有时不显式」。
- * - DeepSeek 的 user 为空，列表数据只能来自 value。
+ * - R2：6 个提供方级默认键（pi 的 defaultInput/reasoning/defaultContextWindow/
+ *   defaultMaxTokens，DS 的 defaultContextWindow/maxTokens）都真实存在于用户配置上，
+ *   用来验证它们「只进 known、不进草稿字段、不进 extra、不产生 op」（见 r2.md 第 2 节）。
+ * - DeepSeek 的 user 只放这 2 个默认键，列表数据仍以 value 为准。
  */
 import { vi, type Mock } from 'vitest';
 import type {
@@ -111,7 +113,7 @@ export function piValue(): Record<string, unknown> {
   };
 }
 
-/** llm-pi-ai 的 user 层：只放真实覆盖的字段，不放 schema 默认（defaultContextWindow/defaultMaxTokens/defaultInput） */
+/** llm-pi-ai 的 user 层：真实覆盖过的键。R2 起 6 个默认键都真实存在于用户配置上。 */
 export function piUser(): Record<string, unknown> {
   return {
     providers: {
@@ -119,6 +121,9 @@ export function piUser(): Record<string, unknown> {
         api: 'openai-responses',
         baseURL: 'https://magic-api.up.railway.app/v1',
         apiKeyEnv: 'GPT_GATEWAY_API_KEY',
+        defaultInput: ['text'],
+        defaultContextWindow: 262144,
+        defaultMaxTokens: 32768,
         models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-terra', 'gpt-6-luna'].map(gptModel),
       },
       'cc-gateway': {
@@ -152,8 +157,12 @@ export function dsValue(): Record<string, unknown> {
   };
 }
 
+/** llm-deepseek 的 user 层：只放 2 个默认键 */
 export function dsUser(): Record<string, unknown> {
-  return {};
+  return {
+    defaultContextWindow: 1000000,
+    maxTokens: 256000,
+  };
 }
 
 export function piSlice(revision = 7): NamespaceSlice {
@@ -190,6 +199,51 @@ export function sliceWithExtraProvider(slice: NamespaceSlice, revision: number):
   value.providers = valueProviders;
   const userProviders = (user.providers ?? {}) as Record<string, unknown>;
   userProviders['extra-gateway'] = deepClone(provider);
+  user.providers = userProviders;
+  return { ...slice, value, user, revision };
+}
+
+/* ---------------- 局部改写 helper（R2-11 ~ R2-13 的 keepView 用例） ---------------- */
+
+/** 覆盖某个现有的顶层字段（如 providers / thinking / models），返回新的 slice。 */
+export function sliceWithField(slice: NamespaceSlice, key: string, value: unknown, revision = slice.revision): NamespaceSlice {
+  const value_ = deepClone(slice.value);
+  value_[key] = deepClone(value);
+  return { ...slice, value: value_, revision };
+}
+
+/** 覆盖 pi slice 里某个提供方的原始对象（value 与 user 两层同改）。 */
+export function sliceWithProvider(
+  slice: NamespaceSlice,
+  id: string,
+  raw: Record<string, unknown>,
+  revision = slice.revision,
+): NamespaceSlice {
+  const value = deepClone(slice.value);
+  const user = deepClone(slice.user ?? {});
+  const valueProviders = (value.providers ?? {}) as Record<string, unknown>;
+  const userProviders = (user.providers ?? {}) as Record<string, unknown>;
+  valueProviders[id] = deepClone(raw);
+  userProviders[id] = deepClone(raw);
+  value.providers = valueProviders;
+  user.providers = userProviders;
+  return { ...slice, value, user, revision };
+}
+
+/** 把 pi slice 里某个提供方的 models 整表换掉（value 与 user 两层同改）。 */
+export function sliceWithModels(
+  slice: NamespaceSlice,
+  id: string,
+  models: Array<Record<string, unknown>>,
+  revision = slice.revision,
+): NamespaceSlice {
+  const value = deepClone(slice.value);
+  const user = deepClone(slice.user ?? {});
+  const valueProviders = (value.providers ?? {}) as Record<string, Record<string, unknown>>;
+  const userProviders = (user.providers ?? {}) as Record<string, Record<string, unknown>>;
+  if (valueProviders[id]) valueProviders[id].models = deepClone(models);
+  if (userProviders[id]) userProviders[id].models = deepClone(models);
+  value.providers = valueProviders;
   user.providers = userProviders;
   return { ...slice, value, user, revision };
 }
@@ -244,8 +298,17 @@ export interface FakePortOptions {
    * fake port 就在 resolve 之前同步发出同一个事件，用来复现「回声先到」的时序。
    */
   emitBeforeResolve?: boolean;
+  /**
+   * R2-16 / R2-17 用：mutate 落地之前同步发出的多个 `settings/document-updated` 事件。
+   * 每项是 `[ns, revision]`，按数组顺序发出。真实宿主在 mutate 的 RPC 返回前可能连续
+   * emit 多次（写入回声 + 写入期间的外部改动），store 要在 inFlight 期间把它们逐个收进
+   * pendingEcho。给 `emitBeforeResolve` 发了事件后仍然会发这里的（两者可同时使用）。
+   */
+  emitDuringMutate?: Array<[string, number]>;
   /** 额外塞进 describe().namespaces 的命名空间（如 agent-default-model），默认没有 */
   extraNamespaces?: NamespaceSlice[];
+  /** 覆盖某个 ns 的 returned slice（如把 DS 的 revision 换成别的值），默认用自增后的 slice */
+  mutateResult?: (ns: string, next: NamespaceSlice) => NamespaceSlice;
 }
 
 export interface FakePort {
@@ -290,19 +353,23 @@ export function createFakePort(options: FakePortOptions = {}): FakePort {
 
   const mutateFn = vi.fn(async (ns: string, ops: SettingsOp[], rev: number): Promise<RemoteResult> => {
     const failure = options.fail ? options.fail(ns, ops, rev) : null;
-    if (failure) return { ok: false, error: failure };
+    if (failure) {
+      for (const [eventNs, eventRev] of options.emitDuringMutate ?? []) emitNow('settings/document-updated', eventNs, eventRev);
+      return { ok: false, error: failure };
+    }
     const cur = ns === NS_PI ? state.pi : ns === NS_DS ? state.ds : null;
     if (!cur) return { ok: false, error: { code: 'gateway/bad-request', details: `unknown ns ${ns}` } };
-    const next: NamespaceSlice = {
+    const stored: NamespaceSlice = {
       ...cur,
       value: applyOps(cur.value, ops),
       user: applyOps(cur.user ?? {}, ops),
       revision: cur.revision + 1,
     };
-    if (ns === NS_PI) state.pi = next;
-    else state.ds = next;
-    if (options.emitBeforeResolve) emitNow('settings/document-updated', ns, next.revision);
-    return { ok: true, value: next };
+    if (ns === NS_PI) state.pi = stored;
+    else state.ds = stored;
+    if (options.emitBeforeResolve) emitNow('settings/document-updated', ns, stored.revision);
+    for (const [eventNs, eventRev] of options.emitDuringMutate ?? []) emitNow('settings/document-updated', eventNs, eventRev);
+    return { ok: true, value: options.mutateResult ? options.mutateResult(ns, stored) : stored };
   });
 
   const credDescribeFn = vi.fn(async (refs: string[]) => {
@@ -369,3 +436,4 @@ export function createFakePort(options: FakePortOptions = {}): FakePort {
 }
 
 export { DS_ROUTE_ID, NS_DS, NS_PI };
+export type { NamespaceSlice };

@@ -1,11 +1,3 @@
-/**
- * 批量设置层 (prototype layerBulk): 范围, 输入类型, 思考 (pi-ai), 容量,
- * 从模型复制 (pi-ai), and the pinned summary footer. The dry run is
- * bulkPlan/bulkSummary, the same loop applyBulk uses.
- *
- * The panel draws the layer box; this component renders a scrolling body and
- * the footer inside it.
- */
 import React from 'react';
 import { CAP_PRESETS, NS_PI } from '../types';
 import type { BulkDraft, BulkPlan, McSnapshot, ModelCapabilitiesStore } from '../types';
@@ -19,10 +11,9 @@ import { Banners, Btn, ErrText, Hint, RadioGroup, Section, hintFor } from './sha
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
 export const BULK_NOTE = '只改你动过的项。未动的项保持每个模型现在的值。';
+const COPY_LOCK = '正在从模型复制，这一组已锁定。';
 
-function CapSide({
-  b, plan, side, label, lock, store,
-}: {
+function CapSide({ b, plan, side, label, lock, store }: {
   b: BulkDraft;
   plan: BulkPlan;
   side: 'cw' | 'mt';
@@ -43,7 +34,7 @@ function CapSide({
         label={label}
         value={mode}
         disabled={lock}
-        options={[{ v: 'none', t: '不修改' }, { v: 'set', t: '设置为' }, { v: 'inherit', t: '恢复继承' }]}
+        options={[{ v: 'none', t: '不修改' }, { v: 'set', t: '设置为' }, { v: 'clear', t: '清除' }]}
         onChange={(v) => store.patchBulk((v === 'none' ? { [side]: v, [rawKey]: '' } : { [side]: v }) as Partial<BulkDraft>)}
       />
       {mode === 'set' && (
@@ -74,7 +65,7 @@ function CapSide({
               </button>
             ))}
           </div>
-          {err && (fmt ? <ErrText>{err}</ErrText> : <Hint>{err}</Hint>)}
+          {err && <ErrText>{err}</ErrText>}
         </>
       )}
     </div>
@@ -123,14 +114,14 @@ export function BulkLayer({ snap, store }: ComponentProps): JSX.Element | null {
             options={[
               { v: 'none' as const, t: '不修改' },
               { v: 'set' as const, t: '设置为' },
-              ...(pi ? [{ v: 'inherit' as const, t: '恢复继承' }] : []),
+              { v: 'clear' as const, t: '清除' },
             ]}
             onChange={(v) => store.patchBulk(v === 'none' ? { inMode: v, inArr: ['text'] } : { inMode: v })}
           />
+          {lock && <Hint style={{ margin: 0 }}>{COPY_LOCK}</Hint>}
           {!lock && b.inMode === 'set' && (
             <InputChips
               value={b.inArr}
-              inherited={false}
               label="批量输入类型"
               hint={hintFor(snap, 'bulk')}
               onToggle={(k) => store.toggleInput('bulk', k)}
@@ -147,6 +138,7 @@ export function BulkLayer({ snap, store }: ComponentProps): JSX.Element | null {
               options={[{ v: 'none', t: '不修改' }, { v: 'set', t: '设置档位' }, { v: 'off', t: '不思考' }]}
               onChange={(v) => store.patchBulk(v === 'none' ? { th: v, thSel: [] } : { th: v })}
             />
+            {lock && <Hint style={{ margin: 0 }}>{COPY_LOCK}</Hint>}
             {!lock && b.th === 'set' && (
               <div style={s.field}>
                 <span style={s.label}>支持的档位</span>
@@ -166,6 +158,7 @@ export function BulkLayer({ snap, store }: ComponentProps): JSX.Element | null {
         )}
 
         <Section title="容量">
+          {lock && <Hint style={{ margin: 0 }}>{COPY_LOCK}</Hint>}
           <div style={s.grid2}>
             <CapSide b={b} plan={plan} side="cw" label="上下文窗口" lock={lock} store={store} />
             <CapSide b={b} plan={plan} side="mt" label="最大输出" lock={lock} store={store} />
@@ -184,7 +177,7 @@ export function BulkLayer({ snap, store }: ComponentProps): JSX.Element | null {
             />
             {lock && (
               <>
-                <Hint style={{ margin: 0 }}>复制输入、思考和容量的设置状态。源在继承时，目标也改为继承，不复制回退值，也不复制 ID 和名称。</Hint>
+                <Hint style={{ margin: 0 }}>复制输入、思考和容量。源未设置的项会在目标上清除；不复制 ID 和名称。</Hint>
                 <SourcePicker b={b} names={p.models.map((m) => m.id || '未命名模型')} store={store} />
                 {plan.errs.src && (b.src == null
                   ? <Hint style={{ margin: 0 }}>{plan.errs.src}</Hint>

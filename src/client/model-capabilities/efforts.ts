@@ -31,23 +31,18 @@ export function effortSummary(eff: ReasoningEfforts | undefined): string {
   return runs.join('、');
 }
 
-export function resolvedInput(p: ProviderDraft, m: ModelDraft): { v: InputModality[]; src: 'model' | 'route' | 'runtime' } {
-  if (isPi(p)) {
-    if (m.input) return { v: m.input.slice(), src: 'model' };
-    if (p.defaultInput) return { v: p.defaultInput.slice(), src: 'route' };
-    return { v: ['text'], src: 'runtime' };
-  }
-  return { v: (m.inputModalities ?? ['text']).slice(), src: 'runtime' };
+export function resolvedInput(p: ProviderDraft, m: ModelDraft): { v: InputModality[]; set: boolean } {
+  const value = isPi(p) ? m.input : m.inputModalities;
+  return value ? { v: value.slice(), set: true } : { v: [], set: false };
 }
 
 function inputText(v: readonly InputModality[]): string {
+  if (!v.length) return '未设置';
   return v.includes('image') ? (v.includes('text') ? '文本+图片' : '图片') : '文本';
 }
 
 export function inputSummary(p: ProviderDraft, m: ModelDraft): string {
-  if (!isPi(p)) return inputText(m.inputModalities ?? ['text']);
-  if (m.input) return inputText(m.input);
-  return `继承·${inputText(resolvedInput(p, m).v)}`;
+  return inputText(resolvedInput(p, m).v);
 }
 
 export function hasLegacy(p: ProviderDraft): boolean {

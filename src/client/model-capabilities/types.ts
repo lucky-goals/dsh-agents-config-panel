@@ -13,18 +13,13 @@ export const API_OPTS = [
   { v: 'openai-responses', t: 'OpenAI Responses' },
   { v: 'anthropic-messages', t: 'Anthropic Messages' },
 ] as const;
-export const RUNTIME_CW = 262144;
-export const RUNTIME_MT = 32768;
-export const DS_RUNTIME_CW = 1000000;
-export const DS_RUNTIME_MT = 256000;
 export const CAP_PRESETS: readonly (readonly [string, number])[] = [
   ['128K', 128000],
   ['200K', 200000],
   ['272K', 272000],
   ['1M', 1000000],
 ];
-export const CAP_FMT_ERR = '填正整数，可用 K 或 M 后缀（如 128K、1M），或留空以恢复继承。';
-export const CAP_FMT_ERR_ROUTE = '填正整数，可用 K 或 M 后缀（如 128K、1M），或留空以使用运行默认。';
+export const CAP_FMT_ERR = '填正整数，可用 K 或 M 后缀（如 128K、1M）。';
 export const LIST_DESC = '补充官方「模型」页：输入类型、思考档位、上下文窗口和最大输出，以及提供方和模型的增删改。';
 
 export interface HeaderPair { k: string; v: string }
@@ -48,13 +43,8 @@ export interface ProviderDraft {
   displayName?: string;
   baseURL?: string;
   apiKeyEnv?: string;
-  defaultInput?: InputModality[];
-  reasoning?: string;
   thinking?: 'enabled' | 'disabled';
   reasoningEffort?: string;
-  defaultContextWindow?: string;
-  defaultMaxTokens?: string;
-  maxTokens?: string;
   headers?: HeaderPair[];
   models: ModelDraft[];
   extra: Record<string, unknown>;
@@ -63,13 +53,10 @@ export interface ProviderDraft {
 }
 export interface DraftState { providers: Record<string, ProviderDraft> }
 export interface CapSide {
-  key: string;
+  key: 'contextWindow' | 'maxTokens';
   explicit: boolean;
   raw: string;
   parsed: number | null | undefined;
-  fallback: number;
-  src: 'runtime' | 'route';
-  eff: number;
 }
 export interface CapState { cw: CapSide; mt: CapSide }
 export interface SettingsOpSet { op: 'set'; path: string[]; value: unknown }
@@ -91,8 +78,7 @@ export interface FieldErrors {
   apiKeyEnv?: string;
   baseURL?: string;
   secret?: string;
-  defaultContextWindow?: string;
-  defaultMaxTokens?: string;
+  headers?: string;
   [spell: `spell_${string}`]: string | undefined;
 }
 export interface AllErrors { [routeId: string]: { route: FieldErrors; models: FieldErrors[] } }
@@ -108,13 +94,13 @@ export interface BulkDraft {
   route: string;
   scope: 'sel' | 'all';
   selSnapshot: number[];
-  inMode: 'none' | 'set' | 'inherit';
+  inMode: 'none' | 'set' | 'clear';
   inArr: InputModality[];
   th: 'none' | 'set' | 'off';
   thSel: Effort[];
-  cw: 'none' | 'set' | 'inherit';
+  cw: 'none' | 'set' | 'clear';
   cwRaw: string;
-  mt: 'none' | 'set' | 'inherit';
+  mt: 'none' | 'set' | 'clear';
   mtRaw: string;
   copy: 'none' | 'copy';
   src: number | null;
@@ -148,9 +134,6 @@ export interface WizardDraft {
   headersOpen: boolean;
   headers: HeaderPair[];
   models: string[];
-  defaultInput: InputModality[] | null;
-  reasoning: string | null;
-  cap: { defaultContextWindow?: string; defaultMaxTokens?: string };
 }
 export type DialogState =
   | { type: 'delete'; route: string; text: string }
@@ -214,7 +197,6 @@ export interface ModelCapabilitiesPort {
   on(event: 'credentials/reference-updated', cb: (ref: string) => void): () => void;
   on(event: 'llm/adapters-updated' | 'connection/reset', cb: () => void): () => void;
 }
-export type CapScope = 'm' | 'r' | 'w';
 export type CapSideKey = 'cw' | 'mt';
 /** Rail keys: r:<route>:detail, r:<route>:access, wiz, m:<route>:<idx>, ds, bulk. */
 export interface ModelCapabilitiesStore {
@@ -248,17 +230,15 @@ export interface ModelCapabilitiesStore {
   setDeleteConfirm(text: string): void;
   setModelId(value: string): void;
   setModelName(value: string): void;
-  toggleInput(scope: 'model' | 'route' | 'wizard' | 'bulk', modality: InputModality): void;
-  setInputOverride(scope: 'model' | 'route' | 'wizard', explicit: boolean): void;
+  toggleInput(scope: 'model' | 'bulk', modality: InputModality): void;
+  clearInput(): void;
   toggleNoThink(): void;
   toggleDsThinking(): void;
   railToggle(key: string, level: string): void;
-  railClear(key: string): void;
   setSpell(level: string, value: string | null): void;
-  setCap(scope: CapScope, side: CapSideKey, raw: string): void;
-  capInherit(scope: CapScope, side: CapSideKey): void;
-  capExplicit(scope: CapScope, side: CapSideKey): void;
-  blurCap(scope: CapScope, side: CapSideKey): void;
+  setCap(side: CapSideKey, raw: string): void;
+  blurCap(side: CapSideKey): void;
+  capClear(side: CapSideKey): void;
   setAccessField(field: 'displayName' | 'api' | 'baseURL' | 'apiKeyEnv', value: string): void;
   setSecret(value: string): void;
   setWizardSecret(value: string): void;

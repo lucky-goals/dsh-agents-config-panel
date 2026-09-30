@@ -11,15 +11,10 @@ import {
 } from './ops';
 import {
   DS_ROUTE_ID,
-  DS_RUNTIME_CW,
-  DS_RUNTIME_MT,
   NS_DS,
   NS_PI,
-  RUNTIME_CW,
-  RUNTIME_MT,
   type AllErrors,
   type BulkDraft,
-  type CapScope,
   type CapSideKey,
   type CredOp,
   type DescribeResult,
@@ -108,9 +103,6 @@ function defaultWizard(): WizardDraft {
     headersOpen: false,
     headers: [],
     models: [''],
-    defaultInput: null,
-    reasoning: null,
-    cap: {},
   };
 }
 
@@ -130,7 +122,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   let pendingCred: CredOp[] = [];
   let ownWrites = new Map<string, number>();
   let inFlight = new Set<string>();
-  let pendingEcho = new Map<string, number>();
+  let pendingEcho = new Map<string, number[]>();
   let listeners = new Set<() => void>();
   let disposers: Array<() => void> = [];
   let loaded = false;
@@ -186,7 +178,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     const next = clone(draft);
     fn(next);
     draft = next;
-    publish({ ...patch, ui: { ...snapshot.ui, saved: false } });
+    publish({ ...patch, ui: { ...snapshot.ui, ...(patch?.ui ?? {}), saved: false } });
   };
 
   const setUi = (fn: (ui: McUi) => void, patch?: Partial<McSnapshot>) => {
@@ -229,7 +221,13 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     credentials = { ...credentials, ...next };
   };
 
-  const resetFromDescribe = async (result?: DescribeResult) => {
+  const resetFromDescribe = async (result?: DescribeResult, options: { keepView?: boolean } = {}) => {
+    const keepView = options.keepView === true;
+    const previousUi = clone(snapshot.ui);
+    const previousEdit = previousUi.edit;
+    const previousEditModelId = previousEdit?.kind === 'model'
+      ? draft.providers[previousEdit.route]?.models[previousEdit.idx]?.id ?? null
+      : null;
     const described = result ?? await port.describe();
     const pi = described.namespaces.find((slice) => slice.ns === NS_PI) ?? null;
     const ds = described.namespaces.find((slice) => slice.ns === NS_DS) ?? null;
@@ -242,7 +240,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     base = clone(draft);
     pendingCred = [];
     secrets = {};
-    wizardSecret = '';
+    if (!keepView) wizardSecret = '';
     ownWrites.clear();
     inFlight.clear();
     pendingEcho.clear();
@@ -259,13 +257,52 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         defaultModel = { provider: value.provider, model: value.model, effort: typeof value.reasoningEffort === 'string' ? value.reasoningEffort : '' };
       }
     }
+    let nextUi: McUi = {
+      ...previousUi,
+      loading: false,
+      readonly,
+      saving: false,
+      saved: false,
+      conflict: 'hidden',
+      status: '',
+      view: 'list',
+      route: null,
+      edit: null,
+      bulk: null,
+      dialog: null,
+      menuIdx: null,
+    };
+    if (keepView) {
+      nextUi = { ...previousUi, loading: false, readonly, saving: false, saved: false, conflict: 'hidden', status: '', menuIdx: null };
+      const route = nextUi.route ? draft.providers[nextUi.route] : undefined;
+      if (nextUi.route && !route) {
+        nextUi = { ...nextUi, view: 'list', route: null, edit: null, bulk: null, menuIdx: null };
+      } else {
+        if (nextUi.route && route) {
+          const selected = nextUi.sel[nextUi.route] ?? [];
+          const validSelected = selected.filter((idx) => idx >= 0 && idx < route.models.length);
+          if (validSelected.length !== selected.length) nextUi.sel = { ...nextUi.sel, [nextUi.route]: validSelected };
+        }
+        if (nextUi.edit?.kind === 'model') {
+          const editProvider = draft.providers[nextUi.edit.route];
+          const editModel = editProvider?.models[nextUi.edit.idx];
+          if (!editModel || (previousEditModelId !== null && editModel.id !== previousEditModelId)) {
+            nextUi = { ...nextUi, edit: null };
+            if (!editModel) nextUi.undo = null;
+          }
+        } else if (nextUi.edit && !draft.providers[nextUi.edit.route]) {
+          nextUi = { ...nextUi, edit: null };
+        }
+        if (nextUi.bulk && !draft.providers[nextUi.bulk.route]) nextUi = { ...nextUi, bulk: null };
+      }
+    }
     publish({
       loadError: null,
       saveError: null,
       defaultModel,
       hasPi: !!pi,
       hasDs: !!ds,
-      ui: { ...snapshot.ui, loading: false, readonly, saving: false, saved: false, conflict: 'hidden', status: '', view: 'list', route: null, edit: null, bulk: null, dialog: null },
+      ui: nextUi,
     });
     loaded = true;
   };
@@ -275,7 +312,9 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     disposers = [
       port.on('settings/document-updated', (ns, revision) => {
         if (inFlight.has(ns)) {
-          pendingEcho.set(ns, revision);
+          const echoes = pendingEcho.get(ns) ?? [];
+          echoes.push(revision);
+          pendingEcho.set(ns, echoes);
           return;
         }
         const own = ownWrites.get(ns);
@@ -290,7 +329,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         }
         void (async () => {
           try {
-            await resetFromDescribe();
+            await resetFromDescribe(undefined, { keepView: true });
           } catch (error) {
             publish({ loadError: String(error), ui: { ...snapshot.ui, loading: false } });
           }
@@ -326,11 +365,11 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       }),
       port.on('llm/adapters-updated', () => {
         if (snapshot.ops.dirty) publish({ saveError: '这次没写入。你的修改还在。远端配置已经变化。', ui: { ...snapshot.ui, conflict: 'shown' } });
-        else void resetFromDescribe().catch((error) => publish({ loadError: String(error) }));
+        else void resetFromDescribe(undefined, { keepView: true }).catch((error) => publish({ loadError: String(error) }));
       }),
       port.on('connection/reset', () => {
         if (snapshot.ops.dirty) publish({ saveError: '连接已重置。你的修改还在。', ui: { ...snapshot.ui, conflict: 'shown' } });
-        else void resetFromDescribe().catch((error) => publish({ loadError: String(error) }));
+        else void resetFromDescribe(undefined, { keepView: true }).catch((error) => publish({ loadError: String(error) }));
       }),
     ];
   };
@@ -382,6 +421,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       : Object.keys(draft.providers).some((id) => !base.providers[id] && draft.providers[id].ns === NS_PI);
     publish({ saveError: null, ui: { ...snapshot.ui, saving: true, saved: false, status: '' } });
     let settingsFailed = false;
+    const writtenNamespaces: string[] = [];
     try {
       const settings: Array<[string, SettingsOp[], number | null]> = [
         [NS_PI, before.pi, revisions.pi],
@@ -392,27 +432,43 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         inFlight.add(ns);
         try {
           const result = await port.mutate(ns, ops, revision);
+          const echoes = pendingEcho.get(ns) ?? [];
+          pendingEcho.set(ns, []);
+          inFlight.delete(ns);
           if (!result.ok) {
             settingsFailed = true;
-            const msg = remoteErrorText(result.error);
             const conflict = result.error.code === 'settings/conflict' || result.error.code === 'revision/conflict';
-            publish({ saveError: `${msg}。这次没写入。你的修改还在。`, ui: { ...snapshot.ui, saving: false, conflict: conflict ? 'shown' : snapshot.ui.conflict } });
+            const msg = conflict ? '这份配置刚刚被别处改过' : remoteErrorText(result.error);
+            const stale = !conflict && echoes.length > 0;
+            let saveError: string;
+            if (writtenNamespaces.length) {
+              saveError = `${msg}。${writtenNamespaces.join('、')} 已写入。${ns} 这次没写入。你的修改还在。`;
+              if (stale) saveError += '远端配置已经变化。';
+            } else if (conflict) {
+              saveError = `${msg}，这次没写入。你的修改还在。`;
+            } else {
+              saveError = `${msg}。这次没写入。你的修改还在。${stale ? '远端配置已经变化。' : ''}`;
+            }
+            publish({ saveError, ui: { ...snapshot.ui, saving: false, status: '', conflict: conflict || stale ? 'shown' : snapshot.ui.conflict } });
             break;
           }
-          const echoedRevision = pendingEcho.get(ns);
-          pendingEcho.delete(ns);
-          ownWrites.set(ns, result.value.revision);
-          if (echoedRevision !== undefined && echoedRevision !== result.value.revision) {
+          const foreignEcho = echoes.filter((echo) => echo !== result.value.revision);
+          if (foreignEcho.length) {
             settingsFailed = true;
-            publish({ saveError: '这次没写入。你的修改还在。远端配置已经变化。', ui: { ...snapshot.ui, saving: false, conflict: 'shown' } });
+            ownWrites.set(ns, result.value.revision);
+            const written = writtenNamespaces.length ? `${writtenNamespaces.join('、')} 已写入。` : '';
+            publish({
+              saveError: `${written}配置已写入，但写入期间远端又被改过。你的修改还在。`,
+              ui: { ...snapshot.ui, saving: false, status: '', conflict: 'shown' },
+            });
             break;
           }
-          pendingCred = mergedCredOps(before.cred);
+          ownWrites.set(ns, result.value.revision);
           updateNamespace(ns, result.value);
+          writtenNamespaces.push(ns);
           publish({});
         } finally {
           inFlight.delete(ns);
-          pendingEcho.delete(ns);
         }
       }
       if (settingsFailed) return;
@@ -446,7 +502,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         publish({});
       }
       pendingCred = [];
-      const ui = { ...snapshot.ui, saving: false, saved: true, status: addedProvider ? `${NS_PI} 已写入。` : '已保存。' };
+      const ui = { ...snapshot.ui, saving: false, saved: true, status: addedProvider ? `${NS_PI} 已写入。` : '已保存。', sel: {}, undo: null };
       publish({ saveError: null, ui: { ...ui, previewReturn: null } });
       if (snapshot.ui.bulk) publish({ ui: { ...ui, bulk: null } });
     } catch (error) {
@@ -491,7 +547,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     const w = snapshot.ui.wizard;
     if (!w) return;
     const e = wizardErrors(w, draft);
-    if (e.id || e.models || e.cw || e.mt || !w.api || !w.ack || secretError(wizardSecret)) return;
+    if (e.id || e.models || e.headers || !w.api || !w.ack || secretError(wizardSecret)) return;
     const id = w.id.trim();
     const provider: ProviderDraft = {
       id,
@@ -500,10 +556,6 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       displayName: w.displayName.trim() || undefined,
       baseURL: w.baseURL.trim() || undefined,
       apiKeyEnv: w.env.trim() || deriveEnv(id),
-      defaultInput: w.defaultInput ? [...w.defaultInput] : undefined,
-      reasoning: w.reasoning || undefined,
-      defaultContextWindow: w.cap.defaultContextWindow,
-      defaultMaxTokens: w.cap.defaultMaxTokens,
       headers: w.headers.filter((h) => h.k.trim()).map((h) => ({ k: h.k.trim(), v: h.v })),
       models: w.models.filter((idValue) => idValue.trim()).map((modelId) => ({ id: modelId.trim(), reasoningEfforts: false, extra: {} })),
       extra: {},
@@ -566,78 +618,42 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   const setModelId = (value: string) => setModelField('id', value);
   const setModelName = (value: string) => setModelField('name', value);
 
-  const inputInheritedText = '这是继承的值。先点「单独设置」再改。';
-  const showInputHint = (key: string) => setUi((ui) => { ui.inputHint = { key, text: inputInheritedText }; });
+  const inputHintText = '至少保留一种输入类型';
+  const showInputHint = (key: 'model' | 'bulk') => setUi((ui) => { ui.inputHint = { key, text: inputHintText }; });
 
-  const toggleInput = (scope: 'model' | 'route' | 'wizard' | 'bulk', modality: InputModality) => {
-    if (scope === 'wizard') {
-      const w = snapshot.ui.wizard;
-      if (!w) return;
-      if (!w.defaultInput) return showInputHint('wiz');
-      const arr = [...w.defaultInput];
-      const next = arr.includes(modality) ? arr.filter((item) => item !== modality) : [...arr, modality];
-      wizardPatch({ defaultInput: next.length ? next : ['text'] });
-      return;
-    }
+  const toggleInput = (scope: 'model' | 'bulk', modality: InputModality) => {
     if (scope === 'bulk') {
       const b = snapshot.ui.bulk;
       if (!b) return;
-      const next = b.inArr.includes(modality) ? b.inArr.filter((item) => item !== modality) : [...b.inArr, modality];
-      setUi((ui) => { if (ui.bulk) ui.bulk = { ...ui.bulk, inArr: next.length ? next : ['text'], }; ui.inputHint = null; });
+      const current = b.inArr;
+      if (current.length === 1 && current[0] === modality) return showInputHint('bulk');
+      const next = current.includes(modality) ? current.filter((item) => item !== modality) : [...current, modality];
+      setUi((ui) => { if (ui.bulk) ui.bulk = { ...ui.bulk, inArr: next }; ui.inputHint = null; });
       return;
     }
-    const route = snapshot.ui.route;
-    if (!route) return;
-    if (scope === 'route') {
-      const p = draft.providers[route];
-      if (!p) return;
-      if (!p.defaultInput) return showInputHint(`route:${route}`);
-    } else {
-      const active = activeModel();
-      if (!active || !active.model.input) return showInputHint('model');
-    }
-    mutateDraft((next) => {
-      const p = next.providers[route];
-      if (scope === 'route') {
-        const arr = [...(p.defaultInput ?? ['text'])];
-        const value = arr.includes(modality) ? arr.filter((item) => item !== modality) : [...arr, modality];
-        p.defaultInput = value.length ? value : ['text'];
-      } else {
-        const edit = snapshot.ui.edit;
-        if (!edit || edit.kind !== 'model') return;
-        const m = p.models[edit.idx];
-        const arr = [...(m.input ?? ['text'])];
-        const value = arr.includes(modality) ? arr.filter((item) => item !== modality) : [...arr, modality];
-        m.input = value.length ? value : ['text'];
-      }
+    const active = activeModel();
+    if (!active) return;
+    const current = isPi(active.provider) ? active.model.input : active.model.inputModalities;
+    if (current?.length === 1 && current[0] === modality) return showInputHint('model');
+    const next = current ? (current.includes(modality) ? current.filter((item) => item !== modality) : [...current, modality]) : [modality];
+    mutateDraft((draftNext) => {
+      const p = draftNext.providers[active.route];
+      const m = p.models[active.idx];
+      if (isPi(p)) m.input = next;
+      else m.inputModalities = next;
     }, { ui: { ...snapshot.ui, inputHint: null } });
   };
-  const setInputOverride = (scope: 'model' | 'route' | 'wizard', explicit: boolean) => {
-    if (scope === 'wizard') {
-      if (explicit && !snapshot.ui.wizard?.defaultInput) {
-        wizardPatch({ defaultInput: ['text'] });
-        setUi((ui) => { ui.inputHint = null; });
-      } else if (!explicit) {
-        wizardPatch({ defaultInput: null });
-        setUi((ui) => { ui.inputHint = null; });
-      }
-      return;
-    }
-    const route = snapshot.ui.route;
-    if (!route) return;
+
+  const clearInput = () => {
+    const active = activeModel();
+    if (!active) return;
     mutateDraft((next) => {
-      const p = next.providers[route];
-      if (scope === 'route') {
-        if (explicit && !p.defaultInput) p.defaultInput = ['text'];
-        if (!explicit) delete p.defaultInput;
-      } else {
-        const edit = snapshot.ui.edit;
-        if (!edit || edit.kind !== 'model') return;
-        if (explicit && !p.models[edit.idx].input) p.models[edit.idx].input = ['text'];
-        if (!explicit) delete p.models[edit.idx].input;
-      }
+      const m = next.providers[active.route].models[active.idx];
+      if (isPi(active.provider)) delete m.input;
+      else delete m.inputModalities;
     }, { ui: { ...snapshot.ui, inputHint: null } });
   };
+
 
   const toggleNoThink = () => {
     const active = activeModel();
@@ -687,10 +703,6 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       });
       return;
     }
-    if (key === 'wiz') {
-      wizardPatch({ reasoning: snapshot.ui.wizard?.reasoning === level ? null : level });
-      return;
-    }
     if (key.startsWith('m:')) {
       const [, route, indexText] = key.split(':');
       const idx = Number(indexText);
@@ -704,21 +716,6 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         else map[effort] = level;
         m.reasoningEfforts = Object.keys(map).length ? map : false;
       });
-      return;
-    }
-    if (key.startsWith('r:')) {
-      const route = key.split(':')[1];
-      mutateDraft((next) => {
-        const p = next.providers[route];
-        if (p) p.reasoning = p.reasoning === level ? undefined : level;
-      });
-    }
-  };
-  const railClear = (key: string) => {
-    if (key === 'wiz') return wizardPatch({ reasoning: null });
-    if (key.startsWith('r:')) {
-      const route = key.split(':')[1];
-      mutateDraft((next) => { if (next.providers[route]) delete next.providers[route].reasoning; });
     }
   };
   const setSpell = (level: string, value: string | null) => {
@@ -732,91 +729,30 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     });
   };
 
-  const getCapTarget = (scope: CapScope): { obj: Record<string, unknown>; key: string } | null => {
-    if (scope === 'w') {
-      const w = snapshot.ui.wizard;
-      if (!w) return null;
-      return { obj: w.cap as Record<string, unknown>, key: '' };
-    }
-    const active = scope === 'm' ? activeModel() : null;
-    if (active) return { obj: active.model as unknown as Record<string, unknown>, key: '' };
-    const route = snapshot.ui.route;
-    const p = route ? draft.providers[route] : undefined;
-    return p ? { obj: p as unknown as Record<string, unknown>, key: '' } : null;
-  };
-  const capFieldName = (scope: CapScope, side: CapSideKey, obj?: Record<string, unknown>): string => {
-    if (scope === 'm') return side === 'cw' ? 'contextWindow' : 'maxTokens';
-    if (scope === 'w') return side === 'cw' ? 'defaultContextWindow' : 'defaultMaxTokens';
-    return side === 'cw' ? 'defaultContextWindow' : obj && obj.ns === NS_DS ? 'maxTokens' : 'defaultMaxTokens';
-  };
-  const setCap = (scope: CapScope, side: CapSideKey, raw: string) => {
-    if (scope === 'w') {
-      const w = snapshot.ui.wizard;
-      if (!w) return;
-      wizardPatch({ cap: { ...w.cap, [capFieldName(scope, side)]: raw } });
-      return;
-    }
-    const active = scope === 'm' ? activeModel() : null;
-    const route = snapshot.ui.route;
-    if (!route) return;
+  const capFieldName = (side: CapSideKey): 'contextWindow' | 'maxTokens' => side === 'cw' ? 'contextWindow' : 'maxTokens';
+  const setCap = (side: CapSideKey, raw: string) => {
+    const active = activeModel();
+    if (!active) return;
     mutateDraft((next) => {
-      const p = next.providers[route];
-      const target = scope === 'm' && active ? p.models[active.idx] as unknown as Record<string, unknown> : p as unknown as Record<string, unknown>;
-      target[capFieldName(scope, side, p as unknown as Record<string, unknown>)] = raw;
+      next.providers[active.route].models[active.idx][capFieldName(side)] = raw;
     });
   };
-  const capInherit = (scope: CapScope, side: CapSideKey) => {
-    if (scope === 'w') {
-      const w = snapshot.ui.wizard;
-      if (w) { const cap = { ...w.cap }; delete cap[capFieldName(scope, side) as keyof typeof cap]; wizardPatch({ cap }); }
-      return;
-    }
-    const active = scope === 'm' ? activeModel() : null;
-    const route = snapshot.ui.route;
-    if (!route) return;
-    mutateDraft((next) => {
-      const p = next.providers[route];
-      const target = scope === 'm' && active ? p.models[active.idx] as unknown as Record<string, unknown> : p as unknown as Record<string, unknown>;
-      delete target[capFieldName(scope, side, p as unknown as Record<string, unknown>)];
-    });
+  const capClear = (side: CapSideKey) => {
+    const active = activeModel();
+    if (!active) return;
+    mutateDraft((next) => { delete next.providers[active.route].models[active.idx][capFieldName(side)]; });
   };
-  const capExplicit = (scope: CapScope, side: CapSideKey) => {
-    if (scope === 'w') return;
-    const active = scope === 'm' ? activeModel() : null;
-    const route = snapshot.ui.route;
-    if (!route) return;
-    const p = draft.providers[route];
-    const source = scope === 'm' && active ? active.model : p;
-    const field = capFieldName(scope, side, p as unknown as Record<string, unknown>);
-    const raw = source[field as keyof typeof source];
-    if (raw !== undefined) return;
-    const fallback = side === 'cw'
-      ? (p.ns === NS_DS ? DS_RUNTIME_CW : RUNTIME_CW)
-      : (p.ns === NS_DS ? DS_RUNTIME_MT : RUNTIME_MT);
-    setCap(scope, side, String(fallback));
+  const blurCap = (side: CapSideKey) => {
+    const active = activeModel();
+    if (!active) return;
+    const key = capFieldName(side);
+    const raw = active.model[key];
+    if (raw === undefined) return;
+    if (!raw.trim()) return capClear(side);
+    const parsed = parseCap(raw);
+    if (typeof parsed === 'number') setCap(side, String(parsed));
   };
-  const blurCap = (scope: CapScope, side: CapSideKey) => {
-    if (scope === 'w') {
-      const w = snapshot.ui.wizard;
-      if (!w) return;
-      const key = capFieldName(scope, side);
-      const raw = w.cap[key as keyof typeof w.cap];
-      if (raw === undefined || raw === '') return;
-      const parsed = parseCap(raw);
-      if (typeof parsed === 'number') wizardPatch({ cap: { ...w.cap, [key]: String(parsed) } });
-      return;
-    }
-    const route = snapshot.ui.route;
-    if (!route) return;
-    const p = draft.providers[route];
-    const active = scope === 'm' ? activeModel() : null;
-    const target = scope === 'm' && active ? active.model : p;
-    const key = capFieldName(scope, side, p as unknown as Record<string, unknown>);
-    const raw = target[key as keyof typeof target];
-    if (raw === undefined || raw === '') return;
-    const parsed = parseCap(String(raw));
-    if (typeof parsed === 'number') setCap(scope, side, String(parsed));
-  };
+
 
   const setAccessField = (field: 'displayName' | 'api' | 'baseURL' | 'apiKeyEnv', value: string) => {
     const edit = snapshot.ui.edit;
@@ -900,7 +836,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     const route = snapshot.ui.route;
     const p = route ? draft.providers[route] : undefined;
     if (!route || !p) return;
-    setUi((ui) => { ui.bulk = newBulk(route, ui.sel[route] ?? []); ui.edit = null; });
+    setUi((ui) => { ui.bulk = newBulk(route, ui.sel[route] ?? []); ui.menuIdx = null; });
   };
   const closeBulk = () => setUi((ui) => { ui.bulk = null; });
   const patchBulk = (patch: Partial<BulkDraft>) => setUi((ui) => { if (ui.bulk) ui.bulk = { ...ui.bulk, ...clone(patch) }; });
@@ -994,16 +930,14 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     setModelId,
     setModelName,
     toggleInput,
-    setInputOverride,
+    clearInput,
     toggleNoThink,
     toggleDsThinking,
     railToggle,
-    railClear,
     setSpell,
     setCap,
-    capInherit,
-    capExplicit,
     blurCap,
+    capClear,
     setAccessField,
     setSecret,
     setWizardSecret,

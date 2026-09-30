@@ -1,26 +1,51 @@
 /**
- * ops.ts 用例清单（docs/specs/model-capabilities.tests.md）。
- * W1a：现在应为红，失败原因是桩抛 `not implemented`。
+ * ops.ts 用例清单。
+ *
+ * R2 增量（docs/specs/model-capabilities.r2.md 第 1.3、2、5 节）：
+ * - 6 个默认键既不在草稿里也不在 extra 里；
+ * - 新建的对象里没有这 6 个键；
+ * - 重复请求头不产生 set（routeErrors 已经阻断，fieldOut 返回 SKIP）；
+ * - routeWrite 没有 length。
  */
 import { describe, expect, it } from 'vitest';
-import { computeOps, draftFromNamespaces, modelOut, modelWrite, previewText, remoteErrorText } from './ops';
+import { computeOps, draftFromNamespaces, fieldOut, modelOut, modelWrite, previewText, remoteErrorText, SKIP } from './ops';
 import type { DraftState, OpsResult, SettingsOp, SettingsOpSet } from './types';
 import { DS_ROUTE_ID } from './types';
 import { deepClone, defaultCreds, draftModel, draftProvider, dsSlice, piSlice } from './test-fixtures';
+
+/** 6 个提供方级默认键：只进 known，不进草稿字段，不进 extra（pi 4 个 + DS 2 个）。 */
+const DEFAULT_KEYS_PI = ['defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens'] as const;
+const DEFAULT_KEYS_DS = ['defaultContextWindow', 'maxTokens'] as const;
 
 function modelOpValue(op: SettingsOp | undefined): Array<Record<string, unknown>> {
   if (!op || op.op !== 'set') throw new Error('expected a set op');
   return op.value as Array<Record<string, unknown>>;
 }
 
+function hasLength(value: object): boolean {
+  return Object.prototype.hasOwnProperty.call(value, 'length');
+}
+
 describe('ops.draftFromNamespaces / computeOps', () => {
-  it('Given value 里有 defaultContextWindow=262144、user 没有、不做编辑 When computeOps Then 两侧 op 为空且 dirty=0', () => {
+  it('Given value 与 user 都带 6 个默认键、不做编辑 When computeOps Then 两侧 op 为空且 dirty=0', () => {
     const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
-    // value 上的 schema 默认不等于用户覆盖：不放进草稿
-    expect(base.providers['gpt-gateway'].defaultContextWindow).toBeUndefined();
-    expect(base.providers['gpt-gateway'].defaultMaxTokens).toBeUndefined();
-    // user 上有 defaultInput，是真实覆盖
-    expect(base.providers['cc-gateway'].defaultInput).toEqual(['text']);
+
+    // 6 个默认键既不在草稿字段里，也不在 extra 里
+    const gpt = base.providers['gpt-gateway'];
+    const cc = base.providers['cc-gateway'];
+    const ds = base.providers[DS_ROUTE_ID];
+    for (const key of DEFAULT_KEYS_PI) {
+      expect((gpt as unknown as Record<string, unknown>)[key], `gpt-gateway.${key}`).toBeUndefined();
+      expect(gpt.extra[key], `gpt-gateway.extra.${key}`).toBeUndefined();
+      expect((cc as unknown as Record<string, unknown>)[key], `cc-gateway.${key}`).toBeUndefined();
+      expect(cc.extra[key], `cc-gateway.extra.${key}`).toBeUndefined();
+    }
+    for (const key of DEFAULT_KEYS_DS) {
+      expect((ds as unknown as Record<string, unknown>)[key], `deepseek.${key}`).toBeUndefined();
+      expect(ds.extra[key], `deepseek.extra.${key}`).toBeUndefined();
+    }
+    // DS 的 models 也来自 value，不当成默认键丢弃
+    expect(ds.models.map((m) => m.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro']);
 
     const ops = computeOps(base, deepClone(base), {});
     expect(ops.pi).toEqual([]);
@@ -124,6 +149,10 @@ describe('ops.computeOps（提供方增删与 DeepSeek path）', () => {
     expect(value.baseURL).toBe('https://mine.invalid');
     expect(value.apiKeyEnv).toBe('MINE_API_KEY');
     expect(value.models).toEqual([{ id: 'gpt-6-nova', name: 'Nova', contextWindow: 128000 }]);
+    // 新建的对象里没有 6 个默认键
+    for (const key of [...DEFAULT_KEYS_PI, ...DEFAULT_KEYS_DS]) {
+      expect(value).not.toHaveProperty(key);
+    }
     expect(ops.dirty).toBe(1);
   });
 
@@ -158,6 +187,54 @@ describe('ops.computeOps（提供方增删与 DeepSeek path）', () => {
     expect(ops.ds).toEqual([{ op: 'set', path: ['thinking'], value: 'disabled' }]);
     expect(JSON.stringify(ops)).not.toContain(DS_ROUTE_ID);
     expect(JSON.stringify(ops)).not.toContain('providers');
+  });
+
+  it('Given 草稿里请求头名 trim 后重复 When computeOps Then 不产出 headers set，但计入 dirty', () => {
+    const models = [draftModel({ id: 'm' })];
+    const base: DraftState = {
+      providers: {
+        'gpt-gateway': draftProvider({
+          id: 'gpt-gateway',
+          api: 'openai-responses',
+          apiKeyEnv: 'GPT_GATEWAY_API_KEY',
+          headers: [{ k: 'X-A', v: '1' }],
+          models,
+        }),
+      },
+    };
+
+    const keep = computeOps(base, deepClone(base), {});
+    expect(keep.pi.every((op) => !op.path.includes('headers'))).toBe(true);
+    expect(keep.dirty).toBe(0);
+
+    const draft = deepClone(base);
+    draft.providers['gpt-gateway'].headers = [{ k: 'X-A', v: '1' }, { k: ' X-A ', v: '3' }];
+
+    const ops = computeOps(base, draft, {});
+    expect(ops.pi.every((op) => !op.path.includes('headers'))).toBe(true);
+    expect(ops.dirty).toBe(1);
+  });
+
+  it('Given routeWrite 的产物 When 检查 Then 没有不可枚举的 length', () => {
+    const base: DraftState = { providers: {} };
+    const draft: DraftState = {
+      providers: { mine: draftProvider({ id: 'mine', api: 'openai-completions', models: [draftModel({ id: 'm' })] }) },
+    };
+    const op = computeOps(base, draft, {}).pi[0];
+    if (!op || op.op !== 'set') throw new Error('新建提供方没有 set op');
+    const value = op.value as Record<string, unknown>;
+    expect(hasLength(value)).toBe(false);
+    expect(Object.getOwnPropertyNames(value)).not.toContain('length');
+  });
+
+  it('Given 请求头名只有大小写不同 When fieldOut Then 返回字典（不被阻断）', () => {
+    const p = draftProvider({ id: 'gpt-gateway', headers: [{ k: 'X-A', v: '1' }, { k: 'x-a', v: '2' }] });
+    expect(fieldOut(p, 'headers')).toEqual({ 'X-A': '1', 'x-a': '2' });
+  });
+
+  it('Given 请求头名 trim 后重复 When fieldOut Then 返回 SKIP', () => {
+    const p = draftProvider({ id: 'gpt-gateway', headers: [{ k: 'X-A', v: '1' }, { k: ' X-A ', v: '2' }] });
+    expect(fieldOut(p, 'headers')).toBe(SKIP);
   });
 });
 

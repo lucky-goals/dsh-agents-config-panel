@@ -1,15 +1,7 @@
-/**
- * 模型编辑层 (prototype layerModel). Rendered by the panel inside the
- * absolutely positioned layer box; this component only draws the content.
- *
- * pi-ai: ID / 名称, 输入类型 (inherit or explicit), 思考 (不思考 switch, multi
- * rail, 线上拼写 per selected level) and 容量.
- * DeepSeek: read-only ID / 名称, inputModalities chips, 容量.
- */
 import React from 'react';
 import { ALL_EFFORTS, NS_PI } from '../types';
 import type { FieldErrors, McSnapshot, ModelCapabilitiesStore, ModelDraft, ProviderDraft, ReasoningMap } from '../types';
-import { capWarn, modelCap } from '../capacity';
+import { modelCap } from '../capacity';
 import { resolvedInput } from '../efforts';
 import { idWarn } from '../validate';
 import { mcStyles as s, sx } from '../styles';
@@ -20,20 +12,18 @@ import { Banners, Btn, ErrText, Hint, Section, Switch, TextField, hintFor } from
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
-const inputText = (arr: readonly string[]) => (arr.includes('image') ? (arr.includes('text') ? '文本+图片' : '图片') : '文本');
 /** Known levels in canonical order (display only; the draft keeps its own order). */
 const levelsOf = (eff: ReasoningMap) => ALL_EFFORTS.filter((l) => Object.prototype.hasOwnProperty.call(eff, l));
 
 function CapSection({ p, m, e, store, disabled }: { p: ProviderDraft; m: ModelDraft; e: FieldErrors; store: ModelCapabilitiesStore; disabled: boolean }) {
   const pi = p.ns === NS_PI;
-  const c = modelCap(p, m);
+  const c = modelCap(m);
   return (
     <Section title="容量">
-      <Hint style={{ margin: 0 }}>缺省顺序：模型显式，然后已安装目录，然后提供方默认。这里看不到目录；继承中的数字是提供方默认或运行默认。</Hint>
       <Hint style={{ margin: 0 }}>上下文窗口是请求与响应合计的 token 上限。</Hint>
       <div style={s.grid2}>
-        <CapacityField scope="m" side="cw" cap={c.cw} pi={pi} disabled={disabled} store={store} error={e.contextWindow} />
-        <CapacityField scope="m" side="mt" cap={c.mt} pi={pi} disabled={disabled} store={store} error={e.maxTokens} warn={capWarn(c, pi)} />
+        <CapacityField side="cw" cap={c.cw} pi={pi} disabled={disabled} store={store} error={e.contextWindow} />
+        <CapacityField side="mt" cap={c.mt} pi={pi} disabled={disabled} store={store} error={e.maxTokens} />
       </div>
     </Section>
   );
@@ -50,6 +40,7 @@ export function ModelEditLayer({ snap, store }: ComponentProps): JSX.Element | n
   const e: FieldErrors = snap.errors[edit.route]?.models?.[edit.idx] ?? {};
   const lock = ui.readonly || ui.saving;
   const chipHint = hintFor(snap, 'model');
+  const ri = resolvedInput(p, m);
 
   const head = (
     <>
@@ -67,12 +58,12 @@ export function ModelEditLayer({ snap, store }: ComponentProps): JSX.Element | n
           <TextField label="模型 ID" value={m.id} disabled mono />
           <TextField label="名称" value={m.name || m.id} disabled hint="官方模型的 ID 和名称由提供方给出。" />
         </div>
-        <Section title="输入类型">
+        <Section title="输入类型" titleAddon={ri.set ? <Btn kind="link" disabled={lock} onClick={() => store.clearInput()}>清除</Btn> : undefined}>
           <InputChips
-            value={m.inputModalities ?? ['text']}
-            inherited={false}
+            value={ri.v}
             disabled={lock}
             label="输入类型"
+            note={ri.set ? undefined : '未设置'}
             hint={chipHint}
             onToggle={(k) => store.toggleInput('model', k)}
           />
@@ -84,7 +75,6 @@ export function ModelEditLayer({ snap, store }: ComponentProps): JSX.Element | n
   }
 
   const w = idWarn(m.id);
-  const ri = resolvedInput(p, m);
   const eff = m.reasoningEfforts;
   const isObj = !!eff && typeof eff === 'object';
   const levels = isObj ? levelsOf(eff as ReasoningMap) : [];
@@ -114,27 +104,17 @@ export function ModelEditLayer({ snap, store }: ComponentProps): JSX.Element | n
         />
       </div>
 
-      <Section
-        title="输入类型"
-        titleAddon={m.input
-          ? <Btn kind="link" disabled={lock} onClick={() => store.setInputOverride('model', false)}>恢复继承</Btn>
-          : <Btn kind="link" disabled={lock} onClick={() => store.setInputOverride('model', true)}>单独设置</Btn>}
-      >
-        {!m.input && (
-          <p style={sx(s.desc, { fontSize: '13px' })}>
-            未单独设置。当前继承·{inputText(ri.v)}（{ri.src === 'route' ? '提供方默认' : '运行默认'}）。若目录里另有声明，运行时目录优先。
-          </p>
-        )}
+      <Section title="输入类型" titleAddon={ri.set ? <Btn kind="link" disabled={lock} onClick={() => store.clearInput()}>清除</Btn> : undefined}>
         <InputChips
           value={ri.v}
-          inherited={!m.input}
           disabled={lock}
           label="输入类型"
+          note={ri.set ? undefined : '未设置'}
           hint={chipHint}
           onToggle={(k) => store.toggleInput('model', k)}
         />
         {m.inputModalities && (
-          <Hint>{`配置里还有旧字段 inputModalities: [${m.inputModalities.join(', ')}]，自定义提供方会忽略它，不参与上面的继承。可在模型列表上方「迁移为 input」。`}</Hint>
+          <Hint>{`配置里还有旧字段 inputModalities: [${m.inputModalities.join(', ')}]，自定义提供方会忽略它。可在模型列表上方「迁移为 input」。`}</Hint>
         )}
       </Section>
 
@@ -146,14 +126,12 @@ export function ModelEditLayer({ snap, store }: ComponentProps): JSX.Element | n
             railKey={railKey}
             mode="multi"
             selected={levels}
-            defaultLevel={p.reasoning}
             disabled={!isObj || lock}
             showAdv={!!ui.showAdv[railKey]}
             onToggle={(l) => store.railToggle(railKey, l)}
             onToggleAdv={() => store.toggleAdv(railKey)}
             label="支持的思考档位"
           />
-          {p.reasoning && <Hint>「默认」是提供方的路由默认档。</Hint>}
           {e.efforts && <ErrText>{e.efforts}</ErrText>}
         </div>
         {isObj && levels.length > 0 && (

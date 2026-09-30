@@ -37,8 +37,7 @@ function knownProvider(snap: McSnapshot, provider: string): boolean {
 
 function summaryOf(p: ProviderDraft): string {
   if (p.ns !== NS_PI) return `${p.thinking === 'enabled' ? `思考 ${p.reasoningEffort ?? ''}` : '不思考'} · 不可删除`;
-  const def = p.reasoning ? `默认档 ${p.reasoning}` : '未设默认档';
-  return hasLegacy(p) ? `有旧字段 · ${def}` : def;
+  return hasLegacy(p) ? '有旧字段' : '已配置';
 }
 
 /** Header row shared with the loading state. */

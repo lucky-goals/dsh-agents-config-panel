@@ -6,25 +6,17 @@
  * cover the draft providers only, not the wizard draft.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { API_OPTS, NS_PI } from '../types';
-import type { McSnapshot, ModelCapabilitiesStore, ProviderDraft, WizardDraft } from '../types';
+import { API_OPTS } from '../types';
+import type { McSnapshot, ModelCapabilitiesStore, WizardDraft } from '../types';
 import { deriveEnv } from '../efforts';
 import { idWarn, secretError, wizardErrors } from '../validate';
 import { mcStyles as s, sx } from '../styles';
 import { HeaderRows } from './EditAccessLayer';
-import { EffortRail, SingleRailHint } from './EffortRail';
-import { InputChips } from './InputChips';
-import { RouteCapFields } from './ProviderDetail';
-import { Btn, ErrText, Hint, Section, TextField, hintFor } from './shared';
+import { Btn, ErrText, Hint, Section, TextField } from './shared';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
 const STEPS = ['协议', '接入', '模型'] as const;
-
-/** The wizard's capacity pair seen as a pi-ai provider, so routeCap applies unchanged. */
-function wizardRoute(w: WizardDraft): ProviderDraft {
-  return { id: w.id.trim(), ns: NS_PI, models: [], extra: {}, credConfigured: false, credWritable: true, ...w.cap };
-}
 
 function Steps({ step }: { step: number }) {
   return (
@@ -147,6 +139,7 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
           </Btn>
         </div>
         {w.headersOpen && <Section><HeaderRows list={w.headers} scope="wizard" store={store} disabled={lock} /></Section>}
+         {e.headers && <ErrText>{e.headers}</ErrText>}
         <div style={s.row}>
           <Btn disabled={lock} onClick={() => store.wizardPrev()}>上一步</Btn>
           <span style={s.spacer} />
@@ -156,7 +149,6 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
     );
   } else {
     const mw = w.models.map((x) => idWarn(x.trim())).find(Boolean);
-    const route = wizardRoute(w);
     content = (
       <>
         <Section title="模型" titleAddon={<Btn disabled={lock} onClick={() => patch({ models: [...w.models, ''] })}>手动添加</Btn>}>
@@ -177,45 +169,10 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
           {!w.models.length && <Hint style={{ margin: 0 }}>可以先不加模型，之后在提供方详情里添加。</Hint>}
           {e.models && <ErrText>{e.models}</ErrText>}
         </Section>
-        <Section title="默认值">
-          <div style={s.field}>
-            <span style={s.label}>默认输入</span>
-            <div style={s.rowWrap}>
-              <InputChips
-                value={w.defaultInput ?? ['text']}
-                inherited={!w.defaultInput}
-                disabled={lock}
-                label="默认输入"
-                onToggle={(k) => store.toggleInput('wizard', k)}
-              />
-              {w.defaultInput
-                ? <Btn kind="link" disabled={lock} onClick={() => store.setInputOverride('wizard', false)}>恢复继承</Btn>
-                : <Btn kind="link" disabled={lock} onClick={() => store.setInputOverride('wizard', true)}>单独设置</Btn>}
-            </div>
-            {hintFor(snap, 'wizard') && <p role="status" style={s.errtext}>{hintFor(snap, 'wizard')}</p>}
-          </div>
-          <div style={s.field}>
-            <span style={s.label}>路由默认档</span>
-            <EffortRail
-              railKey="wiz"
-              mode="single"
-              selected={w.reasoning ? [w.reasoning] : []}
-              defaultLevel={w.reasoning ?? undefined}
-              disabled={lock}
-              showAdv={!!snap.ui.showAdv.wiz}
-              onToggle={(l) => store.railToggle('wiz', l)}
-              onClear={() => store.railClear('wiz')}
-              onToggleAdv={() => store.toggleAdv('wiz')}
-              label="路由默认档"
-            />
-            <SingleRailHint has={!!w.reasoning} />
-          </div>
-          <RouteCapFields p={route} scope="w" store={store} disabled={lock} errors={{ cw: e.cw, mt: e.mt }} />
-        </Section>
         <div style={s.row}>
           <Btn disabled={lock} onClick={() => store.wizardPrev()}>上一步</Btn>
           <span style={s.spacer} />
-          <Btn kind="primary" disabled={!!(e.models || e.cw || e.mt) || lock} onClick={() => store.wizardFinish()}>完成添加</Btn>
+          <Btn kind="primary" disabled={!!(e.models || e.headers) || lock} onClick={() => store.wizardFinish()}>完成添加</Btn>
         </div>
       </>
     );

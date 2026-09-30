@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { NS_PI } from '../types';
-import type { CapSide, McSnapshot, ModelCapabilitiesStore, ModelDraft, ProviderDraft } from '../types';
+import type { CapSide, McSnapshot, ModelCapabilitiesStore, ModelDraft } from '../types';
 import { abbr, modelCap } from '../capacity';
 import { effortSummary, inputSummary } from '../efforts';
 import { mcStyles as s, sx } from '../styles';
@@ -14,19 +14,18 @@ import { Btn } from './shared';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
-const srcName = (src: CapSide['src']) => (src === 'route' ? '提供方默认' : '运行默认');
 const cut = (t: string) => (t.length > 8 ? `${t.slice(0, 8)}…` : t);
 
-function CapCell({ p, m }: { p: ProviderDraft; m: ModelDraft }) {
-  const c = modelCap(p, m);
+function CapCell({ m }: { m: ModelDraft }) {
+  const c = modelCap(m);
   const side = (x: CapSide) => (x.parsed === null
     ? <span style={s.capBad}>{cut(x.raw)}</span>
-    : x.explicit && typeof x.parsed === 'number'
+    : typeof x.parsed === 'number'
       ? <span style={s.capEx}>{abbr(x.parsed)}</span>
-      : <span style={s.capInh}>继承</span>);
+      : <span style={s.capInh}>未设置</span>);
   const desc = (name: string, x: CapSide) => (x.parsed === null
     ? `${name}格式错误：${x.raw}`
-    : x.explicit ? `${name} ${x.parsed}，模型显式` : `${name}继承，生效 ${x.eff}（${srcName(x.src)}）`);
+    : typeof x.parsed === 'number' ? `${name} ${x.parsed}` : `${name}未设置`);
   const lbl = `${desc('上下文', c.cw)}；${desc('输出', c.mt)}`;
   return (
     <span role="cell" aria-label={lbl} title={lbl} style={s.capCell}>
@@ -82,7 +81,7 @@ export function ModelTable({ snap, store }: ComponentProps): JSX.Element | null 
         {p.models.map((m, i) => {
           const errs = modelErrs[i] ?? {};
           const firstErr = Object.values(errs).find(Boolean);
-          const think = pi ? effortSummary(m.reasoningEfforts) : `跟随提供方：${p.reasoningEffort ?? ''}`;
+          const think = pi ? effortSummary(m.reasoningEfforts) : (p.reasoningEffort ? `思考 ${p.reasoningEffort}` : '不思考');
           const name = m.id || '未命名模型';
           return (
             <div role="row" key={i} style={s.mrow}>
@@ -112,7 +111,7 @@ export function ModelTable({ snap, store }: ComponentProps): JSX.Element | null 
                 )}
               </span>
               <span role="cell" title={think} style={s.think}>{think}</span>
-              <CapCell p={p} m={m} />
+              <CapCell m={m} />
               <span role="cell" style={s.ops}>
                 <Btn aria-label={`编辑 ${m.id}`} onClick={() => store.openModel(i)}>编辑</Btn>
                 {pi && (

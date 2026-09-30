@@ -5,13 +5,15 @@
  *
  * Layout: [关闭] · scrolling main area (banners on top) · edit/bulk layer
  * (absolute, 48px left for the save bar) · save bar · dialog · row menu.
- * A layer makes the main area inert; a dialog makes the main area, the layer
- * and the save bar inert.
+ * A layer makes the main area and the top bar inert; a dialog also makes the
+ * layer and the save bar inert. With a layer and no dialog, Tab cycles through
+ * the layer and the save bar only; after a dialog, focus returns to the layer.
  */
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { McSnapshot, ModelCapabilitiesStore } from './types';
 import { Alert } from '../ui/Alert';
 import { Button } from '../ui/Button';
+import { focusableWithin, nextFocusTarget } from '../ui/focus-trap';
 import { mcStyles as s } from './styles';
 import { AddProviderWizard } from './components/AddProviderWizard';
 import { BulkLayer } from './components/BulkLayer';
@@ -48,6 +50,24 @@ function layerLabel(snap: McSnapshot, layer: Exclude<LayerKind, null>): string {
   if (edit?.kind === 'access') return `编辑接入 ${edit.route}`;
   if (edit?.kind === 'model') return `编辑模型 ${snap.draft.providers[edit.route]?.models[edit.idx]?.id ?? ''}`;
   return '';
+}
+
+/**
+ * Sequential Tab stops of a subtree, as the browser orders them: no roving
+ * tabindex=-1 nodes (EffortRail), and one radio per group (the checked one,
+ * else the first).
+ */
+function tabStops(container: Element): HTMLElement[] {
+  const seen = new Set<string>();
+  const all = focusableWithin(container).filter((el) => el.tabIndex >= 0);
+  return all.filter((el) => {
+    if (!(el instanceof HTMLInputElement) || el.type !== 'radio' || !el.name) return true;
+    const group = all.filter((o) => o instanceof HTMLInputElement && o.type === 'radio' && o.name === el.name) as HTMLInputElement[];
+    const pick = group.find((o) => o.checked) ?? group[0];
+    if (pick !== el || seen.has(el.name)) return false;
+    seen.add(el.name);
+    return true;
+  });
 }
 
 function MainView({ snap, store }: { snap: McSnapshot; store: ModelCapabilitiesStore }) {
@@ -105,6 +125,7 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   const mainRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const topRef = useRef<HTMLDivElement>(null);
 
   const layer = layerOf(snap);
   const dialog = !!ui.dialog;
@@ -112,6 +133,51 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   useInert(mainRef, mainHidden);
   useInert(layerRef, dialog);
   useInert(barRef, dialog);
+  useInert(topRef, mainHidden);
+
+  // Dialog over a layer: remember the layer control that had focus, and give it
+  // back once the dialog is gone. This runs after useInert above has lifted the
+  // layer's inert (the Modal's own focus return would hit an inert node).
+  const lastInLayer = useRef<HTMLElement | null>(null);
+  const dlgReturn = useRef<HTMLElement | null>(null);
+  const prevDialog = useRef(false);
+  if (dialog && !prevDialog.current) dlgReturn.current = lastInLayer.current;
+  useIsoLayoutEffect(() => {
+    const was = prevDialog.current;
+    prevDialog.current = dialog;
+    if (dialog || !was) return;
+    const back = dlgReturn.current;
+    dlgReturn.current = null;
+    const el = layerRef.current;
+    if (!el) return;
+    if (back && back.isConnected && el.contains(back)) back.focus();
+    else el.querySelector<HTMLElement>('[data-mc="close-layer"], [data-mc="bulk-close"]')?.focus();
+  }, [dialog]);
+
+  // Layer without a dialog: Tab stays in layer + save bar (capture phase, so it
+  // runs before the host's own trap). Focus outside (e.g. the host sidebar) is
+  // pulled back into the layer on the first Tab. The Modal owns Tab while open.
+  useIsoLayoutEffect(() => {
+    const el = layerRef.current;
+    if (!layer || dialog || !el) return;
+    const doc = el.ownerDocument;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || e.defaultPrevented || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
+      const bar = barRef.current;
+      const inLayer = tabStops(el);
+      const items = bar ? [...inLayer, ...tabStops(bar)] : inLayer;
+      if (!items.length) return;
+      const active = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+      e.preventDefault();
+      if (!active || !items.includes(active)) {
+        (e.shiftKey ? inLayer[inLayer.length - 1] ?? items[items.length - 1] : inLayer[0] ?? items[0]).focus();
+        return;
+      }
+      nextFocusTarget(items, active, e.shiftKey)?.focus();
+    };
+    doc.addEventListener('keydown', onKey, true);
+    return () => doc.removeEventListener('keydown', onKey, true);
+  }, [layer, dialog]);
 
   // The 「···」 button of the open row menu (the menu measures it).
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -164,7 +230,7 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   return (
     <div ref={rootRef} style={s.root} onKeyDown={onKeyDown}>
       {close && (
-        <div style={s.topbar}>
+        <div ref={topRef} style={s.topbar} aria-hidden={mainHidden ? 'true' : undefined}>
           <Button onClick={close}>关闭</Button>
         </div>
       )}
@@ -181,6 +247,7 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
             aria-label={layerLabel(snap, layer)}
             aria-hidden={dialog ? 'true' : undefined}
             style={s.layer}
+            onFocus={(e) => { if (e.target instanceof HTMLElement) lastInLayer.current = e.target; }}
           >
             {layer === 'bulk' ? (
               <BulkLayer snap={snap} store={store} />

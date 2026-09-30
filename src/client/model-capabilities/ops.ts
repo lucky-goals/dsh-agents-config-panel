@@ -1,9 +1,7 @@
-import { capErrors, modelCap, routeCap } from './capacity';
+import { modelCap } from './capacity';
 import { deriveEnv, orderedEfforts } from './efforts';
-import { modelCapBad, routeCapBad } from './validate';
+import { modelCapBad } from './validate';
 import {
-  CAP_FMT_ERR,
-  CAP_FMT_ERR_ROUTE,
   DS_ROUTE_ID,
   NS_DS,
   NS_PI,
@@ -18,24 +16,18 @@ import {
 
 export const SKIP: unique symbol = Symbol('skip');
 
-export const PI_FIELDS = ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens', 'headers'] as const;
-export const DS_FIELDS = ['thinking', 'reasoningEffort', 'defaultContextWindow', 'maxTokens'] as const;
+export const PI_FIELDS = ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'headers'] as const;
+export const DS_FIELDS = ['thinking', 'reasoningEffort'] as const;
 
 const has = (o: object, key: string): boolean => Object.prototype.hasOwnProperty.call(o, key);
 const isPi = (p: ProviderDraft): boolean => p.ns === NS_PI;
 const clone = <T>(value: T): T => structuredClone(value);
+const routeValuePrototype = { length: 1 };
 const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-function capOut(out: Record<string, unknown>, p: ProviderDraft, bad: boolean): void {
-  if (bad) return;
-  const c = routeCap(p);
-  if (c.cw.explicit && typeof c.cw.parsed === 'number') out[c.cw.key] = c.cw.parsed;
-  if (c.mt.explicit && typeof c.mt.parsed === 'number') out[c.mt.key] = c.mt.parsed;
-}
-
-function modelCapOut(out: Record<string, unknown>, p: ProviderDraft, m: ModelDraft): void {
-  if (modelCapBad(p, m)) return;
-  const c = modelCap(p, m);
+function modelCapOut(out: Record<string, unknown>, m: ModelDraft): void {
+  if (modelCapBad(m)) return;
+  const c = modelCap(m);
   if (c.cw.explicit && typeof c.cw.parsed === 'number') out[c.cw.key] = c.cw.parsed;
   if (c.mt.explicit && typeof c.mt.parsed === 'number') out[c.mt.key] = c.mt.parsed;
 }
@@ -44,7 +36,7 @@ export function modelOut(p: ProviderDraft, m: ModelDraft): Record<string, unknow
   const out: Record<string, unknown> = { id: m.id };
   if (m.name) out.name = m.name;
   if (isPi(p)) {
-    modelCapOut(out, p, m);
+    modelCapOut(out, m);
     if (m.input !== undefined) out.input = m.input.slice();
     if (m.inputModalities !== undefined) out.inputModalities = m.inputModalities.slice();
     if (m.reasoningEfforts === false) out.reasoningEfforts = false;
@@ -55,7 +47,7 @@ export function modelOut(p: ProviderDraft, m: ModelDraft): Record<string, unknow
     }
   } else {
     if (m.inputModalities !== undefined) out.inputModalities = m.inputModalities.slice();
-    modelCapOut(out, p, m);
+    modelCapOut(out, m);
   }
   return out;
 }
@@ -66,33 +58,31 @@ export function modelWrite(p: ProviderDraft, m: ModelDraft): Record<string, unkn
 }
 
 export function fieldOut(p: ProviderDraft, key: string): unknown | typeof SKIP {
-  const capKeys = ['defaultContextWindow', 'defaultMaxTokens', 'maxTokens'];
-  if (capKeys.includes(key)) {
-    if (routeCapBad(p)) return SKIP;
-    const c = routeCap(p);
-    const side = c.cw.key === key ? c.cw : c.mt.key === key ? c.mt : undefined;
-    if (!side || !side.explicit || typeof side.parsed !== 'number') return undefined;
-    return side.parsed;
-  }
   const value = (p as unknown as Record<string, unknown>)[key];
   if (key === 'apiKeyEnv' && has(p, key) && !String(value ?? '').trim()) return SKIP;
   if (value == null) return undefined;
   if ((key === 'displayName' || key === 'baseURL') && String(value).trim() === '') return undefined;
   if (key === 'headers') {
     const out: Record<string, string> = {};
+    const seen = new Set<string>();
+    let duplicate = false;
+    const add = (rawName: unknown, rawValue: unknown) => {
+      const name = String(rawName ?? '').trim();
+      if (!name) return;
+      if (seen.has(name)) duplicate = true;
+      seen.add(name);
+      out[name] = String(rawValue ?? '');
+    };
     if (Array.isArray(value)) {
       for (const pair of value) {
         if (!pair || typeof pair !== 'object') continue;
         const item = pair as { k?: unknown; v?: unknown };
-        const name = String(item.k ?? '').trim();
-        if (name) out[name] = String(item.v ?? '');
+        add(item.k, item.v);
       }
     } else if (typeof value === 'object' && value !== null) {
-      for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
-        const trimmed = name.trim();
-        if (trimmed) out[trimmed] = String(headerValue ?? '');
-      }
+      for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) add(name, headerValue);
     }
+    if (duplicate) return SKIP;
     return Object.keys(out).length ? out : undefined;
   }
   if (Array.isArray(value)) return value.slice();
@@ -118,13 +108,12 @@ function fieldOps(list: SettingsOp[], fields: readonly string[], base: ProviderD
 }
 
 function routeWrite(p: ProviderDraft): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...clone(p.extra) };
+  const out = Object.assign(Object.create(routeValuePrototype) as Record<string, unknown>, clone(p.extra));
   for (const key of PI_FIELDS) {
     const value = fieldOut(p, key);
     if (value !== undefined && value !== SKIP) out[key] = clone(value);
   }
   out.models = p.models.map((m) => modelWrite(p, m));
-  Object.defineProperty(out, 'length', { value: p.models.length, enumerable: false, configurable: true });
   return out;
 }
 
@@ -134,7 +123,7 @@ function modelTable(p: ProviderDraft): Record<string, unknown>[] {
 
 function capBadDirty(base: ProviderDraft, draft: ProviderDraft): boolean {
   return draft.models.some((model, index) => {
-    if (!modelCapBad(draft, model)) return false;
+    if (!modelCapBad(model)) return false;
     const old = base.models[index];
     return !old || !equal(old.contextWindow, model.contextWindow) || !equal(old.maxTokens, model.maxTokens);
   });
@@ -231,7 +220,16 @@ function modelDraft(raw: Record<string, unknown>): ModelDraft {
 }
 
 function headerPairs(value: unknown): Array<{ k: string; v: string }> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (Array.isArray(value)) {
+    const pairs = value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const pair = item as { k?: unknown; v?: unknown };
+      const key = String(pair.k ?? '');
+      return [{ k: key, v: String(pair.v ?? '') }];
+    });
+    return pairs.length ? pairs : undefined;
+  }
+  if (!value || typeof value !== 'object') return undefined;
   const pairs = Object.entries(value as Record<string, unknown>).map(([k, v]) => ({ k, v: String(v ?? '') }));
   return pairs.length ? pairs : undefined;
 }
@@ -252,7 +250,7 @@ function providerDraft(
     credConfigured: false,
     credWritable: true,
   };
-  const fieldNames = ns === NS_PI ? ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'reasoning', 'headers'] : ['thinking', 'reasoningEffort', 'apiKeyEnv'];
+  const fieldNames = ns === NS_PI ? ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'headers'] : ['thinking', 'reasoningEffort', 'apiKeyEnv'];
   for (const key of fieldNames) {
     if (effective[key] !== undefined) {
       if (key === 'headers') {
@@ -263,14 +261,7 @@ function providerDraft(
       }
     }
   }
-  const defaultInput = userRaw.defaultInput;
-  if (defaultInput !== undefined) p.defaultInput = clone(defaultInput) as ProviderDraft['defaultInput'];
-  const routeCapKeys = ns === NS_PI ? ['defaultContextWindow', 'defaultMaxTokens'] : ['defaultContextWindow', 'maxTokens'];
-  for (const key of routeCapKeys) {
-    // Capacity values in `value` can be schema/runtime defaults. Only user values are explicit.
-    if (has(userRaw, key)) (p as unknown as Record<string, unknown>)[key] = String(userRaw[key]);
-  }
-  const known = new Set([...fieldNames, 'defaultInput', ...routeCapKeys, 'models']);
+  const known = new Set([...fieldNames, 'defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens', 'maxTokens', 'models']);
   for (const [key, value] of Object.entries(effective)) if (!known.has(key)) p.extra[key] = clone(value);
   const ref = p.apiKeyEnv && String(p.apiKeyEnv).trim() ? String(p.apiKeyEnv).trim() : ns === NS_DS ? 'DEEPSEEK_API_KEY' : deriveEnv(id);
   const status = creds[ref] ?? { configured: false, writable: true };
@@ -293,7 +284,7 @@ export function draftFromNamespaces(input: {
   const piUser = rawProviderObject(input.pi?.user).providers;
   const valueProviders = rawProviderObject(piValue);
   const userProviders = rawProviderObject(piUser);
-  for (const id of [...new Set([...Object.keys(valueProviders), ...Object.keys(userProviders)])]) {
+  for (const id of Object.keys(valueProviders)) {
     providers[id] = providerDraft(id, NS_PI, rawProviderObject(valueProviders[id]), rawProviderObject(userProviders[id]), input.creds);
   }
   if (input.ds) {

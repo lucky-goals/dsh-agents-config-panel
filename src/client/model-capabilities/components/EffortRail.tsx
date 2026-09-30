@@ -2,12 +2,10 @@
  * 思考档位轨道 (prototype railHTML + its keyboard handler).
  *
  * - multi: role=group of role=checkbox; arrows only move focus, Space/Enter toggle.
- * - single / ds: role=radiogroup of role=radio; arrows move and select.
- * - single can be cleared (「清除默认档」); ds cannot.
+ * - ds: role=radiogroup of role=radio; arrows move and select.
  * - Adjacent selected nodes join into a step: radius only on the run's ends.
- * - The default level is marked 「默认」 under the rail in 11px text.
  */
-import React, { useId, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ADV_EFFORTS, DS_EFFORTS, MAIN_EFFORTS } from '../types';
 import type { Effort, McSnapshot, ModelCapabilitiesStore } from '../types';
 import { mcStyles as s, sx } from '../styles';
@@ -15,14 +13,12 @@ import { Btn, useIsoLayoutEffect } from './shared';
 
 export interface EffortRailProps {
   railKey: string;
-  mode: 'multi' | 'single' | 'ds';
+  mode: 'multi' | 'ds';
   selected: string[];
-  defaultLevel?: string;
   disabled?: boolean;
   isDisabled?: (level: string) => boolean;
   showAdv: boolean;
   onToggle: (level: string) => void;
-  onClear?: () => void;
   onToggleAdv: () => void;
   label: string;
 }
@@ -35,24 +31,20 @@ export function EffortRail({
   railKey,
   mode,
   selected,
-  defaultLevel,
   disabled,
   isDisabled,
   showAdv,
   onToggle,
-  onClear,
   onToggleAdv,
   label,
 }: EffortRailProps): JSX.Element | null {
-  const uid = useId();
   const nodes = useRef(new Map<string, HTMLButtonElement>());
   const pendingFocus = useRef<string | null>(null);
   const [focusLvl, setFocusLvl] = useState<string | null>(null);
 
   const dis = (l: string) => !!disabled || (isDisabled ? isDisabled(l) : false);
   const selAdv = selected.some((l) => ADV.includes(l));
-  const defAdv = !!defaultLevel && ADV.includes(defaultLevel);
-  const advOpen = mode !== 'ds' && (showAdv || selAdv || defAdv);
+  const advOpen = mode !== 'ds' && (showAdv || selAdv);
   const groups: Array<{ cap: string; levels: readonly string[] }> = mode === 'ds'
     ? [{ cap: '', levels: DS }]
     : advOpen ? [{ cap: '高级', levels: ADV }, { cap: '', levels: MAIN }] : [{ cap: '', levels: MAIN }];
@@ -98,10 +90,9 @@ export function EffortRail({
     focusLater(next);
   };
 
-  const defId = `${uid}-def`;
   const advLink = mode !== 'ds' && (!advOpen
     ? { text: '显示 off、minimal', focus: 'off' }
-    : !selAdv && !defAdv ? { text: '隐藏 off、minimal', focus: 'low' } : null);
+    : !selAdv ? { text: '隐藏 off、minimal', focus: 'low' } : null);
 
   return (
     <div style={s.railRow} data-rail={railKey}>
@@ -127,7 +118,6 @@ export function EffortRail({
                     type="button"
                     role={role}
                     aria-checked={on}
-                    aria-describedby={l === defaultLevel ? defId : undefined}
                     tabIndex={l === tabLvl ? 0 : -1}
                     disabled={d}
                     onClick={() => {
@@ -149,20 +139,6 @@ export function EffortRail({
                 );
               })}
             </div>
-            <div style={s.railMarks} aria-hidden={defaultLevel && g.levels.includes(defaultLevel) ? undefined : 'true'}>
-              {g.levels.map((l, i) => {
-                const jl = selected.includes(l) && i > 0 && selected.includes(g.levels[i - 1]);
-                return (
-                  <span
-                    key={l}
-                    id={l === defaultLevel ? defId : undefined}
-                    style={sx(s.railMark, (i === 0 || jl) && { marginLeft: 0 })}
-                  >
-                    {l === defaultLevel ? '默认' : ''}
-                  </span>
-                );
-              })}
-            </div>
           </div>
         ))}
       </div>
@@ -179,26 +155,8 @@ export function EffortRail({
           {advLink.text}
         </Btn>
       )}
-      {mode === 'single' && onClear && selected.length > 0 && (
-        <Btn
-          kind="link"
-          style={s.railLink}
-          disabled={disabled}
-          onClick={() => {
-            onClear();
-            focusLater(MAIN[0]);
-          }}
-        >
-          清除默认档
-        </Btn>
-      )}
     </div>
   );
-}
-
-/** Prototype singleRailHint(). */
-export function SingleRailHint({ has }: { has: boolean }) {
-  return <p style={s.hint}>{has ? '再点已选的档，或点「清除默认档」。' : '未设置。用方向键或点击选择一档。'}</p>;
 }
 
 export type { Effort };

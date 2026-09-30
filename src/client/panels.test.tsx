@@ -1100,7 +1100,10 @@ describe('client source', () => {
       // v2.11: the 模型能力 panel is inline-style only as well, so it is scanned
       // with ui/. `sources` already walks all of src/client and skips *.test.*.
       .filter(({ file }) => file.includes(`${join('client', 'ui')}`) || file.includes(`${join('client', 'model-capabilities')}`))
-      .filter(({ text }) => /rgba?\(|hsla?\(|#[0-9a-fA-F]{3,8}\b/.test(text));
+      // v2.11: no colour literals. R2 #13: the 模型能力 panel also avoids the
+      // `transparent` keyword; shared ui/ keeps it inside color-mix() fallbacks.
+      .filter(({ file, text }) => /rgba?\(|hsla?\(|#[0-9a-fA-F]{3,8}\b/.test(text)
+        || (file.includes(`${join('client', 'model-capabilities')}`) && /\btransparent\b/.test(text)));
     expect(uiLiterals.map(({ file }) => file)).toEqual([]);
   });
 });
