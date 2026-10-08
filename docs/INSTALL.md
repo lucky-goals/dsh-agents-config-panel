@@ -78,6 +78,7 @@ $DSH plugin --profile web add -w /Users/jwyuan/source_code/dsh-agents-config-pan
 - 装进去的是链接：`package.json` 里记录为 `"@luckygoals/dsh-wuyou-agent": "link:/Users/jwyuan/source_code/dsh-agents-config-panel"`，`node_modules/@luckygoals/dsh-wuyou-agent` 是指向仓库的符号链接（经 E2E `dsh plugin --profile wuyou-test add -w <仓库>` 实测确认）。这意味着：
   - 安装后**不能移动、重命名或删除仓库**，否则 DSH 启动时找不到插件；
   - 运行的是仓库里的 `lib/`，改了源码要重新 `npm run build`，再重启 DSH 才会生效；
+  - `lib/` 不进 git。从 GitHub 拉取或切换分支后，必须先在仓库里执行 `npm install && npm run build`，再重启 DSH。否则 DSH 加载的仍是旧的 `lib/client.js`；改包名后会因模块 id 不一致导致 web boot 失败（见第 7 节）；
   - 不要在 DSH 运行时执行 `rm -rf lib` 这类清理。
 - 插件写入 `cordis.patch.yml` 时，**保留文件的原有权限位**（读取 `stat` 再传给 `writeFileAtomic`）。文件不存在时默认使用 `0600`。安装前备份建议使用 `cp -p` 以保留权限。
 - `add` 完成后，DSH 的 plugin-manager 会检查插件的 `dsh.bundle`，把它加入 `dsh.profile.bundles`。插件只需要自带的 `cordis.patch.yml` bundle patch 就能挂载（t25 对照实验验证），不需要手动向配置文件添加任何行。
@@ -262,6 +263,7 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 | 保存时提示「provider 'xxx' 未注册」 | 选中的 provider 不在当前列表里，通常是提供它的插件已经卸载。点「刷新」重新拉取列表，再选择一个已注册的 provider。 |
 | Panel A 顶部显示「当前界面已更新，Subagent 的 ACP 编辑需要重启 DSH 后生效」，ACP 行不能编辑 | 插件升级后还没有重启 `dsh web`：新 Client 已经加载，Host 还是旧版本（state 中 `diagnostics.hostApi` 缺失或不等于 `2`）。按第 5 节重启并刷新。 |
 | 保存时提示「字段 maxDepth 不能通过此接口修改」（或 modelSelectionSettings、persona、toolFilter） | 请求直接带了这些字段，面板本身不会发送它们。这些键由 Host 在切换 provider 时自动整理，需要改具体数值时只能手工编辑 YAML。 |
+| 启动报错 `web boot: 1 entry did not activate`，`@luckygoals/dsh-wuyou-agent: import failed`，console 中有 `duplicate factory registration for "@nanmicoder/dsh-wuyou-agent"` | 原因：`lib/client.js` 是改包名之前的构建（`lib/` 不进 git，拉取源码后没有重新构建），注册的模块 id 与 `package.json` 的 name 不一致。修复：在仓库里执行 `npm install && npm run build && npm run verify`，verify 应输出「lib/client.js 模块 id 与 package.json name 一致」，然后重启 DSH。可选清理：删除 profile 里遗留的 `node_modules/@nanmicoder/dsh-wuyou-agent` 链接，只删这一个，同目录的 `dsh-agent-teams` 不要动。 |
 
 ## 8. 卸载
 
@@ -287,6 +289,7 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 - 已按旧包名注册过的 profile：先执行 `$DSH plugin --profile <profile> remove @nanmicoder/dsh-wuyou-agent`（或手动删除该 profile 的 `package.json` 里的这个依赖和 `dsh.profile.bundles` 中的对应条目，并移除 `node_modules/@nanmicoder/dsh-wuyou-agent` 链接）。
 - 再按上文步骤用 `@luckygoals/dsh-wuyou-agent` 重新添加，然后重启 DSH。
 - `@nanmicoder/dsh-agent-teams` 是第三方依赖，不受影响，不要删除。
+- 迁移后在仓库里执行 `npm run build`，确保 `lib/client.js` 按新包名注册（见第 7 节）。
 
 ## 9. 开发
 

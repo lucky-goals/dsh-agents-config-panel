@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { checkClientBundle } from './client-bundle.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libDir = join(repoRoot, 'lib');
@@ -100,6 +101,18 @@ function findRuntimeAnchor() {
 }
 
 // ---------------------------------------------------------------------------
+// 0. lib/client.js must register under the package.json name. lib/ is not in
+// git, so a pull that renames the package without a rebuild leaves a stale
+// bundle whose old id breaks DSH web boot; catch it here instead.
+{
+  const { name: packageName } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+  const clientPath = join(libDir, 'client.js');
+  const clientText = existsSync(clientPath) ? readFileSync(clientPath, 'utf8') : undefined;
+  const check = checkClientBundle(packageName, clientText);
+  if (!check.ok) fail(check.message);
+  console.log(`✓ lib/client.js 模块 id 与 package.json name 一致（${packageName}）`);
+}
+
 // 1. Import built modules
 const { apply, loadAtomicWrite, buildCatalog } = await import(pathToFileURL(join(libDir, 'index.js')).href);
 console.log('✓ Imported built modules');

@@ -51,11 +51,6 @@ function insertEntries(): PatchEntry[] {
   return (documents ?? []).flatMap((document) => document.insert ?? []);
 }
 
-/** `id` declared by the client bundle wrapper written in scripts/build-client.mjs. */
-function bundleId(source: string): string | undefined {
-  return /window\.__ModuleLoader__\.load\(\{\s*id:\s*'([^']*)'/.exec(source)?.[1];
-}
-
 describe('package identity', () => {
   it('package.json declares the renamed identity', () => {
     expect(pkg.name).toBe(EXPECTED_NAME);
@@ -79,13 +74,13 @@ describe('package identity', () => {
     expect(readText('cordis.patch.yml')).not.toContain(OLD_NAME);
   });
 
-  it('the client bundle wrapper id tracks the package name', () => {
+  it('CB0 build-client 不再写死 bundle id，由 package.json name 派生', () => {
     const source = readText('scripts/build-client.mjs');
-    expect(source).not.toContain(OLD_NAME);
+    const packageName = pkg.name as string;
 
-    const declared = bundleId(source);
-    expect(declared).toBeDefined();
-    expect(declared).toBe(pkg.name);
+    expect(source).not.toContain(OLD_NAME);
+    expect(source).not.toContain(packageName);
+    expect(source).toContain('wrapClientBundle(');
   });
 
   it('user-facing docs no longer reference the old package name', () => {
