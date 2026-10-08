@@ -1,7 +1,7 @@
 # R3 增量契约：模型能力导入导出 + Subagent 上移下移
 
 ## 0. 约束与已定决策
-- 本机单用户配置。导入文件上限 1MB，subagent 约十几行。不新增依赖，不新增 HTTP 路由（仍为 9 条）。
+- 本机单用户配置。导入文件上限 1MB，subagent 约十几行。不新增依赖，不新增 HTTP 路由（仍为 9 条；R4a 后为 10 条）。
 - 功能 1：`kind: wuyou-model-capabilities`、`version: 1`。导入只改草稿，不调用 `mutate`。
 - 功能 2：沿用 `POST /subagents`，新增 `action: 'move'`，参数 `{id, direction:'up'|'down'}`，每次点击直接写入。
 - 导出来源：store 闭包里的 `base`（最近一次 load、保存或 reload 之后的基线）。不导出 `draft`，因为草稿里可能有未通过 `allErrors` 的模型 ID。有未保存修改或冲突时，仍导出 `base`，并提示「只导出已保存的配置」。
@@ -194,7 +194,7 @@ cancelImport(): void;
 - 导入不调用 `credentials.set`。
 
 ## 2. 功能 2：Subagent 上移下移
-不新增路由，`src/index.test.ts` 里的 `toHaveBeenCalledTimes(9)` 不变。不改 `patch-io.ts`，只复用已有的 `parseYaml`、`findSubagentSequence`、`lineStart`、`nodeRange`。ACP 表不动。Host 改动必须重启 DSH 才生效；如果只更新了 client，旧 Host 会在加锁前返回 400，文案为 `字段 action 必须是 create、update、remove 之一`。
+不新增路由，`src/index.test.ts` 里的 `toHaveBeenCalledTimes(9)` 不变（R4a 后为 10 条）。不改 `patch-io.ts`，只复用已有的 `parseYaml`、`findSubagentSequence`、`lineStart`、`nodeRange`。ACP 表不动。Host 改动必须重启 DSH 才生效；如果只更新了 client，旧 Host 会在加锁前返回 400，文案为 `字段 action 必须是 create、update、remove 之一`。
 
 ### 2.1 `moveSubagent`
 ```ts

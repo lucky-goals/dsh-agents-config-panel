@@ -1,6 +1,6 @@
 # 无忧Agent 插件需求与接口契约
 
-版本：2.12（v2.2–v2.12 的变更见文末 K 节）
+版本：2.13（v2.2–v2.13 的变更见文末 K 节；v2.13 新增 K17 模型可用性测试、K18 流空闲超时）
 插件包名：`@luckygoals/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
@@ -14,7 +14,7 @@
 - **profile**：DSH 配置档案；每个 profile 对应自己的 `cordis.patch.yml`。Agent-Teams 的 `config.profiles` 是该插件内部的 profile map，两者名称必须明确区分。
 - **revision**：当前 YAML 文本的 SHA-256 十六进制摘要，用于并发写入保护。
 - **目标范围**：只修改 Panel A 指定的 delegation 配置序列或 Panel B 指定的成员序列；其余字节必须保持不变。
-- **非目标**：不创建或删除 DSH profile，不修改 DSH 或 Agent-Teams 插件源码，不运行时加载/卸载插件，不主动调用 reconcile，不提供 subagent 运行监控，也不验证 API key 是否可用。
+- **非目标**：不创建或删除 DSH profile，不修改 DSH 或 Agent-Teams 插件源码，不运行时加载/卸载插件，不主动调用 reconcile，不提供 subagent 运行监控。除 K17 中用户在「模型能力」页手动发起的模型测试外，不验证 API key 是否可用。
 
 ## A. 真实 `cordis.patch.yml` 结构
 
@@ -512,7 +512,7 @@ spawn 对话框包含工具名、Provider、Agent Provider、Model、Reasoning E
 
 ### D7. Panel C 模型能力
 
-Panel C 的 section 为 `{id:'wuyou-model-capabilities', order:99, label:'模型能力'}`，由 D1 子 fiber 注册。它是 Client-only 的设置编辑器，不新增 Host 路由，也不使用 D3 的 api-client；通过注入的 `configForms` 读取 namespace snapshot，通过 `remote.settings` 和 `remote.credentials` 写入。
+Panel C 的 section 为 `{id:'wuyou-model-capabilities', order:99, label:'模型能力'}`，由 D1 子 fiber 注册。它是 Client-only 的设置编辑器，不新增写配置的 Host 路由，配置读写也不使用 D3 的 api-client（K17 的只读模型测试经 api-client 调用 `POST /models/test`，是唯一例外）；通过注入的 `configForms` 读取 namespace snapshot，通过 `remote.settings` 和 `remote.credentials` 写入。
 
 - 支持 `llm-pi-ai` 自定义提供方与 `llm-deepseek` 官方提供方；缺少其中一个 namespace 时只隐藏对应卡片，section 仍显示。DeepSeek 的 UI route id 为 `deepseek-official`，但写入 path 不得包含该 id。
 - 模型容量和输入只有已设置/未设置两种状态；提供方级默认键 defaultInput/reasoning/defaultContextWindow/defaultMaxTokens（pi）与 defaultContextWindow/maxTokens（DS）面板不展示、不编辑，原样保留；DeepSeek 的 thinking/reasoningEffort 仍可编辑
@@ -891,7 +891,7 @@ v2.1 契约原文是 `tmp/contract-v2.1.md`。与契约不一致或契约没有�
   - 最终证据是 t51 重跑的 `test/e2e/artifacts-v2.1-r2/`；
   - v2.1 的目录里没有 `run.log`，步骤摘要只打印在标准输出。
 
-## K. v2.2–v2.12 变更
+## K. v2.2–v2.13 变更
 
 ### K1. 菜单名（v2.2）
 
@@ -1047,7 +1047,7 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 
 ### K14. 模型能力（v2.11）
 
-新增「模型能力」settings.section，order 为 99，位于无忧Subagent 和无忧Teams 之前；通过依赖 `slots`、`configForms`、`remote`、`remote.settings`、`remote.credentials` 的子 fiber 注册，服务不齐时不影响既有两个 section。Panel C 使用框架无关 store 和 `useSyncExternalStore`，支持 Pi/DeepSeek namespace 的模型能力读取与编辑（已设置/未设置）、容量和思考档位校验、批量编辑、凭证引用、预览、冲突处理及保存。它只使用设置与凭证服务，不新增 Host 路由，也不把明文密钥放进 snapshot。完整映射、路径和函数契约见 `docs/specs/model-capabilities.md`，R2 增量见 `docs/specs/model-capabilities.r2.md`。R2：移除提供方默认值与继承；模型容量/输入只有已设置/未设置。
+新增「模型能力」settings.section，order 为 99，位于无忧Subagent 和无忧Teams 之前；通过依赖 `slots`、`configForms`、`remote`、`remote.settings`、`remote.credentials` 的子 fiber 注册，服务不齐时不影响既有两个 section。Panel C 使用框架无关 store 和 `useSyncExternalStore`，支持 Pi/DeepSeek namespace 的模型能力读取与编辑（已设置/未设置）、容量和思考档位校验、批量编辑、凭证引用、预览、冲突处理及保存。配置读写只使用设置与凭证服务，不新增写配置的 Host 路由（K17 的只读测试路由除外），也不把明文密钥放进 snapshot。完整映射、路径和函数契约见 `docs/specs/model-capabilities.md`，R2 增量见 `docs/specs/model-capabilities.r2.md`。R2：移除提供方默认值与继承；模型容量/输入只有已设置/未设置。
 
 「团队 profile」下拉框从标题栏移到「新建成员」同一行，行容器 `display:flex; justify-content:space-between`：「新建成员」在左，`<label for="wuyou-team-profile">团队 profile</label>` + `<select id="wuyou-team-profile">` 在右，位于刷新、关闭按钮下方且右边缘与它们对齐。只要 `teamProfiles` 非空就显示下拉框（只有一个 profile 时也是），选项为 `teamProfiles` 全部，默认规则不变（请求值 → `standard-acp` → 第一个）。写入进行中（含 409 后的刷新）禁用，普通加载与切换时保持可用（v2.8，见 K11）；写入不可用时仍可切换（只读查看）；没有团队 profile 时不显示。
 
@@ -1060,6 +1060,14 @@ settings.section 的 label 改为「无忧Subagent」「无忧Teams」，id 与 
 ### K16. Subagent 排序（v2.12）
 
 Panel A 操作列新增上移、下移两个 24×24 原生按钮；按钮一次点击调用现有 subagents 写入路由的 `move` action，支持 `direction: 'up'|'down'`，首项上移和末项下移禁用。Host 在锁内局部交换 delegation 序列并保留原文，成功提示说明只改变列表顺序、不影响模型看到的工具顺序。`hostApi` 不是 2 或写入被阻止时按钮禁用；Host 同为 hostApi 2 但尚未重启时，Host 返回 400，界面提示「上移和下移需要重启 DSH 后生效」。具体请求校验、字节保留和交互规则见 `docs/specs/r3-io-and-move.md` 第 2 节。
+
+### K17. 模型可用性测试（v2.13）
+
+模型能力 Panel C 支持对已保存的模型做可用性测试。Host 新增 1 条只读路由 `POST /plugins/dsh-wuyou-agent/api/models/test`（第 10 条），请求体只有 `provider`、`model`；每次测试只测一个模型、只发一次真实请求：短提示「只回复 OK」、`maxTokens 32`、最低推理档、`temperature 0`、不带 `sessionId`，总时限 20s（与 K18 的流空闲超时无关）。测试会验证 API Key 并产生少量费用。Host 全局最多 3 个并发，超出或同一 `provider+model` 已在测试时直接返回 409 `BUSY`，不排队；Client 队列并发 3、逐条返回，「停止」取消排队项；批量测试（多于 1 个模型且凭证已配置）先弹费用确认，可勾选「本次会话不再提示」。提供方是新建的、有未保存改动或 API Key 未保存时禁止测试，提示先保存（不把草稿 baseURL/Key 发给 Host）。结果只保存在 store 内存，不写配置、不落盘，保存成功、重新加载或远端刷新后清空。只更新 Client 而 Host 未重启时，路由返回 404，界面提示「当前 Host 不支持模型测试，重启 DSH 后可用。」，配置的查看、编辑和保存不受影响。完整路由、错误分类、store 与 UI 契约见 `docs/specs/r4a-model-test.md`。
+
+### K18. 流空闲超时（v2.13）
+
+模型能力 Panel C 支持编辑流空闲超时 `streamIdleTimeoutMs`：pi 写入 `llm-pi-ai` 条目的 `providers.<route>.streamIdleTimeoutMs`，DeepSeek 写入 `llm-deepseek` 条目顶层的同名字段，经现有 `remote.settings.mutate` 写进 profile `cordis.patch.yml`，热生效，值为整数毫秒的 JS number。界面只收分钟（可带小数），换算后范围为 1000–2147483647 ms；清空或恢复默认即 unset，回落 DSH 默认 5 分钟（300000）。「默认 30 分钟」只用于向导新建和导入的新提供方，已有提供方没有显式值时不会被静默改写，只显示「未设置 · 使用 DSH 默认 5 分钟」并建议 30 分钟。读取只看 user 层，不把 value 层的 schema 默认当显式值；导出只写显式值。导入时该值不合法（字符串、小于 1000、超过上限等），整个提供方标为 invalid，不进入载荷。完整草稿模型、校验、ops、io 与 UI 契约见 `docs/specs/r4b-stream-idle-timeout.md`。
 
 ### K7. 验收映射
 
@@ -1086,7 +1094,9 @@ Panel A 操作列新增上移、下移两个 24×24 原生按钮；按钮一次�
 | K13 Background Mode 说明 | `help-tip.test.tsx`（`placeHelpBubble`：下方、翻到上方、两侧都不够时限高、1440 与 390 视口的水平夹取；关闭时的标记：`aria-expanded="false"`、`aria-controls` 指向空的 `role="status"`、24×24 点击区域）、`background-mode-help.test.tsx`（两种模式的说明、「当前」标记、不支持 continuable 的提示）、`panels.test.tsx`「v2.10 Background Mode help button」（「?」紧跟标签且在 `<label>` 之外、下拉框选项与选中值不变、只有这一个字段有、新建对话框与只读 ACP 行也有）；E2E `E2E_BROWSER_V210`：真实浏览器里对 fork 行和 ACP 行点「?」，气泡与按钮相距 6px、完整在视口内、各点 `elementFromPoint` 都落在气泡上、对话框 scrollHeight/scrollTop 不变；Escape 只关气泡且焦点回到按钮、点气泡外关闭且对话框不关、改下拉框后「当前」跟着变、ACP 行显示不支持提示、不保存直接关闭；`E2E_BROWSER_V210_MOBILE`：390×844 下气泡宽 340、在视口内 |
 | K14 模型能力 | `capacity.test.ts`、`validate.test.ts`、`efforts.test.ts`、`ops.test.ts`、`bulk.test.ts`、`place-menu.test.ts`、`store.test.ts` 共 110 个模型能力纯逻辑测试；`panel.test.tsx` 与 `panels.test.tsx` 的三 section、子 fiber 依赖、根 `inject` 和颜色扫描断言；`npx tsc -p tsconfig.client.json --noEmit`；完整 `npx vitest run` |
 | K15 模型能力导入导出 | `src/client/model-capabilities/io.test.ts`、`src/client/model-capabilities/store.test.ts`、`src/client/model-capabilities/panel.test.tsx`；`npx tsc -p tsconfig.client.json --noEmit` |
-| K16 Subagent 排序 | `subagent-manager.test.ts`、`http-routes.test.ts`、`subagent-panel-store.test.ts`、`panels.test.tsx`、`test/integration` routes/contract；`index.test` 仍为 9 条 |
+| K16 Subagent 排序 | `subagent-manager.test.ts`、`http-routes.test.ts`、`subagent-panel-store.test.ts`、`panels.test.tsx`、`test/integration` routes/contract；`index.test` 现为 10 条（K17 新增 1 条） |
+| K17 模型测试 | model-probe.test.ts、http-routes.test.ts「r4a POST /models/test」、index.test.ts（10 条、鉴权）、api-client.test.ts、model-test.test.ts、store.test.ts「r4a model test」、panel.test.tsx「r4a」；npm run verify 输出 10 条 |
+| K18 流空闲超时 | timeout.test.ts、ops.test.ts「O1–O5」、validate.test.ts「V1–V2」、io.test.ts「I1–I6」、store.test.ts「S1–S7」、panel.test.tsx「R4b P1–P4」、regression-r2.test.ts「R4b-1/2」 |
 
 E2E 证据目录：`test/e2e/artifacts-v2.10/`（`E2E_ARTIFACTS_DIR=test/e2e/artifacts-v2.10 bash scripts/e2e-isolated-profile.sh`），截图 `browser-background-mode-help.png`、`browser-members.png`、`browser-members-scroll.png`、`browser-delete-team.png`。脚本默认使用 0.1.7-rc.2 的 DSH，版本不符时直接失败（可用 `DSH_BIN` / `DSH_EXPECTED_VERSION` 覆盖）。
 
