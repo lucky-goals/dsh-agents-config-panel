@@ -23,6 +23,7 @@ import { AcpSection } from './AcpSection';
 import { BackgroundModeHelp } from './BackgroundModeHelp';
 import type { SubagentImportPreview } from '../shared/import-export';
 import {
+  AgentDetailList,
   DiagnosticsBanner,
   LoadingAnnouncer,
   PanelHeader,
@@ -38,7 +39,7 @@ import { MSG } from '../ui/messages';
 
 export interface SubagentPanelProps {
   store: SubagentPanelStore;
-  /** Closes the host settings dialog; passed by settings.section as `{ close }`. */
+  /** Passed by settings.section as `{ close }`; accepted for compatibility, no button is rendered. */
   close?: () => void;
 }
 
@@ -69,6 +70,18 @@ const oldHostNoticeStyle: React.CSSProperties = {
   fontSize: '12px',
   color: 'var(--dsw-alias-label-secondary)',
 };
+
+/** Spawn description row: same labels and order as the team member second row. */
+const SPAWN_DETAILS = [
+  ['Provider', 'provider'],
+  ['Model', 'model'],
+  ['Reasoning Effort', 'reasoningEffort'],
+] as const;
+
+/** Spawn main row: no own separator, the description row below draws it. */
+const spawnMainCell: React.CSSProperties = { ...tableStyles.td, borderBottom: 'none' };
+/** Description row: indented like the ACP command row, 12px like the member details. */
+const spawnDetailCell: React.CSSProperties = { ...tableStyles.td, padding: '2px 8px 8px 24px', fontSize: '12px' };
 
 const MOVE_RESTART_TITLE = '上移和下移需要重启 DSH 后生效';
 const MOVE_FIRST_TITLE = '已经是第一个 subagent，不能上移';
@@ -118,7 +131,7 @@ export function subagentPreviewSections(preview: SubagentImportPreview): ImportP
   ];
 }
 
-export function SubagentPanel({ store, close }: SubagentPanelProps) {
+export function SubagentPanel({ store }: SubagentPanelProps) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
   useEffect(() => {
@@ -179,7 +192,6 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
         onImport={(file) => void store.importConfig(file)}
         importDisabled={blocked}
         importTitle={writeTitle}
-        close={close}
       />
 
       {/* §9: only once a state has confirmed hostApi !== 2 (null = not loaded yet). */}
@@ -217,46 +229,63 @@ export function SubagentPanel({ store, close }: SubagentPanelProps) {
             const editable = isRowEditable(state, row);
             const disabled = !editable || busy || blocked;
             const rowTitle = editable ? writeTitle : rowReadOnlyReason(state, row);
+            // A spawn row gets a second row with its agentOptions; the pair shares
+            // one separator, carried by the description cell.
+            const isSpawn = config.provider === 'spawn';
+            const cell = isSpawn ? spawnMainCell : tableStyles.td;
+            const agentOptions = config.agentOptions as Record<string, unknown> | undefined;
             return (
-              <tr key={row.id}>
-                <td style={tableStyles.td}>
-                  {toolName}
-                  {!editable && <span style={badgeStyle} data-readonly="true">只读</span>}
-                </td>
-                <td style={tableStyles.td}>{String(config.provider ?? '-')}</td>
-                <td style={tableStyles.td}>{String(config.backgroundMode ?? '-')}</td>
-                <td style={{ ...tableStyles.td, whiteSpace: 'nowrap' }}>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      {(['up', 'down'] as const).map((direction) => {
-                        const edge = direction === 'up' ? index === 0 : index === state.rows.length - 1;
-                        const moveDisabled = moveLocked || edge;
-                        return (
-                          <button
-                            key={direction}
-                            type="button"
-                            style={moveButtonStyle(moveDisabled)}
-                            disabled={moveDisabled}
-                            title={moveTitle(direction, edge)}
-                            aria-label={`${direction === 'up' ? '上移' : '下移'} ${toolName}`}
-                            data-move={direction}
-                            data-move-id={row.id}
-                            onClick={() => void store.move(row.id, direction)}
-                          >
-                            {direction === 'up' ? '↑' : '↓'}
-                          </button>
-                        );
-                      })}
+              <React.Fragment key={row.id}>
+                <tr>
+                  <td style={cell}>
+                    {toolName}
+                    {!editable && <span style={badgeStyle} data-readonly="true">只读</span>}
+                  </td>
+                  <td style={cell}>{String(config.provider ?? '-')}</td>
+                  <td style={cell}>{String(config.backgroundMode ?? '-')}</td>
+                  <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        {(['up', 'down'] as const).map((direction) => {
+                          const edge = direction === 'up' ? index === 0 : index === state.rows.length - 1;
+                          const moveDisabled = moveLocked || edge;
+                          return (
+                            <button
+                              key={direction}
+                              type="button"
+                              style={moveButtonStyle(moveDisabled)}
+                              disabled={moveDisabled}
+                              title={moveTitle(direction, edge)}
+                              aria-label={`${direction === 'up' ? '上移' : '下移'} ${toolName}`}
+                              data-move={direction}
+                              data-move-id={row.id}
+                              onClick={() => void store.move(row.id, direction)}
+                            >
+                              {direction === 'up' ? '↑' : '↓'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <Button onClick={() => store.openEdit(row.id)} disabled={disabled} title={rowTitle}>
+                        编辑
+                      </Button>
+                      <Button onClick={() => store.requestDelete(row.id)} disabled={disabled} title={rowTitle} variant="danger">
+                        删除
+                      </Button>
                     </div>
-                    <Button onClick={() => store.openEdit(row.id)} disabled={disabled} title={rowTitle}>
-                      编辑
-                    </Button>
-                    <Button onClick={() => store.requestDelete(row.id)} disabled={disabled} title={rowTitle} variant="danger">
-                      删除
-                    </Button>
-                  </div>
-                </td>
-              </tr>
+                  </td>
+                </tr>
+                {isSpawn && (
+                  <tr data-agent-row={row.id}>
+                    <td colSpan={4} style={spawnDetailCell}>
+                      <AgentDetailList
+                        wrapValues
+                        items={SPAWN_DETAILS.map(([label, key]) => [label, agentOptions?.[key]] as const)}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             );
           })}
           {state.rows.length === 0 && (

@@ -169,6 +169,13 @@ function buttonTags(html: string, label: string): string[] {
   return [...html.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].filter((m) => m[2].includes(label)).map((m) => m[1]);
 }
 
+/** The element right after the panel's root <div>: its content column, topbar-free. */
+function firstElementAfterRoot(html: string): string {
+  const root = html.match(/^<div[^>]*>/)?.[0];
+  expect(root, 'root div').toBeDefined();
+  return html.slice(root!.length).match(/^<[^>]*>/)?.[0] ?? '';
+}
+
 /** Text of every ARIA column header of the model table (spacer columns dropped). */
 function columnHeaders(html: string): string[] {
   return [...html.matchAll(/role="columnheader"[^>]*>([^<]*)/g)].map((m) => m[1].trim()).filter(Boolean);
@@ -562,9 +569,21 @@ describe('状态条与横幅（SSR）', () => {
     expect(buttonTags(html, '保存')[0]).toContain('disabled');
   });
 
-  it('关闭 is forwarded from the host props, and absent without them', () => {
-    expect(buttonTags(renderPanel({ close: () => {} }), '关闭')).toHaveLength(1);
-    expect(buttonTags(renderPanel(), '关闭')).toHaveLength(0);
+  it('CL3: the host close prop renders neither a 关闭 button nor the topbar strip', () => {
+    const withClose = renderPanel({ close: () => {} });
+    const withoutClose = renderPanel();
+
+    // The panel still renders: 模型能力 is the list view's h2, and the root's
+    // first child is the content column either way (no extra strip).
+    expect(withClose).toContain('模型能力');
+    expect(firstElementAfterRoot(withClose)).toMatch(/^<div/);
+    expect(firstElementAfterRoot(withClose)).toBe(firstElementAfterRoot(withoutClose));
+
+    expect(buttonTags(withClose, '关闭')).toHaveLength(0);
+    expect(buttonTags(withoutClose, '关闭')).toHaveLength(0);
+    // The removed topbar's own style: display:flex;justify-content:flex-end;padding:8px 16px 0;flex:none
+    expect(withClose).not.toContain('padding:8px 16px 0');
+    expect(withoutClose).not.toContain('padding:8px 16px 0');
   });
 
   it('loading announces 正在加载配置', () => {

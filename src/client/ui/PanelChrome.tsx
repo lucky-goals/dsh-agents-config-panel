@@ -14,7 +14,10 @@ export interface PanelHeaderProps {
   onRefresh: () => void;
   /** Extra controls rendered next to the refresh button (e.g. a profile picker). */
   children?: React.ReactNode;
-  /** Host-provided settings close (settings.section props); the button is hidden when absent. */
+  /**
+   * Host-provided settings close (settings.section props). Kept for type
+   * compatibility only: no 关闭 button is rendered.
+   */
   close?: () => void;
   /** v2.2: download the panel's config as YAML; the button is hidden when absent. */
   onExport?: () => void;
@@ -25,7 +28,7 @@ export interface PanelHeaderProps {
   importTitle?: string;
 }
 
-export function PanelHeader({ title, loading, onRefresh, children, close, onExport, onImport, importDisabled, importTitle }: PanelHeaderProps) {
+export function PanelHeader({ title, loading, onRefresh, children, onExport, onImport, importDisabled, importTitle }: PanelHeaderProps) {
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
@@ -37,7 +40,6 @@ export function PanelHeader({ title, loading, onRefresh, children, close, onExpo
             <ImportFileButton onFile={onImport} disabled={loading || importDisabled} title={importTitle} />
           )}
           <Button onClick={onRefresh} disabled={loading}>刷新</Button>
-          {close && <Button onClick={close}>关闭</Button>}
         </div>
       </div>
       <p style={{ margin: '6px 0 14px', fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }}>
@@ -207,6 +209,45 @@ export const tableStyles = {
     overflowWrap: 'anywhere',
   } as React.CSSProperties,
 };
+
+/**
+ * Label/value list under a table row: the agent route of a team member
+ * (Panel B) and of a spawn subagent tool (Panel A). 12px comes from the cell.
+ */
+export const agentDetailStyles = {
+  dl: { display: 'flex', flexWrap: 'wrap', gap: '2px 16px', margin: 0 } as React.CSSProperties,
+  pair: { display: 'flex', gap: '4px', whiteSpace: 'nowrap' } as React.CSSProperties,
+  dt: { color: 'var(--dsw-alias-label-secondary)' } as React.CSSProperties,
+  dd: { margin: 0, color: 'var(--dsw-alias-label-primary)' } as React.CSSProperties,
+};
+
+/** Wrapping variant: a long value (e.g. a model id) breaks inside its <dd>. */
+const wrapPair: React.CSSProperties = { ...agentDetailStyles.pair, whiteSpace: 'normal', minWidth: 0 };
+const wrapDt: React.CSSProperties = { ...agentDetailStyles.dt, whiteSpace: 'nowrap' };
+const wrapDd: React.CSSProperties = { ...agentDetailStyles.dd, minWidth: 0, overflowWrap: 'anywhere' };
+
+export interface AgentDetailListProps {
+  /** [label, value] in display order; an empty value shows '-'. */
+  items: ReadonlyArray<readonly [label: string, value: unknown]>;
+  /** Let values wrap inside their <dd> instead of keeping each pair on one line. */
+  wrapValues?: boolean;
+}
+
+export function AgentDetailList({ items, wrapValues = false }: AgentDetailListProps) {
+  const pair = wrapValues ? wrapPair : agentDetailStyles.pair;
+  const dt = wrapValues ? wrapDt : agentDetailStyles.dt;
+  const dd = wrapValues ? wrapDd : agentDetailStyles.dd;
+  return (
+    <dl style={agentDetailStyles.dl}>
+      {items.map(([label, value]) => (
+        <div key={label} style={pair}>
+          <dt style={dt}>{label}</dt>
+          <dd style={dd}>{String(value || '-')}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export const formActionsStyle: React.CSSProperties = {
   display: 'flex',

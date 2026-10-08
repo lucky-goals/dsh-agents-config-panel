@@ -162,7 +162,6 @@ export const mcStyles: Record<string, S> = styles({
     overflow: 'hidden',
   },
   body: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
-  topbar: { display: 'flex', justifyContent: 'flex-end', padding: '8px 16px 0', flex: 'none' },
   scroll: {
     flex: 1,
     minHeight: 0,

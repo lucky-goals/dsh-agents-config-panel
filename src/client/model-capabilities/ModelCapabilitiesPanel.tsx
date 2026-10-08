@@ -3,10 +3,10 @@
  * subscribes with useSyncExternalStore, loads on mount, disposes on unmount,
  * and renders one view per snap.ui.
  *
- * Layout: [关闭] · scrolling main area (banners on top) · edit/bulk layer
+ * Layout: scrolling main area (banners on top) · edit/bulk layer
  * (absolute, 48px left for the save bar) · save bar · dialog · import preview ·
  * row menu. The import preview (ui.importPreview) counts as a dialog.
- * A layer makes the main area and the top bar inert; a dialog also makes the
+ * A layer makes the main area inert; a dialog also makes the
  * layer and the save bar inert. With a layer and no dialog, Tab cycles through
  * the layer and the save bar only; after a dialog, focus returns to the layer.
  */
@@ -33,7 +33,7 @@ import { Banner, Banners, useInert, useIsoLayoutEffect } from './components/shar
 
 export interface ModelCapabilitiesPanelProps {
   store: ModelCapabilitiesStore;
-  /** Host settings close (settings.section props); the button is hidden when absent. */
+  /** Host settings close (settings.section props); accepted for compatibility, no button is rendered. */
   close?: () => void;
 }
 
@@ -115,7 +115,8 @@ function MainView({ snap, store }: { snap: McSnapshot; store: ModelCapabilitiesS
 }
 
 export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.Element | null {
-  const { store, close } = props;
+  // `close` stays on the props type for the host contract, but is not rendered.
+  const { store } = props;
   const snap = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const { ui } = snap;
 
@@ -128,7 +129,6 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   const mainRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const topRef = useRef<HTMLDivElement>(null);
 
   const layer = layerOf(snap);
   // The import preview is not in ui.dialog, but counts as an open dialog (R3 1.8);
@@ -138,7 +138,6 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   useInert(mainRef, mainHidden);
   useInert(layerRef, dialog);
   useInert(barRef, dialog);
-  useInert(topRef, mainHidden);
 
   // Dialog over a layer: remember the layer control that had focus, and give it
   // back once the dialog is gone. This runs after useInert above has lifted the
@@ -247,11 +246,6 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
 
   return (
     <div ref={rootRef} style={s.root} onKeyDown={onKeyDown}>
-      {close && (
-        <div ref={topRef} style={s.topbar} aria-hidden={mainHidden ? 'true' : undefined}>
-          <Button onClick={close}>关闭</Button>
-        </div>
-      )}
       {/* Content column: the layer covers it down to the 48px save bar. */}
       <div style={s.body}>
         <div ref={mainRef} style={s.scroll} aria-hidden={mainHidden ? 'true' : undefined}>

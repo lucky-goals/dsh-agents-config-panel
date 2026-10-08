@@ -91,6 +91,52 @@ function firstColumn(html: string): string[] {
   return [...tbody.matchAll(/<tr><td[^>]*>([^<]*)/g)].map((m) => m[1]);
 }
 
+/**
+ * Panel A tools table: every <tr> of the first tbody, in document order, as its
+ * raw attribute string plus its inner HTML. A tool row carries no attributes; a
+ * spawn row's description row carries `data-agent-row="<row.id>"`.
+ */
+function toolTableRows(html: string): Array<{ attrs: string; html: string }> {
+  const tbody = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? '';
+  return [...tbody.matchAll(/<tr([^>]*)>([\s\S]*?)<\/tr>/g)].map((m) => ({ attrs: m[1], html: m[2] }));
+}
+
+/** toolName of a main row: the text of its first cell. */
+function rowToolName(row: { html: string }): string {
+  return (row.html.match(/^<td[^>]*>([^<]*)/)?.[1] ?? '').trim();
+}
+
+/** `data-agent-row` of a row, when it is a spawn description row. */
+function agentRowId(row: { attrs: string } | undefined): string | undefined {
+  return row?.attrs.match(/\sdata-agent-row="([^"]*)"/)?.[1];
+}
+
+/** The row right after `toolName`'s main row — the description row, when present. */
+function rowAfter(rows: Array<{ attrs: string; html: string }>, toolName: string): { attrs: string; html: string } | undefined {
+  const at = rows.findIndex((row) => rowToolName(row) === toolName);
+  return at === -1 ? undefined : rows[at + 1];
+}
+
+/** The <dt>/<dd> label-value pairs of a rendered <dl>, in order. */
+function detailPairs(html: string): Array<[string, string]> {
+  return [...html.matchAll(/<dt[^>]*>([^<]*)<\/dt>\s*<dd[^>]*>([^<]*)<\/dd>/g)].map((m) => [m[1], m[2]]);
+}
+
+/** The three agentOptions pairs a spawn description row must show ('-' when empty). */
+function expectedAgentOptions(config: Record<string, unknown>): Array<[string, string]> {
+  const options = (config.agentOptions ?? {}) as { provider?: unknown; model?: unknown; reasoningEffort?: unknown };
+  return [
+    ['Provider', String(options.provider || '-')],
+    ['Model', String(options.model || '-')],
+    ['Reasoning Effort', String(options.reasoningEffort || '-')],
+  ];
+}
+
+/** The four <td> attribute strings of one table row. */
+function cellAttrs(row: { html: string }): string[] {
+  return [...row.html.matchAll(/<td([^>]*)>/g)].map((m) => m[1]);
+}
+
 /** Panel B (v2.1 two-row layout): member names from each tbody's row header, in order. */
 function memberNames(html: string): string[] {
   return [...html.matchAll(/<th scope="row"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
@@ -1015,30 +1061,39 @@ describe('settings.section registration', () => {
     });
   }
 
-  it('forwards the host close prop into every panel', () => {
+  it('CL1: no registered panel renders a 关闭 button, with or without the host close prop', () => {
     const { ctx, registered } = fakeCtx();
     apply(ctx);
     expect(registered).toHaveLength(3);
+    /** Stable marker per section: a 0-length button list must not pass on empty output. */
+    const PANEL_MARKERS: Record<string, string> = {
+      'wuyou-subagents': 'data-panel="subagents"',
+      'wuyou-members': 'data-panel="members"',
+      'wuyou-model-capabilities': '模型能力',
+    };
     for (const { options, component } of registered) {
+      const id = String(options.id);
       // The new panel takes its store as a prop; the registration binds its own,
       // and a component that ignores the extra prop is unaffected by it.
-      const extra = String(options.id) === MODEL_CAP_SECTION.id ? { store: modelCapStore() } : {};
+      const extra = id === MODEL_CAP_SECTION.id ? { store: modelCapStore() } : {};
       // SSR does not run effects, so no request is issued.
       const withClose = renderToString(component({ close: () => {}, ...extra }));
-      expect(buttonTags(withClose, '关闭'), String(options.id)).toHaveLength(1);
+      expect(withClose, id).toContain(PANEL_MARKERS[id]);
+      expect(buttonTags(withClose, '关闭'), id).toHaveLength(0);
       const withoutClose = renderToString(component({ ...extra }));
-      expect(buttonTags(withoutClose, '关闭'), String(options.id)).toHaveLength(0);
+      expect(withoutClose, id).toContain(PANEL_MARKERS[id]);
+      expect(buttonTags(withoutClose, '关闭'), id).toHaveLength(0);
     }
   });
 
-  it('the header close button calls close', () => {
+  it('CL2: PanelHeader renders no 关闭 button even when the host passes close', () => {
     const close = vi.fn();
-    const tree = PanelHeader({ title: 't', loading: false, onRefresh: () => {}, close });
-    const button = findButton(tree, '关闭');
-    expect(button).toBeDefined();
-    (button!.props as { onClick: () => void }).onClick();
-    expect(close).toHaveBeenCalledTimes(1);
+    const withClose = PanelHeader({ title: 't', loading: false, onRefresh: () => {}, close });
+    expect(findButton(withClose, '关闭')).toBeUndefined();
+    // The rest of the header is untouched: 刷新 is still there.
+    expect(findButton(withClose, '刷新')).toBeDefined();
     expect(findButton(PanelHeader({ title: 't', loading: false, onRefresh: () => {} }), '关闭')).toBeUndefined();
+    expect(close).not.toHaveBeenCalled();
   });
 });
 
@@ -1269,5 +1324,146 @@ describe('v2.12 K16 Subagent 排序 (real fixture)', () => {
         expect(tag, `${toolName} ${direction}`).toContain('disabled');
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawn rows: a second, full-width description row with the agentOptions route.
+// ---------------------------------------------------------------------------
+describe('spawn agentOptions 描述行 (real fixture)', () => {
+  /** The real fixture's spawn rows, in patch order. */
+  function spawnRows() {
+    return listSubagents(FIXTURE).filter((row) => row.config.provider === 'spawn');
+  }
+
+  /** Render Panel A from the fixture, or from a hand-built state. */
+  async function renderSubagents(state?: (profile: string) => StateResponse): Promise<string> {
+    const store = createSubagentStore(fixtureApi(state));
+    await store.load();
+    return renderToString(<SubagentPanel store={store} />);
+  }
+
+  it('SP1: every spawn row is followed by a colSpan=4 row listing Provider / Model / Reasoning Effort', async () => {
+    const html = await renderSubagents();
+    const rows = toolTableRows(html);
+    const spawns = spawnRows();
+
+    // The four real spawn rows: subagent, coder, tester, front-designer.
+    expect(spawns.map((row) => row.config.toolName))
+      .toEqual(['subagent', 'subagent_coder', 'subagent_tester', 'subagent_front_designer']);
+
+    for (const row of spawns) {
+      const toolName = String(row.config.toolName);
+      const desc = rowAfter(rows, toolName);
+      expect(agentRowId(desc), `${toolName} 描述行`).toBe(row.id);
+      // One cell across the four columns, indented like the ACP command row.
+      expect(desc!.html, toolName).toMatch(/^<td colSpan="4" style="[^"]*"/);
+      expect(desc!.html, toolName).toContain('padding:2px 8px 8px 24px');
+      expect(desc!.html, toolName).toContain('<dl');
+      expect(detailPairs(desc!.html), toolName).toEqual(expectedAgentOptions(row.config));
+    }
+  });
+
+  it('SP2: fork / ACP / read-only non-spawn rows get no description row; the total equals the spawn count', async () => {
+    const html = await renderSubagents();
+    const rows = toolTableRows(html);
+
+    // 13 tool rows + one description row per spawn row.
+    expect(rows).toHaveLength(listSubagents(FIXTURE).length + spawnRows().length);
+    expect(rows.map((row) => agentRowId(row)).filter((id) => id !== undefined))
+      .toEqual(spawnRows().map((row) => row.id));
+
+    for (const toolName of ['subagent_fork', 'subagent_acp', 'subagent_cursor', 'subagent_codex', 'subagent_claude_code']) {
+      expect(agentRowId(rowAfter(rows, toolName)), toolName).toBeUndefined();
+    }
+  });
+
+  it('SP3: the spawn main row drops its own bottom border; the description cell carries the separator', async () => {
+    const html = await renderSubagents();
+    const rows = toolTableRows(html);
+
+    for (const row of spawnRows()) {
+      const toolName = String(row.config.toolName);
+      const main = rows.find((candidate) => rowToolName(candidate) === toolName);
+      expect(main, `${toolName} 主行`).toBeDefined();
+      const cells = cellAttrs(main!);
+      expect(cells, `${toolName} 列数`).toHaveLength(4);
+      for (const attrs of cells) expect(attrs, `${toolName} 主行 td`).toContain('border-bottom:none');
+
+      const descCell = cellAttrs(rowAfter(rows, toolName)!)[0] ?? '';
+      expect(descCell, `${toolName} 描述行 td`).toContain('padding:2px 8px 8px 24px');
+      expect(descCell, `${toolName} 描述行 td`).not.toContain('border-bottom:none');
+      expect(descCell, `${toolName} 描述行 td`).toContain('colSpan="4"');
+    }
+
+    // A non-spawn row keeps the shared separator on every cell.
+    const fork = rows.find((candidate) => rowToolName(candidate) === 'subagent_fork');
+    expect(fork, 'subagent_fork 主行').toBeDefined();
+    const forkCells = cellAttrs(fork!);
+    expect(forkCells).toHaveLength(4);
+    for (const attrs of forkCells) expect(attrs).toContain('border-bottom:1px solid var(--dsw-alias-border-l1)');
+  });
+
+  it('SP4: a spawn row without agentOptions still gets the row, with "-" for all three fields', async () => {
+    const html = await renderSubagents((profile) => ({
+      ...fixtureState(profile),
+      subagents: [
+        {
+          id: 'tool-subagent-bare',
+          disabled: false,
+          editable: true,
+          config: { provider: 'spawn', toolName: 'subagent_bare', backgroundMode: 'continuable' },
+        },
+        {
+          id: 'tool-subagent-locked',
+          disabled: false,
+          editable: false,
+          readOnlyReason: "provider 'spawn' 未注册，此行只读。安装对应插件并重启 DSH 后再编辑",
+          config: { provider: 'spawn', toolName: 'subagent_locked', agentOptions: { provider: 'gpt-gateway', model: 'gpt-6-luna', reasoningEffort: 'high' } },
+        },
+        {
+          id: 'tool-subagent-fork2',
+          disabled: false,
+          editable: true,
+          config: { provider: 'fork', toolName: 'subagent_fork2' },
+        },
+      ],
+    }));
+    const rows = toolTableRows(html);
+
+    // Missing agentOptions: the three fields fall back to '-'.
+    const bare = rowAfter(rows, 'subagent_bare');
+    expect(agentRowId(bare)).toBe('tool-subagent-bare');
+    expect(detailPairs(bare!.html)).toEqual([['Provider', '-'], ['Model', '-'], ['Reasoning Effort', '-']]);
+
+    // A read-only spawn row (isRowEditable false) keeps its description row too.
+    expect(rowHtml(html, 'subagent_locked'), 'subagent_locked 主行').toContain('只读');
+    const locked = rowAfter(rows, 'subagent_locked');
+    expect(agentRowId(locked)).toBe('tool-subagent-locked');
+    expect(detailPairs(locked!.html)).toEqual([
+      ['Provider', 'gpt-gateway'],
+      ['Model', 'gpt-6-luna'],
+      ['Reasoning Effort', 'high'],
+    ]);
+
+    // A hand-built non-spawn row next to them stays without one.
+    expect(agentRowId(rowAfter(rows, 'subagent_fork2'))).toBeUndefined();
+  });
+
+  /**
+   * SP5 is a non-regression note, not a new assertion: `rowHtml` / `firstColumn`
+   * only match attribute-free `<tr>` / `<tr><td`, so the description row is
+   * invisible to them. Their existing cases (13 rows in patch order, 编辑/删除
+   * enabled, 只读 rows) must keep passing unchanged.
+   */
+  it('SP5: rowHtml / firstColumn still see only the 13 main rows', async () => {
+    const html = await renderSubagents();
+    expect(firstColumn(html)).toHaveLength(13);
+    expect(firstColumn(html).map((cell) => cell.trim()))
+      .toEqual(listSubagents(FIXTURE).map((row) => String(row.config.toolName)));
+    // The spawn row's own HTML stops at its </tr>: no description-row content in it.
+    expect(rowHtml(html, 'subagent_coder')).toBeDefined();
+    expect(rowHtml(html, 'subagent_coder'), 'subagent_coder 主行').not.toContain('Reasoning Effort');
+    expect(rowHtml(html, 'subagent_coder'), 'subagent_coder 主行').not.toContain('data-agent-row');
   });
 });

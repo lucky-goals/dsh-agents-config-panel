@@ -14,6 +14,7 @@ import { Modal } from '../ui/Modal';
 import { TeamCreateDialog, TeamDeleteDialog, TeamsImportDialog } from './TeamsDialogs';
 import { LAST_TEAM_MESSAGE } from './members-panel-store';
 import {
+  AgentDetailList,
   DiagnosticsBanner,
   LoadingAnnouncer,
   PanelHeader,
@@ -28,7 +29,7 @@ import { isWriteBlocked } from '../ui/host-state';
 
 export interface MembersPanelProps {
   store: MembersPanelStore;
-  /** Closes the host settings dialog; passed by settings.section as `{ close }`. */
+  /** Passed by settings.section as `{ close }`; accepted for compatibility, no button is rendered. */
   close?: () => void;
 }
 
@@ -92,14 +93,11 @@ const memberTable = {
     overflowWrap: 'break-word',
   } as React.CSSProperties,
   actions: { ...cellBase, padding: '8px', whiteSpace: 'nowrap' } as React.CSSProperties,
+  /** Second row; its <dl> comes from the shared AgentDetailList. */
   details: { ...cellBase, padding: '2px 8px 8px', fontSize: '12px' } as React.CSSProperties,
-  dl: { display: 'flex', flexWrap: 'wrap', gap: '2px 16px', margin: 0 } as React.CSSProperties,
-  pair: { display: 'flex', gap: '4px', whiteSpace: 'nowrap' } as React.CSSProperties,
-  dt: { color: 'var(--dsw-alias-label-secondary)' } as React.CSSProperties,
-  dd: { margin: 0, color: 'var(--dsw-alias-label-primary)' } as React.CSSProperties,
 };
 
-export function MembersPanel({ store, close }: MembersPanelProps) {
+export function MembersPanel({ store }: MembersPanelProps) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
   useEffect(() => {
@@ -154,7 +152,6 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
         onImport={hasProfiles ? (file) => void store.importConfig(file) : undefined}
         importDisabled={blocked}
         importTitle={writeTitle}
-        close={close}
       />
       <DiagnosticsBanner diagnostics={state.diagnostics} />
       {!modalOpen && (
@@ -227,14 +224,7 @@ export function MembersPanel({ store, close }: MembersPanelProps) {
             </tr>
             <tr>
               <td colSpan={3} style={memberTable.details}>
-                <dl style={memberTable.dl}>
-                  {MEMBER_DETAILS.map(([label, key]) => (
-                    <div key={key} style={memberTable.pair}>
-                      <dt style={memberTable.dt}>{label}</dt>
-                      <dd style={memberTable.dd}>{String(member[key] || '-')}</dd>
-                    </div>
-                  ))}
-                </dl>
+                <AgentDetailList items={MEMBER_DETAILS.map(([label, key]) => [label, member[key]] as const)} />
               </td>
             </tr>
           </tbody>
