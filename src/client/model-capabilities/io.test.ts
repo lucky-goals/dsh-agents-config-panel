@@ -21,9 +21,9 @@ import {
   type ModelImportPreview,
   type ParsedModelFile,
 } from './io';
-import { computeOps, previewText } from './ops';
+import { computeOps, draftFromNamespaces, previewText } from './ops';
 import { DS_ROUTE_ID, NS_DS, NS_PI, type DraftState, type ProviderDraft } from './types';
-import { deepClone, draftModel, draftProvider } from './test-fixtures';
+import { deepClone, defaultCreds, draftModel, draftProvider, dsSlice, piSlice } from './test-fixtures';
 
 /** 固定时间：本地时间 2026-09-30 08:00:00 → 文件名 wuyou-models-20260930-080000.yaml。 */
 const FIXED_DATE = new Date(2026, 8, 30, 8, 0, 0);
@@ -1032,6 +1032,221 @@ describe('R3F-N1 提供方 ID 与 Object.prototype 同名时判 invalid', () => 
     expect(() => computeOps(EMPTY_DRAFT, applied, {})).not.toThrow();
     const ops = computeOps(EMPTY_DRAFT, applied, {});
     expect(JSON.stringify(ops.pi)).not.toContain('constructor');
+  });
+});
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 5 节）：I1–I6。
+ *
+ * 只追加用例，不动 io.ts。timeoutText 与草稿 / 载荷的 streamIdleTimeoutMs
+ * 现在还不是 ProviderDraft / ImportItem 的字段，用下面的小工具绕过类型，
+ * 保证这些用例失败在断言上。
+ * ========================================================================== */
+
+const T_KEY = 'streamIdleTimeoutMs';
+/** 契约 5 节的逐字 reason。 */
+const T_PI_INVALID = "提供方 'pi-bad' 的 streamIdleTimeoutMs 不合法：应为 1000–2147483647 的毫秒数";
+const T_DS_INVALID = 'DeepSeek 的 streamIdleTimeoutMs 不合法：应为 1000–2147483647 的毫秒数';
+
+function timeoutOf(p: ProviderDraft | undefined): unknown {
+  return p ? (p as unknown as Record<string, unknown>)[T_KEY] : undefined;
+}
+
+/** pi 草稿：在标准路由上补 R4b 的字段（还没进 ProviderDraft 的声明）。 */
+function piDraft(over: Record<string, unknown> = {}): ProviderDraft {
+  const base = draftProvider({ id: 'pi-gateway', api: 'openai-responses', apiKeyEnv: 'PI_API_KEY', models: [] });
+  return { ...base, ...over } as ProviderDraft;
+}
+
+/** DS 草稿：thinking/reasoningEffort 齐备，补 R4b 的字段。 */
+function dsDraft(over: Record<string, unknown> = {}): ProviderDraft {
+  const base = draftProvider({ id: DS_ROUTE_ID, ns: NS_DS, thinking: 'enabled', reasoningEffort: 'high', models: [] });
+  return { ...base, ...over } as ProviderDraft;
+}
+
+describe('R4b I1 导出只写显式值', () => {
+  it('I1 pi 显式 1800000 → 在 apiKeyEnv 之后、extra 之前；未设置不写；extra 残留 300000 不导出', () => {
+    const withValue = piDraft({ [T_KEY]: 1800000, extra: { keepVendor: 'v' } });
+    const text = exportModelConfig({ providers: { 'pi-gateway': withValue } }, { date: FIXED_DATE });
+    expect(text).toContain('streamIdleTimeoutMs: 1800000');
+    const gw = asRecord(asRecord(parseExport(text).providers)['pi-gateway']);
+    const keys = Object.keys(gw);
+    expect(gw[T_KEY]).toBe(1800000);
+    expect(keys.indexOf(T_KEY)).toBeGreaterThan(keys.indexOf('apiKeyEnv'));
+    expect(keys.indexOf(T_KEY)).toBeLessThan(keys.indexOf('keepVendor'));
+    expect(keys.indexOf(T_KEY)).toBeLessThan(keys.indexOf('models'));
+
+    // 未设置 → 一个字节都不写
+    const none = exportModelConfig({ providers: { 'pi-gateway': piDraft() } }, { date: FIXED_DATE });
+    expect(none).not.toContain(T_KEY);
+
+    // value 层的 300000 曾经泄露进 extra：不再导出（known 集合已含这个键）
+    const leaked = exportModelConfig({ providers: { 'pi-gateway': piDraft({ extra: { [T_KEY]: 300000 } }) } }, { date: FIXED_DATE });
+    expect(leaked).not.toContain(T_KEY);
+  });
+
+  it('I1 DS 同理：显式值在 reasoningEffort 之后，未设置不写', () => {
+    const text = exportModelConfig({ providers: { [DS_ROUTE_ID]: dsDraft({ [T_KEY]: 1800000 }) } }, { date: FIXED_DATE });
+    const ds = asRecord(parseExport(text).deepseek);
+    expect(ds[T_KEY]).toBe(1800000);
+    const keys = Object.keys(ds);
+    expect(keys.indexOf(T_KEY)).toBeGreaterThan(keys.indexOf('reasoningEffort'));
+    expect(keys.indexOf(T_KEY)).toBeLessThan(keys.indexOf('models'));
+
+    const none = exportModelConfig({ providers: { [DS_ROUTE_ID]: dsDraft() } }, { date: FIXED_DATE });
+    expect(none).not.toContain(T_KEY);
+  });
+});
+
+describe('R4b I2 导入 new：没有键补 1800000，有合法值用文件值', () => {
+  it('I2 无键 → 1800000；600000 → 600000；extra 里都不留这个键', () => {
+    const missing = previewOne({ providers: { 'pi-new': { api: 'openai-completions', models: [] } } });
+    expect(missing.kind).toBe('new');
+    expect(timeoutOf(missing.provider)).toBe(1800000);
+    expect(missing.provider!.extra).not.toHaveProperty(T_KEY);
+
+    const explicit = previewOne({
+      providers: { 'pi-new': { api: 'openai-completions', streamIdleTimeoutMs: 600000, models: [] } },
+    });
+    expect(explicit.kind).toBe('new');
+    expect(timeoutOf(explicit.provider)).toBe(600000);
+    expect(explicit.provider!.extra).not.toHaveProperty(T_KEY);
+  });
+});
+
+describe('R4b I3 导入 invalid：整项 invalid，reason 逐字', () => {
+  it.each([[0], ['1800000'], [2147483648], [999]])('I3 pi 文件 streamIdleTimeoutMs=%s → invalid', (bad) => {
+    const item = previewOne({ providers: { 'pi-bad': { api: 'openai-completions', streamIdleTimeoutMs: bad, models: [] } } });
+    expect(item.kind).toBe('invalid');
+    expect(item.reason).toBe(T_PI_INVALID);
+    expect(item.checked).toBe(false);
+    expect(item.checkable).toBe(false);
+    expect(item.provider, '有错的提供方不进入载荷').toBeUndefined();
+  });
+
+  it.each([[0], ['1800000'], [2147483648], [999]])('I3 DS 文件 streamIdleTimeoutMs=%s → invalid', (bad) => {
+    const item = previewOne({ providers: {}, deepseek: { streamIdleTimeoutMs: bad, models: [] } }, draftWithDs(), WITH_DS);
+    expect(item.kind).toBe('invalid');
+    expect(item.reason).toBe(T_DS_INVALID);
+    expect(item.checkable).toBe(false);
+    expect(item.deepseek, '有错的 DeepSeek 节不进入载荷').toBeUndefined();
+  });
+});
+
+describe('R4b I4 conflict 合并：载荷有值就覆盖并删掉输入原文，没值就保留本地', () => {
+  const localDraft = (): DraftState => ({
+    providers: {
+      'pi-existing': piDraft({
+        models: [draftModel({ id: 'old-model' })],
+        [T_KEY]: 1800000,
+        timeoutText: '30',
+      }),
+    },
+  });
+
+  it('I4 文件 600000 → 本地改为 600000、timeoutText 删除、reason 带后缀', () => {
+    const draft = localDraft();
+    const item = previewOne(
+      { providers: { 'pi-existing': { api: 'openai-completions', streamIdleTimeoutMs: 600000, models: [{ id: 'file-model' }] } } },
+      draft,
+    );
+    expect(item.kind).toBe('conflict');
+    expect(item.reason).toBe("提供方 'pi-existing' 已存在；流空闲超时将改为 10 分钟");
+
+    const merged = applyModelImport(draft, [item], new Set(['pi-existing'])).providers['pi-existing'];
+    expect(timeoutOf(merged)).toBe(600000);
+    expect(has(merged, 'timeoutText')).toBe(false);
+  });
+
+  it('I4 文件没有该键 → 本地保留，reason 与 R3 原文逐字相同', () => {
+    const draft = localDraft();
+    const item = previewOne(
+      { providers: { 'pi-existing': { api: 'openai-completions', models: [{ id: 'file-model' }] } } },
+      draft,
+    );
+    expect(item.kind).toBe('conflict');
+    expect(item.reason).toBe("提供方 'pi-existing' 已存在");
+
+    const merged = applyModelImport(draft, [item], new Set(['pi-existing'])).providers['pi-existing'];
+    expect(timeoutOf(merged)).toBe(1800000);
+  });
+
+  it('I4 文件值与本地显式值相同 → reason 仍与 R3 原文逐字相同', () => {
+    const item = previewOne(
+      { providers: { 'pi-existing': { api: 'openai-completions', streamIdleTimeoutMs: 1800000, models: [{ id: 'file-model' }] } } },
+      localDraft(),
+    );
+    expect(item.reason).toBe("提供方 'pi-existing' 已存在");
+  });
+});
+
+describe('R4b I5 DS conflict 合并：文件 1800000 → 草稿值 1800000，产出一条 ds set', () => {
+  it('I5 DS 合并后 computeOps 产出 ds set [streamIdleTimeoutMs]', () => {
+    const draft: DraftState = {
+      providers: { [DS_ROUTE_ID]: dsDraft({ models: [draftModel({ id: 'deepseek-chat' })] }) },
+    };
+    const file: ParsedModelFile = { providers: {}, deepseek: { streamIdleTimeoutMs: 1800000, models: [] } };
+    const item = previewOne(file, draft, WITH_DS);
+    expect(item.kind).toBe('conflict');
+    // 本地未设置也算「不同」，要有后缀
+    expect(item.reason).toBe('DeepSeek 已存在；流空闲超时将改为 30 分钟');
+
+    const next = applyModelImport(draft, [item], new Set(['deepseek']));
+    expect(timeoutOf(next.providers[DS_ROUTE_ID])).toBe(1800000);
+
+    const ops = computeOps(draft, next, {});
+    expect(ops.ds.filter((op) => op.path.join('.') === T_KEY)).toEqual([
+      { op: 'set', path: [T_KEY], value: 1800000 },
+    ]);
+  });
+});
+
+describe('R4b I6 往返：新 fixture 导出 → 解析 → 预览 → 全选 apply 后没有 timeout op', () => {
+  it('I6 base 的显式值在草稿字段上，往返之后两侧都不产 timeout op', () => {
+    const base = draftFromNamespaces({ pi: piSlice(7), ds: dsSlice(11), creds: defaultCreds() });
+    // 前提：显式值在草稿字段上，不在 extra 里
+    expect(timeoutOf(base.providers['gpt-gateway'])).toBe(1800000);
+    expect(base.providers['gpt-gateway'].extra).not.toHaveProperty(T_KEY);
+    expect(timeoutOf(base.providers[DS_ROUTE_ID])).toBeUndefined();
+
+    const file = parseModelConfig(exportModelConfig(base, { date: FIXED_DATE }));
+    const preview = previewModelImport(file, base, WITH_DS);
+    const next = applyModelImport(base, preview.items, new Set(preview.items.map((item) => item.id)));
+
+    expect(timeoutOf(next.providers['gpt-gateway'])).toBe(1800000);
+    expect(timeoutOf(next.providers[DS_ROUTE_ID])).toBeUndefined();
+
+    const ops = computeOps(base, next, {});
+    expect(ops.pi.filter((op) => op.path.includes(T_KEY))).toEqual([]);
+    expect(ops.ds.filter((op) => op.path.includes(T_KEY))).toEqual([]);
+  });
+});
+
+describe('R4b I7 非整数毫秒：导入时按 Math.round 取整', () => {
+  it('I7 文件 1500.5 → new 载荷 1501；conflict 合并覆盖本地后也是 1501', () => {
+    const fresh = previewOne({
+      providers: { 'pi-new': { api: 'openai-completions', streamIdleTimeoutMs: 1500.5, models: [] } },
+    });
+    expect(fresh.kind).toBe('new');
+    expect(timeoutOf(fresh.provider)).toBe(1501);
+
+    const draft: DraftState = {
+      providers: {
+        'pi-existing': piDraft({ models: [draftModel({ id: 'old-model' })], [T_KEY]: 1800000, timeoutText: '30' }),
+      },
+    };
+    const item = previewOne(
+      {
+        providers: {
+          'pi-existing': { api: 'openai-completions', streamIdleTimeoutMs: 1500.5, models: [{ id: 'file-model' }] },
+        },
+      },
+      draft,
+    );
+    expect(item.kind).toBe('conflict');
+
+    const merged = applyModelImport(draft, [item], new Set(['pi-existing'])).providers['pi-existing'];
+    expect(timeoutOf(merged)).toBe(1501);
   });
 });
 

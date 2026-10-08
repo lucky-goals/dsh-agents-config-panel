@@ -10,9 +10,22 @@ import {
   parseModelConfig,
   previewModelImport,
 } from './io';
+import { MODEL_TEST_UNSUPPORTED } from '../shared/api-client';
 import { bulkPlan, newBulk, bulkResultMsg } from './bulk';
 import { parseCap } from './capacity';
 import { deriveEnv } from './efforts';
+import { parseTimeoutMinutes } from './timeout';
+import {
+  TEST_CONCURRENCY,
+  batchStats,
+  blockReason,
+  doneAnnounce,
+  progressText,
+  resultAnnounce,
+  resultState,
+  testDetailText,
+  testKey,
+} from './model-test';
 import { allErrors, providerIdError, secretError, wizardErrors } from './validate';
 import {
   computeOps,
@@ -36,14 +49,19 @@ import {
   type HeaderPair,
   type InputModality,
   type McSnapshot,
+  type McTestState,
   type McUi,
   type ModelCapabilitiesPort,
   type ModelCapabilitiesStore,
   type ModelDraft,
+  type ModelTester,
+  type ModelTestResult,
   type NamespaceSlice,
   type ProviderDraft,
   type ReasoningMap,
   type RemoteError,
+  type TestBatchLabel,
+  type TestEntry,
   type WizardDraft,
   ALL_EFFORTS,
 } from './types';
@@ -116,6 +134,64 @@ function defaultWizard(): WizardDraft {
     headersOpen: false,
     headers: [],
     models: [''],
+    timeoutText: '30',
+  };
+}
+
+/* ---------------- R4a 模型测试（docs/specs/r4a-model-test.md §2.3） ---------------- */
+interface TestJob { key: string; route: string; modelId: string; gen: number; seq: number }
+type TestOutcome = { ok: true; res: ModelTestResult } | { ok: false; error: unknown };
+
+function initialTestState(): McTestState {
+  return { hostUnsupported: false, results: {}, batches: {}, open: null, cost: null, skipCost: false, blocked: {}, live: '' };
+}
+
+const isBusy = (entry: TestEntry | undefined): boolean => entry?.state === 'queued' || entry?.state === 'running';
+
+const withoutPrev = (entry: TestEntry): TestEntry => {
+  const copy = { ...entry };
+  delete copy.prev;
+  return copy;
+};
+
+function isThenable(value: unknown): boolean {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
+}
+
+function errorField(error: unknown, field: 'code' | 'status' | 'message'): unknown {
+  return typeof error === 'object' && error !== null ? (error as Record<string, unknown>)[field] : undefined;
+}
+
+/**
+ * Client 侧失败（tester 抛错）合成的结果：BUSY / HOST_UNAVAILABLE / HOST_UNREACHABLE / HOST_ERROR。
+ * HOST_UNREACHABLE 只给「TypeError 且无 status」（fetch 网络失败）；其余无 status 的错误
+ * （含 tester 同步抛错、返回非 thenable）都是 HOST_ERROR、非 transient。
+ */
+function synthTestResult(route: string, modelId: string, error: unknown): ModelTestResult {
+  const rawStatus = errorField(error, 'status');
+  const status = typeof rawStatus === 'number' ? rawStatus : null;
+  const code = errorField(error, 'code');
+  const rawMessage = errorField(error, 'message');
+  let errorKind = 'HOST_ERROR';
+  let transient = false;
+  if (status === 409 && code === 'BUSY') { errorKind = 'BUSY'; transient = true; }
+  else if (status === 503) { errorKind = 'HOST_UNAVAILABLE'; transient = true; }
+  else if (status === null && error instanceof TypeError) { errorKind = 'HOST_UNREACHABLE'; transient = true; }
+  return {
+    provider: route,
+    model: modelId,
+    ok: false,
+    latencyMs: 0,
+    firstTokenMs: null,
+    sample: '',
+    finish: null,
+    errorKind,
+    status,
+    message: typeof rawMessage === 'string' ? rawMessage : String(error),
+    transient,
+    params: { effort: null, maxTokens: 32, timeoutMs: 20000 },
+    testedAt: new Date().toISOString(),
   };
 }
 
@@ -123,7 +199,11 @@ function errorCount(errors: AllErrors): boolean {
   return Object.values(errors).some((entry) => Object.keys(entry.route).length || entry.models.some((m) => Object.keys(m).length));
 }
 
-export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): ModelCapabilitiesStore {
+export function createModelCapabilitiesStore(
+  port: ModelCapabilitiesPort,
+  options: { tester?: ModelTester } = {},
+): ModelCapabilitiesStore {
+  const tester = options.tester;
   let snapshot = initialSnapshot();
   let draft: DraftState = { providers: {} };
   let base: DraftState = { providers: {} };
@@ -140,6 +220,17 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   let disposers: Array<() => void> = [];
   let loaded = false;
   let loadingPromise: Promise<void> | null = null;
+  // 每轮 load 的序号；dispose 自增以作废在途轮次（见 load / dispose）。
+  let loadSeq = 0;
+  // R4a：仅注入 tester 时存在。`gen` 作废迟到回包，`jobSeq` 记每个键最后一次入队的 seq。
+  let test: McTestState | undefined = tester ? initialTestState() : undefined;
+  let queue: TestJob[] = [];
+  let active = 0;
+  let gen = 0;
+  let seq = 0;
+  const jobSeq = new Map<string, number>();
+  const controllers = new Map<string, AbortController>();
+  let disposed = false;
 
   const notify = () => {
     for (const listener of listeners) listener();
@@ -157,6 +248,8 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   };
 
   const publish = (patch?: Partial<McSnapshot>) => {
+    // dispose 之后一律不再通知监听器（§2.3）；所有 publish 入口（statusPatch / publishTest / setUi…）都经过这里。
+    if (disposed) return;
     const computed = computeOps(base, draft, secrets);
     const cred = mergedCredOps(computed.cred);
     const dirtySet = new Set(computed.dirtySet);
@@ -183,6 +276,22 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       secretSet,
       ...patch,
     };
+    if (test) {
+      // 门控按「已保存」判断：密钥单独算 secretPending，所以 dirty 只看设置改动。
+      const settingsDirty = Object.keys(secrets).length ? computeOps(base, draft, {}).dirtySet : computed.dirtySet;
+      const credRoutes = new Set(pendingCred.flatMap((op) => refsToRoutes(op.ref)));
+      const blocked: Record<string, string | null> = {};
+      for (const route of Object.keys(draft.providers)) {
+        blocked[route] = blockReason({
+          hostUnsupported: test.hostUnsupported,
+          saving: next.ui.saving,
+          isNew: !base.providers[route],
+          dirty: settingsDirty.has(route),
+          secretPending: Boolean(secretSet[route]) || credRoutes.has(route),
+        });
+      }
+      next.test = { ...test, blocked };
+    }
     snapshot = next;
     notify();
   };
@@ -311,6 +420,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         if (nextUi.bulk && !draft.providers[nextUi.bulk.route]) nextUi = { ...nextUi, bulk: null };
       }
     }
+    clearTests();
     publish({
       loadError: null,
       saveError: null,
@@ -390,8 +500,13 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
   };
 
   const load = async (): Promise<void> => {
+    // dispose 只结束一次挂载周期；下一次 load 重新启用 store（面板重新挂载 / StrictMode）。
+    // 复位必须在复用 loadingPromise 的早退之前：dispose 期间结束的旧轮次，其 publish 已被吞掉，
+    // 不能复用（拿不到 loading:false），所以 dispose 时丢弃旧 promise，这里发起新的一轮。
+    disposed = false;
     if (loadingPromise) return loadingPromise;
-    loadingPromise = (async () => {
+    const token = ++loadSeq;
+    const run = (async () => {
       publish({ ui: { ...snapshot.ui, loading: true } });
       subscribeEvents();
       try {
@@ -399,10 +514,12 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       } catch (error) {
         publish({ loadError: String(error), ui: { ...snapshot.ui, loading: false } });
       } finally {
-        loadingPromise = null;
+        // 只清自己这一轮：被 dispose 作废的旧轮次迟到结束时，不能清掉新一轮的 promise。
+        if (token === loadSeq) loadingPromise = null;
       }
     })();
-    return loadingPromise;
+    loadingPromise = run;
+    return run;
   };
 
   const reload = async (): Promise<void> => {
@@ -517,6 +634,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
         publish({});
       }
       pendingCred = [];
+      clearTests();
       const ui = { ...snapshot.ui, saving: false, saved: true, status: addedProvider ? `${NS_PI} 已写入。` : '已保存。', sel: {}, undo: null };
       publish({ saveError: null, ui: { ...ui, previewReturn: null, importPreview: null } });
       if (snapshot.ui.bulk) publish({ ui: { ...ui, bulk: null } });
@@ -533,8 +651,9 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     publish({ saveError: null, ui: { ...snapshot.ui, saved: false, conflict: 'hidden', status: '', edit: null, bulk: null, dialog: null, importPreview: null } });
   };
 
-  const enter = (routeId: string) => setUi((ui) => { ui.view = 'detail'; ui.route = routeId; ui.edit = null; ui.bulk = null; ui.dialog = null; });
-  const backToList = () => setUi((ui) => { ui.view = 'list'; ui.route = null; ui.edit = null; ui.bulk = null; ui.menuIdx = null; });
+  const closeTestDetail = () => { if (test) test = { ...test, open: null }; };
+  const enter = (routeId: string) => setUi((ui) => { closeTestDetail(); ui.view = 'detail'; ui.route = routeId; ui.edit = null; ui.bulk = null; ui.dialog = null; });
+  const backToList = () => setUi((ui) => { closeTestDetail(); ui.view = 'list'; ui.route = null; ui.edit = null; ui.bulk = null; ui.menuIdx = null; });
   const openPreview = () => setUi((ui) => { ui.previewReturn = { view: ui.view, route: ui.route }; ui.view = 'preview'; ui.edit = null; ui.bulk = null; });
   const closePreview = () => setUi((ui) => { const back = ui.previewReturn; ui.view = back?.view ?? 'list'; ui.route = back?.route ?? null; ui.previewReturn = null; });
   const openAddProvider = () => {
@@ -550,7 +669,7 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     if (w.step === 1) return wizardPatch({ step: 2 });
     if (w.step === 2) {
       const e = wizardErrors(w, draft);
-      if (e.id || !w.ack || secretError(wizardSecret)) return wizardPatch({ tried2: true });
+      if (e.id || e.timeout || !w.ack || secretError(wizardSecret)) return wizardPatch({ tried2: true });
       return wizardPatch({ step: 3 });
     }
   };
@@ -562,8 +681,9 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     const w = snapshot.ui.wizard;
     if (!w) return;
     const e = wizardErrors(w, draft);
-    if (e.id || e.models || e.headers || !w.api || !w.ack || secretError(wizardSecret)) return;
+    if (e.id || e.models || e.headers || e.timeout || !w.api || !w.ack || secretError(wizardSecret)) return;
     const id = w.id.trim();
+    const timeout = parseTimeoutMinutes(w.timeoutText);
     const provider: ProviderDraft = {
       id,
       ns: NS_PI,
@@ -577,6 +697,8 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
       credConfigured: false,
       credWritable: true,
     };
+    // 合法分钟 → 整数毫秒；清空 → 不设（走 DSH 默认）。
+    if (timeout.kind === 'ok') provider.streamIdleTimeoutMs = timeout.ms;
     mutateDraft((next) => { next.providers[id] = provider; }, { ui: { ...snapshot.ui, view: 'detail', route: id, wizard: null, saved: false } });
     if (wizardSecret) secrets[id] = wizardSecret;
     wizardSecret = '';
@@ -906,6 +1028,31 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     if (!undo || !draft.providers[undo.route]) return;
     mutateDraft((next) => { next.providers[undo.route].models.splice(undo.idx, 0, clone(undo.model)); }, { ui: { ...snapshot.ui, undo: null } });
   };
+  /** 流空闲超时：按 route 寻址（DS 传 DS_ROUTE_ID）。route 不存在、只读或保存中时 no-op，不 publish。 */
+  const mutateTimeout = (route: string, fn: (p: ProviderDraft) => void) => {
+    if (snapshot.ui.readonly || snapshot.ui.saving || !has(draft.providers, route)) return;
+    mutateDraft((next) => fn(next.providers[route]));
+  };
+  const setTimeoutText = (route: string, text: string) => mutateTimeout(route, (p) => { p.timeoutText = text; });
+  const blurTimeout = (route: string) => {
+    const text = has(draft.providers, route) ? draft.providers[route].timeoutText : undefined;
+    if (text === undefined) return;
+    const parsed = parseTimeoutMinutes(text);
+    if (parsed.kind === 'error') return; // 保留原文，继续标红
+    mutateTimeout(route, (p) => {
+      if (parsed.kind === 'ok') p.streamIdleTimeoutMs = parsed.ms;
+      else delete p.streamIdleTimeoutMs;
+      delete p.timeoutText;
+    });
+  };
+  const setTimeoutPreset = (route: string, ms: number) => mutateTimeout(route, (p) => {
+    p.streamIdleTimeoutMs = ms;
+    delete p.timeoutText;
+  });
+  const resetTimeout = (route: string) => mutateTimeout(route, (p) => {
+    delete p.streamIdleTimeoutMs;
+    delete p.timeoutText;
+  });
   const toggleAdv = (railKey: string) => setUi((ui) => { ui.showAdv = { ...ui.showAdv, [railKey]: !ui.showAdv[railKey] }; });
   const dismissStatus = () => publish({ saveError: null, ui: { ...snapshot.ui, status: '' } });
   const keepConflict = () => publish({ saveError: '草稿还在，但解除冲突前保存会失败。', ui: { ...snapshot.ui, conflict: 'kept' } });
@@ -966,8 +1113,278 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     publish({ ui: { ...snapshot.ui, importPreview: null } });
   };
 
+  /* ---------------- R4a 模型测试：队列、批量、门控（§2.3） ---------------- */
+  const publishTest = (next: Partial<McTestState>, ui?: Partial<McUi>) => {
+    if (!test || disposed) return;
+    test = { ...test, ...next };
+    publish(ui ? { ui: { ...snapshot.ui, ...ui } } : undefined);
+  };
+
+  const abortAll = () => {
+    for (const controller of controllers.values()) controller.abort();
+    controllers.clear();
+  };
+
+  /** 作废所有在途与排队的测试（resetFromDescribe、save 成功、dispose）；skipCost 保留。 */
+  const clearTests = () => {
+    if (!test) return;
+    gen += 1;
+    active = 0;
+    queue = [];
+    jobSeq.clear();
+    abortAll();
+    test = { ...initialTestState(), skipCost: test.skipCost };
+  };
+
+  /** 门控原因：取 publish 现算的 blocked；路由不在草稿里时按「新建」处理。 */
+  const gateReason = (route: string): string | null => {
+    const blocked = snapshot.test?.blocked;
+    if (blocked && has(blocked, route)) return blocked[route];
+    return blockReason({ hostUnsupported: !!test?.hostUnsupported, saving: snapshot.ui.saving, isNew: true, dirty: false, secretPending: false });
+  };
+
+  const enqueue = (results: Record<string, TestEntry>, route: string, modelId: string, front: boolean) => {
+    const key = testKey(route, modelId);
+    const current = results[key];
+    seq += 1;
+    jobSeq.set(key, seq);
+    const prev = current && !isBusy(current) ? withoutPrev(current) : current?.prev;
+    results[key] = prev ? { state: 'queued', prev } : { state: 'queued' };
+    const job: TestJob = { key, route, modelId, gen, seq };
+    if (front) queue.unshift(job); else queue.push(job);
+  };
+
+  const batchOf = (key: string): string | null => {
+    if (!test) return null;
+    for (const [route, b] of Object.entries(test.batches)) {
+      if (!b.done && b.keys.includes(key)) return route;
+    }
+    return null;
+  };
+
+  const finishJob = (job: TestJob, res: ModelTestResult) => {
+    if (!test) return;
+    const results = { ...test.results, [job.key]: { state: resultState(res), result: res, at: Date.now() } };
+    let live = resultAnnounce(job.modelId, res);
+    let batches = test.batches;
+    const route = batchOf(job.key);
+    if (route) {
+      const b = batches[route];
+      const stats = batchStats(b, results);
+      live += `。${progressText(stats)}`;
+      if (!stats.running && !stats.queued) {
+        const done = { ...b, done: true, endedAt: Date.now() };
+        batches = { ...batches, [route]: done };
+        live = doneAnnounce(done, stats);
+      }
+    }
+    test = { ...test, results, batches, live };
+  };
+
+  const markHostUnsupported = () => {
+    if (!test) return;
+    gen += 1;
+    active = 0;
+    queue = [];
+    jobSeq.clear();
+    abortAll();
+    const results: Record<string, TestEntry> = {};
+    for (const [key, entry] of Object.entries(test.results)) {
+      if (!isBusy(entry)) results[key] = entry;
+      else if (entry.prev) results[key] = entry.prev;
+    }
+    const open = test.open && results[test.open]?.result ? test.open : null;
+    test = { ...test, hostUnsupported: true, results, batches: {}, cost: null, open };
+    publish({ ui: { ...snapshot.ui, status: MODEL_TEST_UNSUPPORTED } });
+  };
+
+  const settle = (job: TestJob, controller: AbortController, outcome: TestOutcome) => {
+    if (controllers.get(job.key) === controller) controllers.delete(job.key);
+    // gen 过期（含 AbortError）：clearTests / HOST_UNSUPPORTED 已把 active 归零，直接丢弃。
+    if (disposed || !test || job.gen !== gen) return;
+    active = Math.max(0, active - 1);
+    const entry = test.results[job.key];
+    if (jobSeq.get(job.key) !== job.seq || entry?.state !== 'running') {
+      pump();
+      publish();
+      return;
+    }
+    if (!outcome.ok && errorField(outcome.error, 'code') === 'HOST_UNSUPPORTED') {
+      markHostUnsupported();
+      return;
+    }
+    finishJob(job, outcome.ok ? outcome.res : synthTestResult(job.route, job.modelId, outcome.error));
+    pump();
+    publish();
+  };
+
+  /** 并发 3：取队首，跳过作废或已不是 queued 的作业。只改 test，由调用方 publish。 */
+  function pump(): void {
+    if (!tester || !test) return;
+    while (active < TEST_CONCURRENCY && queue.length) {
+      const job = queue.shift();
+      if (!job) break;
+      const entry: TestEntry | undefined = test.results[job.key];
+      if (job.gen !== gen || jobSeq.get(job.key) !== job.seq || entry?.state !== 'queued') continue;
+      active += 1;
+      test = { ...test, results: { ...test.results, [job.key]: { ...entry, state: 'running', startedAt: Date.now() } } };
+      const controller = new AbortController();
+      controllers.set(job.key, controller);
+      // tester 是注入依赖：同步抛错或返回非 thenable 都按契约违规落 reject（HOST_ERROR），
+      // 保证条目进终态、并发槽经 settle 归还。非 thenable 用普通 Error，避免被当成 fetch 的 TypeError。
+      let pending: Promise<ModelTestResult>;
+      try {
+        const ret: unknown = tester({ provider: job.route, model: job.modelId }, controller.signal);
+        pending = isThenable(ret)
+          ? Promise.resolve(ret as PromiseLike<ModelTestResult>)
+          : Promise.reject(new Error('tester 返回值不是 Promise'));
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      pending.then(
+        (res) => settle(job, controller, { ok: true, res }),
+        (error: unknown) => settle(job, controller, { ok: false, error }),
+      );
+    }
+  }
+
+  const testModel = (route: string, modelId: string) => {
+    if (!test || disposed || !modelId) return;
+    const reason = gateReason(route);
+    if (reason) return statusPatch(`${reason}。`);
+    const key = testKey(route, modelId);
+    if (isBusy(test.results[key])) return;
+    const results = { ...test.results };
+    enqueue(results, route, modelId, true);
+    test = { ...test, results };
+    pump();
+    publish();
+  };
+
+  const startBatch = (route: string, ids: string[], label: TestBatchLabel) => {
+    if (!test) return;
+    const results = { ...test.results };
+    for (const id of ids) enqueue(results, route, id, false);
+    const batch = { route, keys: ids.map((id) => testKey(route, id)), label, stopped: false, done: false, startedAt: Date.now() };
+    test = { ...test, results, batches: { ...test.batches, [route]: batch }, live: `开始测试 ${ids.length} 个模型，并发 ${TEST_CONCURRENCY}。` };
+    pump();
+    publish();
+  };
+
+  /** 门控 → 批次在途 → 去掉忙的 id；空则提示。返回可入队的 id，或 null（已给出 status）。 */
+  const batchTargets = (route: string, ids: string[]): string[] | null => {
+    if (!test) return null;
+    const reason = gateReason(route);
+    if (reason) { statusPatch(`${reason}。`); return null; }
+    const running = test.batches[route];
+    if (running && !running.done) { statusPatch('正在批量测试，先等它完成或停止。'); return null; }
+    const results = test.results;
+    const targets = [...new Set(ids.filter(Boolean))].filter((id) => !isBusy(results[testKey(route, id)]));
+    if (!targets.length) { statusPatch('没有可测试的模型。'); return null; }
+    return targets;
+  };
+
+  const requestBatch = (route: string, ids: string[], label: TestBatchLabel) => {
+    if (!test || disposed) return;
+    const targets = batchTargets(route, ids);
+    if (!targets) return;
+    if (targets.length > 1 && !test.skipCost && draft.providers[route]?.credConfigured) {
+      publishTest({ cost: { route, modelIds: targets, label } });
+      return;
+    }
+    startBatch(route, targets, label);
+  };
+
+  const modelIds = (route: string): string[] => (draft.providers[route]?.models ?? []).map((m) => m.id);
+  const testProvider = (route: string) => requestBatch(route, modelIds(route), '全部模型');
+  const testAll = () => { if (snapshot.ui.route) testProvider(snapshot.ui.route); };
+  const testSelected = () => {
+    const route = snapshot.ui.route;
+    if (!route) return;
+    const models = draft.providers[route]?.models ?? [];
+    const ids = (snapshot.ui.sel[route] ?? []).map((idx) => models[idx]?.id ?? '');
+    requestBatch(route, ids, '所选模型');
+  };
+  const batchKeysIn = (route: string, states: readonly string[]): string[] => {
+    const b = test?.batches[route];
+    if (!test || !b) return [];
+    const results = test.results;
+    return b.keys
+      .filter((key) => states.includes(results[key]?.state ?? 'queued'))
+      .map((key) => key.slice(route.length + 1));
+  };
+  const retryFailed = (route: string) => requestBatch(route, batchKeysIn(route, ['fail', 'transient']), '重试失败项');
+  const retryCancelled = (route: string) => requestBatch(route, batchKeysIn(route, ['cancelled']), '已取消的模型');
+
+  const stopBatch = (route: string) => {
+    const b = test?.batches[route];
+    if (!test || !b || b.done) return;
+    const keys = new Set(b.keys);
+    const results = { ...test.results };
+    let cancelled = 0;
+    let running = 0;
+    for (const key of b.keys) {
+      const entry = results[key];
+      if (entry?.state === 'queued') {
+        results[key] = { state: 'cancelled' };
+        cancelled += 1;
+      } else if (entry?.state === 'running') {
+        running += 1;
+      }
+    }
+    queue = queue.filter((job) => !keys.has(job.key));
+    const stopped = { ...b, stopped: true, ...(running ? {} : { done: true, endedAt: Date.now() }) };
+    const live = running
+      ? `已取消 ${cancelled} 个未开始的测试，${running} 个已发出的请求会等它返回。`
+      : `已取消 ${cancelled} 个未开始的测试。`;
+    publishTest({ results, batches: { ...test.batches, [route]: stopped }, live });
+  };
+
+  const dismissBatch = (route: string) => {
+    const b = test?.batches[route];
+    if (!test || !b?.done) return;
+    const batches = { ...test.batches };
+    delete batches[route];
+    publishTest({ batches });
+  };
+
+  const toggleTestDetail = (route: string, modelId: string) => {
+    if (!test) return;
+    const key = testKey(route, modelId);
+    if (test.open === key) return publishTest({ open: null });
+    if (!test.results[key]?.result) return;
+    publishTest({ open: key });
+  };
+
+  const confirmCost = (skip: boolean) => {
+    if (!test || disposed || !test.cost) return;
+    const cost = test.cost;
+    test = { ...test, cost: null, skipCost: skip ? true : test.skipCost };
+    const targets = batchTargets(cost.route, cost.modelIds);
+    if (!targets) return;
+    startBatch(cost.route, targets, cost.label);
+  };
+
+  const cancelCost = () => {
+    if (!test?.cost) return;
+    publishTest({ cost: null });
+  };
+
+  const copyTestDetail = (route: string, modelId: string): string => {
+    if (!test) return '';
+    const text = testDetailText(route, modelId, test.results[testKey(route, modelId)]);
+    statusPatch(`已复制 ${modelId} 的测试详情（不含密钥）。`);
+    return text;
+  };
+
+  /** 只结束本次挂载周期：取消订阅、作废测试；到下一次 load 之前不 publish（§2.3）。 */
   const dispose = () => {
     for (const disposer of disposers.splice(0)) disposer();
+    clearTests();
+    disposed = true;
+    // 作废在途的 load：下一次 load 必须发起新的一轮，而不是复用 publish 已被吞掉的旧 promise。
+    loadSeq += 1;
+    loadingPromise = null;
   };
 
   const store: ModelCapabilitiesStore = {
@@ -1037,6 +1454,22 @@ export function createModelCapabilitiesStore(port: ModelCapabilitiesPort): Model
     undoDelete,
     toggleAdv,
     dismissStatus,
+    setTimeoutText,
+    blurTimeout,
+    setTimeoutPreset,
+    resetTimeout,
+    testModel,
+    testProvider,
+    testAll,
+    testSelected,
+    retryFailed,
+    retryCancelled,
+    stopBatch,
+    dismissBatch,
+    toggleTestDetail,
+    confirmCost,
+    cancelCost,
+    copyTestDetail,
   };
   return store;
 }

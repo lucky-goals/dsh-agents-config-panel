@@ -9,7 +9,7 @@ import type { McSnapshot, ModelCapabilitiesStore, ProviderDraft } from '../types
 import { hasLegacy } from '../efforts';
 import { mcStyles as s, sx } from '../styles';
 import { ImportFileButton } from '../../ui/PanelChrome';
-import { Btn, CredStatus, Tag, apiName } from './shared';
+import { Btn, CredStatus, GateBtn, HOST_UNSUPPORTED_TEXT, SAVE_FIRST, Tag, TestBadge, apiName, isSaveGate, testGate } from './shared';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
@@ -98,8 +98,14 @@ export function ProviderList({ snap, store }: ComponentProps): JSX.Element | nul
         const p = snap.draft.providers[id];
         const pi = p.ns === NS_PI;
         const name = providerName(p);
-        return (
-          <div key={id} style={sx(s.card, s.pcard)}>
+        const n = p.models.length;
+        const test = snap.test;
+        const gate = testGate(snap, id);
+        const batchLive = !!test?.batches[id] && !test.batches[id].done;
+        // The card's reason line: Host without the route, or unsaved work.
+        const whyLine = test?.hostUnsupported ? HOST_UNSUPPORTED_TEXT : isSaveGate(gate) ? SAVE_FIRST : null;
+        const whyId = `mc-card-why-${id}`;
+        const main = (
             <div style={s.pmain}>
               <div style={sx(s.pname, s.rowWrap, { gap: '6px' })}>
                 <span>{name}</span>
@@ -114,9 +120,48 @@ export function ProviderList({ snap, store }: ComponentProps): JSX.Element | nul
                 <span>{p.models.length} 个模型</span>
                 <span aria-hidden="true">·</span>
                 <span>{summaryOf(p)}</span>
+                {test && <TestBadge snap={snap} route={id} />}
               </div>
             </div>
-            <Btn aria-label={`进入 ${name}`} data-mc-enter={id} disabled={ui.saving} onClick={() => store.enter(id)}>进入 →</Btn>
+        );
+        const enter = <Btn aria-label={`进入 ${name}`} data-mc-enter={id} disabled={ui.saving} onClick={() => store.enter(id)}>进入 →</Btn>;
+        // Without a tester the card keeps its pre-R4a markup.
+        if (!test) {
+          return (
+            <div key={id} style={sx(s.card, s.pcard)}>
+              {main}
+              {enter}
+            </div>
+          );
+        }
+        return (
+          <div key={id} style={sx(s.card, s.pcardCol)}>
+            <div style={s.pcardTop}>
+              {main}
+              <div style={s.pcardActs}>
+                {n > 0 && (
+                  <GateBtn
+                    kind="ghost"
+                    data-mc-test-all={id}
+                    aria-label={`测试 ${name} 的全部 ${n} 个模型`}
+                    aria-describedby={gate && whyLine ? whyId : undefined}
+                    why={gate || (batchLive ? '正在测试，进入详情可停止' : null)}
+                    title="对每个模型发 1 次真实请求"
+                    onClick={() => store.testProvider(id)}
+                  >
+                    {batchLive && <span style={s.ring} aria-hidden="true" />}
+                    {batchLive ? '测试中' : '测试全部'}
+                  </GateBtn>
+                )}
+                {enter}
+              </div>
+            </div>
+            {gate && whyLine && (
+              <p id={whyId} style={s.pcardWhy}>
+                <span style={s.dotWarn} aria-hidden="true" />
+                {whyLine}
+              </p>
+            )}
           </div>
         );
       })}

@@ -1,6 +1,6 @@
 /**
  * 编辑接入层 for a pi-ai provider (prototype layerAccess): ID (read-only),
- * 显示名, 协议, baseURL, 密钥环境变量名, 密钥 and 请求头.
+ * 显示名, 协议, baseURL, 密钥环境变量名, 密钥, 超时 (R4b) and 请求头.
  *
  * The plaintext secret never enters the snapshot (spec B1), so the input keeps
  * what is being typed locally and forwards every change to store.setSecret.
@@ -11,6 +11,7 @@ import type { HeaderPair, McSnapshot, ModelCapabilitiesStore } from '../types';
 import { secretError } from '../validate';
 import { mcStyles as s, sx } from '../styles';
 import { Banners, Btn, ErrText, Hint, Section, TextField } from './shared';
+import { TimeoutField, routeTimeoutProps } from './TimeoutField';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
@@ -132,6 +133,17 @@ export function EditAccessLayer({ snap, store }: ComponentProps): JSX.Element | 
           onChange={(v) => { setSecret(v); store.setSecret(v); }}
         />
       </div>
+      <Section title="超时">
+        <TimeoutField
+          scope="access"
+          {...routeTimeoutProps(snap, rid, p)}
+          disabled={lock}
+          onText={(v) => store.setTimeoutText(rid, v)}
+          onBlur={() => store.blurTimeout(rid)}
+          onPreset={(ms) => store.setTimeoutPreset(rid, ms)}
+          onReset={() => store.resetTimeout(rid)}
+        />
+      </Section>
       <Section title="请求头">
         <HeaderRows list={p.headers ?? []} scope="access" store={store} disabled={lock} />
         {re.headers && <ErrText>{re.headers}</ErrText>}

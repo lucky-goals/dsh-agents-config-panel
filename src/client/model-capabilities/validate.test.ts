@@ -20,7 +20,7 @@ import {
   secretError,
   wizardErrors,
 } from './validate';
-import { CAP_FMT_ERR, type DraftState, type WizardDraft } from './types';
+import { CAP_FMT_ERR, type DraftState, type FieldErrors, type WizardDraft } from './types';
 import { draftModel, draftProvider } from './test-fixtures';
 
 function wizard(over: Partial<WizardDraft> = {}): WizardDraft {
@@ -215,5 +215,75 @@ describe('validate.allErrors / modelCapBad', () => {
     expect(modelCapBad(draftModel({ id: 'm', contextWindow: '1000', maxTokens: '40000' }))).toBe(true);
     expect(modelCapBad(draftModel({ id: 'm' }))).toBe(false);
     expect(modelCapBad(draftModel({ id: 'm', contextWindow: '128000', maxTokens: '128000' }))).toBe(false);
+  });
+});
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 3 节 validate 段）：V1–V2。
+ *
+ * 只追加用例，不动 validate.ts。timeoutText 与 WizardDraft.timeout 现在还不存在，
+ * 用下面的小工具绕过类型，保证这些用例失败在断言上。
+ * ========================================================================== */
+
+const TIMEOUT_KEY = 'streamIdleTimeoutMs';
+const TIMEOUT_ERR_POSITIVE = '请输入大于 0 的分钟数';
+const TIMEOUT_ERR_TOO_LARGE = '不能超过 35791 分钟';
+
+/** 在路由草稿上补一个 timeoutText（ProviderDraft 还没有这个字段）。 */
+function routeWithText(text: string | undefined): ReturnType<typeof draftProvider> {
+  const p = draftProvider({ id: 'gpt-gateway' });
+  return { ...p, ...({ timeoutText: text } as unknown as object) } as ReturnType<typeof draftProvider>;
+}
+
+/** 在路由草稿上补一个加载来的显式毫秒值（没有 timeoutText）。 */
+function routeWithMs(ms: number): ReturnType<typeof draftProvider> {
+  const p = draftProvider({ id: 'gpt-gateway' });
+  return { ...p, ...({ [TIMEOUT_KEY]: ms } as unknown as object) } as ReturnType<typeof draftProvider>;
+}
+
+function routeError(e: FieldErrors, key: string): string | undefined {
+  return (e as Record<string, string | undefined>)[key];
+}
+
+/** 向导草稿加一个 timeoutText（WizardDraft 还没有这个字段）。 */
+function wizardWithTimeout(timeoutText: string): WizardDraft {
+  return { ...wizard(), ...({ timeoutText } as unknown as Partial<WizardDraft>) };
+}
+
+describe('R4b V1 routeErrors：只校验正在输入的原文', () => {
+  it('V1 pi 与 DS 的 text=0 → e.streamIdleTimeoutMs 是逐字文案', () => {
+    expect(routeError(routeErrors(routeWithText('0')), TIMEOUT_KEY)).toBe(TIMEOUT_ERR_POSITIVE);
+
+    const ds = draftProvider({ id: 'deepseek-official', ns: 'llm-deepseek' });
+    const dsWithText = { ...ds, ...({ timeoutText: '0' } as unknown as object) } as ReturnType<typeof draftProvider>;
+    expect(routeError(routeErrors(dsWithText), TIMEOUT_KEY)).toBe(TIMEOUT_ERR_POSITIVE);
+  });
+
+  it('V1 text=30 或 undefined → 没有该键；加载来的 500 没有 text → 不报错', () => {
+    expect(routeError(routeErrors(routeWithText('30')), TIMEOUT_KEY)).toBeUndefined();
+    expect(routeError(routeErrors(draftProvider({ id: 'gpt-gateway' })), TIMEOUT_KEY)).toBeUndefined();
+
+    // 加载来的值即使 < 1000，只要没被编辑就不报错
+    const loaded = routeWithMs(500);
+    expect(routeError(routeErrors(loaded), TIMEOUT_KEY)).toBeUndefined();
+    expect((loaded as unknown as Record<string, unknown>).timeoutText).toBeUndefined();
+    // 但编辑过的非法值会报错
+    expect(routeError(routeErrors(routeWithText('0.01')), TIMEOUT_KEY)).toBe('不能少于 1 秒（0.0167 分钟）');
+  });
+});
+
+describe('R4b V2 wizardErrors：向导第 2 步的超时错误', () => {
+  it('V2 timeoutText=35792 → timeout 是逐字文案；空串与合法值 → 没有该键', () => {
+    const tooLarge = wizardErrors(wizardWithTimeout('35792'), { providers: {} }) as { timeout?: string };
+    expect(tooLarge.timeout).toBe(TIMEOUT_ERR_TOO_LARGE);
+
+    const empty = wizardErrors(wizardWithTimeout(''), { providers: {} }) as { timeout?: string };
+    expect(empty.timeout).toBeUndefined();
+
+    const ok = wizardErrors(wizardWithTimeout('30'), { providers: {} }) as { timeout?: string };
+    expect(ok.timeout).toBeUndefined();
+
+    const bad = wizardErrors(wizardWithTimeout('0'), { providers: {} }) as { timeout?: string };
+    expect(bad.timeout).toBe(TIMEOUT_ERR_POSITIVE);
   });
 });

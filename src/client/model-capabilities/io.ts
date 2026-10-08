@@ -2,8 +2,9 @@ import { parse, stringify } from 'yaml';
 import { exportTimestamp } from '../shared/import-export';
 import { parseCap } from './capacity';
 import { orderedEfforts } from './efforts';
-import { DS_ROUTE_ID, NS_DS, NS_PI, type DraftState, type ModelDraft, type ProviderDraft, type ReasoningMap } from './types';
+import { DS_ROUTE_ID, NS_DS, NS_PI, SUGGESTED_TIMEOUT_MS, TIMEOUT_KEY, type DraftState, type ModelDraft, type ProviderDraft, type ReasoningMap } from './types';
 import { DS_FIELDS, fieldOut, modelOut, PI_FIELDS, SKIP } from './ops';
+import { durationLabel, validTimeoutMs } from './timeout';
 
 export type ImportItemKind = 'new' | 'conflict' | 'invalid' | 'skip';
 
@@ -18,6 +19,7 @@ export interface ImportItem {
   deepseek?: {
     thinking?: 'enabled' | 'disabled';
     reasoningEffort?: string;
+    streamIdleTimeoutMs?: number;
     models: ModelDraft[];
     extra: Record<string, unknown>;
   };
@@ -248,6 +250,8 @@ function providerPayload(id: string, raw: Record<string, unknown>): ProviderDraf
   if (typeof raw.displayName === 'string' && raw.displayName.trim()) out.displayName = raw.displayName;
   if (typeof raw.baseURL === 'string' && raw.baseURL.trim()) out.baseURL = raw.baseURL;
   if (typeof raw.apiKeyEnv === 'string' && raw.apiKeyEnv.trim()) out.apiKeyEnv = raw.apiKeyEnv;
+  // 合法值（含小数）导入时取整；new 与 conflict 合并共用这份载荷（r4b §5）。
+  if (validTimeoutMs(raw[TIMEOUT_KEY])) out.streamIdleTimeoutMs = Math.round(raw[TIMEOUT_KEY]);
   const models = Array.isArray(raw.models) ? raw.models : [];
   out.models = models.map((value) => modelDraftFrom(isRecord(value) ? value : {}, true));
   const blocked = new Set([...SECURITY_KEYS, ...PI_KNOWN_KEYS, ...PI_DEFAULT_KEYS]);
@@ -255,25 +259,30 @@ function providerPayload(id: string, raw: Record<string, unknown>): ProviderDraf
   return out;
 }
 
-function deepseekPayload(raw: Record<string, unknown>): {
-  thinking?: 'enabled' | 'disabled';
-  reasoningEffort?: string;
-  models: ModelDraft[];
-  extra: Record<string, unknown>;
-} {
-  const out: {
-    thinking?: 'enabled' | 'disabled';
-    reasoningEffort?: string;
-    models: ModelDraft[];
-    extra: Record<string, unknown>;
-  } = { models: [], extra: {} };
+function deepseekPayload(raw: Record<string, unknown>): NonNullable<ImportItem['deepseek']> {
+  const out: NonNullable<ImportItem['deepseek']> = { models: [], extra: {} };
   if (raw.thinking === 'enabled' || raw.thinking === 'disabled') out.thinking = raw.thinking;
   if (typeof raw.reasoningEffort === 'string') out.reasoningEffort = raw.reasoningEffort;
+  // 合法值（含小数）导入时取整；new 与 conflict 合并共用这份载荷（r4b §5）。
+  if (validTimeoutMs(raw[TIMEOUT_KEY])) out.streamIdleTimeoutMs = Math.round(raw[TIMEOUT_KEY]);
   const models = Array.isArray(raw.models) ? raw.models : [];
   out.models = models.map((value) => modelDraftFrom(isRecord(value) ? value : {}, false));
   const blocked = new Set([...SECURITY_KEYS, ...DS_KNOWN_KEYS, ...DS_DEFAULT_KEYS]);
   out.extra = cleanExtra(raw, blocked);
   return out;
+}
+
+const TIMEOUT_RANGE = '应为 1000–2147483647 的毫秒数';
+
+/** 文件里有该键但不是合法毫秒数（含字符串、0、负数、越界）。 */
+function badTimeout(raw: Record<string, unknown>): boolean {
+  return has(raw, TIMEOUT_KEY) && !validTimeoutMs(raw[TIMEOUT_KEY]);
+}
+
+/** conflict 的 reason 后缀：文件值与本地显式值不同（含本地未设置）时才追加。 */
+function timeoutSuffix(fileMs: number | undefined, localMs: number | undefined): string {
+  if (fileMs === undefined || fileMs === localMs) return '';
+  return `；流空闲超时将改为 ${durationLabel(fileMs)}`;
 }
 
 function invalidItem(id: string, label: string, reason: string): ImportItem {
@@ -293,6 +302,7 @@ function validateProvider(id: string, value: unknown, draft: DraftState): Import
   if (!isRecord(value)) return invalidItem(id, id, `提供方 '${id}' 不是映射`);
   const label = labelFrom(value);
   if (typeof value.api !== 'string' || !value.api.trim()) return invalidItem(id, label, `提供方 '${id}' 缺少 api`);
+  if (badTimeout(value)) return invalidItem(id, label, `提供方 '${id}' 的 streamIdleTimeoutMs 不合法：${TIMEOUT_RANGE}`);
   const models = Array.isArray(value.models) ? value.models : [];
   const seen = new Set<string>();
   for (const rawValue of models) {
@@ -305,11 +315,14 @@ function validateProvider(id: string, value: unknown, draft: DraftState): Import
   }
   const provider = providerPayload(id, value);
   const conflict = has(draft.providers, id);
+  // 新提供方文件里没有该键 → 用建议值 30 分钟；conflict 不补。
+  if (!conflict && !has(value, TIMEOUT_KEY)) provider.streamIdleTimeoutMs = SUGGESTED_TIMEOUT_MS;
+  const suffix = conflict ? timeoutSuffix(provider.streamIdleTimeoutMs, draft.providers[id].streamIdleTimeoutMs) : '';
   return {
     kind: conflict ? 'conflict' : 'new',
     id,
     label,
-    reason: conflict ? `提供方 '${id}' 已存在` : `将新增提供方 '${id}'`,
+    reason: conflict ? `提供方 '${id}' 已存在${suffix}` : `将新增提供方 '${id}'`,
     checked: !conflict,
     checkable: true,
     provider,
@@ -321,6 +334,7 @@ function validateDeepseek(value: Record<string, unknown>, draft: DraftState, ctx
   if (!ctx.hasDs || !has(draft.providers, DS_ROUTE_ID)) {
     return { kind: 'skip', id: 'deepseek', label, reason: '本机没有 DeepSeek，已跳过', checked: false, checkable: false };
   }
+  if (badTimeout(value)) return invalidItem('deepseek', label, `DeepSeek 的 streamIdleTimeoutMs 不合法：${TIMEOUT_RANGE}`);
   const models = Array.isArray(value.models) ? value.models : [];
   const seen = new Set<string>();
   for (const rawValue of models) {
@@ -333,7 +347,7 @@ function validateDeepseek(value: Record<string, unknown>, draft: DraftState, ctx
     kind: 'conflict',
     id: 'deepseek',
     label,
-    reason: 'DeepSeek 已存在',
+    reason: `DeepSeek 已存在${timeoutSuffix(payload.streamIdleTimeoutMs, draft.providers[DS_ROUTE_ID].streamIdleTimeoutMs)}`,
     checked: false,
     checkable: true,
     deepseek: payload,
@@ -369,6 +383,11 @@ export function applyModelImport(
       local.extra = payload.extra;
       if (has(payload, 'displayName')) local.displayName = payload.displayName;
       else delete local.displayName;
+      // 载荷有值 → 覆盖本地并丢弃正在输入的原文；无值 → 保留本地（旧导出文件不带这个键）。
+      if (payload.streamIdleTimeoutMs !== undefined) {
+        local.streamIdleTimeoutMs = payload.streamIdleTimeoutMs;
+        delete local.timeoutText;
+      }
       continue;
     }
     if (!item.deepseek) continue;
@@ -379,6 +398,10 @@ export function applyModelImport(
     local.models = payload.models;
     if (has(payload, 'thinking')) local.thinking = payload.thinking;
     if (has(payload, 'reasoningEffort')) local.reasoningEffort = payload.reasoningEffort;
+    if (payload.streamIdleTimeoutMs !== undefined) {
+      local.streamIdleTimeoutMs = payload.streamIdleTimeoutMs;
+      delete local.timeoutText;
+    }
     local.extra = { ...local.extra, ...payload.extra };
   }
   return next;

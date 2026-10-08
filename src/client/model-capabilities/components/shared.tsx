@@ -6,6 +6,7 @@
 import React, { useEffect, useId, useLayoutEffect } from 'react';
 import { API_OPTS } from '../types';
 import type { McSnapshot, ModelCapabilitiesStore } from '../types';
+import { badge, testKey, type TestTone } from '../model-test';
 import { mcStyles as s, sx } from '../styles';
 
 /** Layout effect in the browser, plain effect under SSR (no warning). */
@@ -66,26 +67,104 @@ export function CredStatus({ configured }: { configured: boolean }) {
   );
 }
 
+const BANNER_TONE = {
+  info: { box: s.banner, mark: s.mark, glyph: 'i' },
+  error: { box: s.bannerError, mark: s.markError, glyph: '!' },
+  warn: { box: s.bannerWarn, mark: s.markWarn, glyph: '!' },
+} as const;
+
 export function Banner({
   tone = 'info',
   role = 'note',
   children,
+  sub,
   actions,
+  id,
+  dataMc,
 }: {
-  tone?: 'info' | 'error';
+  tone?: 'info' | 'error' | 'warn';
   role?: 'note' | 'alert' | 'status';
   children: React.ReactNode;
+  /** Secondary line under the text (R4a banners). */
+  sub?: React.ReactNode;
   actions?: React.ReactNode;
+  id?: string;
+  dataMc?: string;
 }) {
-  const err = tone === 'error';
+  const t = BANNER_TONE[tone];
   return (
-    <div role={role} style={err ? s.bannerError : s.banner}>
-      <span style={err ? s.markError : s.mark} aria-hidden="true">{err ? '!' : 'i'}</span>
-      <span style={s.bannerTxt}>{children}</span>
+    <div role={role} id={id} data-mc={dataMc} style={t.box}>
+      <span style={t.mark} aria-hidden="true">{t.glyph}</span>
+      <span style={s.bannerTxt}>
+        {children}
+        {sub != null && <span style={s.bannerSub}>{sub}</span>}
+      </span>
       {actions}
     </div>
   );
 }
+
+/* ---------------- R4a 模型测试：共用的门控与按钮 ---------------- */
+
+const BADGE_STYLE: Record<TestTone, React.CSSProperties> = {
+  success: s.tbadgeOk,
+  error: s.tbadgeBad,
+  warn: s.tbadgeWarn,
+  muted: s.tbadgeRun,
+};
+
+/** Provider-level summary badge (spec 2.5 badge()); null when nothing was tested. */
+export function TestBadge({ snap, route }: { snap: McSnapshot; route: string }) {
+  const t = snap.test;
+  const p = snap.draft.providers[route];
+  if (!t || !p) return null;
+  const keys = p.models.filter((m) => m.id).map((m) => testKey(route, m.id));
+  const b = badge(keys, t.results, t.batches[route]);
+  if (!b) return null;
+  return (
+    <span data-mc-badge={route} title={b.title} style={BADGE_STYLE[b.tone]}>
+      {b.tone === 'muted' && <span style={sx(s.ring, { width: '8px', height: '8px', marginRight: '4px' })} aria-hidden="true" />}
+      {b.text}
+    </span>
+  );
+}
+
+export const HOST_UNSUPPORTED_TEXT = '当前 Host 不支持模型测试，重启 DSH 后可用';
+export const SAVE_FIRST = '先保存再测试';
+
+/**
+ * Why testing this route is blocked, or null. `snap.test.blocked` is computed
+ * by the store; hostUnsupported also gates routes it has no entry for.
+ */
+export function testGate(snap: McSnapshot, route: string): string | null {
+  const t = snap.test;
+  if (!t) return null;
+  return t.blocked[route] ?? (t.hostUnsupported ? HOST_UNSUPPORTED_TEXT : null);
+}
+
+/** The gate reasons that render the 「先保存再测试」 banner / card line. */
+export function isSaveGate(reason: string | null): boolean {
+  return !!reason && reason.startsWith(SAVE_FIRST);
+}
+
+/**
+ * Button that stays focusable and clickable while gated (spec 2.6): it carries
+ * aria-disabled + title instead of `disabled`, and the store explains why.
+ */
+export const GateBtn = React.forwardRef<HTMLButtonElement, BtnProps & { why?: string | null }>(function GateBtn(
+  { why, style, title, ...rest },
+  ref,
+) {
+  return (
+    <Btn
+      ref={ref}
+      aria-disabled={why ? 'true' : undefined}
+      title={why || title}
+      style={sx(why && s.disabled, style)}
+      {...rest}
+    />
+  );
+});
 
 export function Switch({ on, label, onClick, disabled }: { on: boolean; label: string; onClick: () => void; disabled?: boolean }) {
   return (

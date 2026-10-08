@@ -12,6 +12,8 @@ import type {
   SubagentImportRequest,
   SubagentImportResponse,
   AcpTestResponse,
+  ModelTestRequest,
+  ModelTestResult,
   TeamsResponse,
   TeamCreateRequest,
   TeamRemoveRequest,
@@ -20,6 +22,9 @@ import type {
   MutationSuccessResponse,
   ErrorResponse,
 } from './api-types';
+
+/** R4a: shown when an older Host has no `/models/test` route (404 without a code). */
+export const MODEL_TEST_UNSUPPORTED = '当前 Host 不支持模型测试，重启 DSH 后可用';
 
 export interface ApiClientOptions {
   fetch?: typeof fetch;
@@ -46,6 +51,8 @@ export interface ApiClient {
   removeTeam(body: TeamRemoveRequest, profile?: string): Promise<MutationSuccessResponse>;
   /** Write a basic agent-teams profile when the package is installed but the user patch has none. */
   bootstrapTeams(body: { expectedRevision: string }, profile?: string): Promise<MutationSuccessResponse>;
+  /** R4a: send one real request to a saved model. Throws `HOST_UNSUPPORTED` on an older Host. */
+  testModel(body: ModelTestRequest, signal?: AbortSignal): Promise<ModelTestResult>;
 }
 
 /**
@@ -168,6 +175,26 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
     async testAcp(body: { id: string; handshake?: boolean }): Promise<AcpTestResponse> {
       return request<AcpTestResponse>('/acps/test', { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async testModel(body: ModelTestRequest, signal?: AbortSignal): Promise<ModelTestResult> {
+      try {
+        return await request<ModelTestResult>('/models/test', {
+          method: 'POST',
+          body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        const failure = error as Error & { code?: string; status?: number };
+        // An unstructured 404 means the route itself is missing (Host predates R4a).
+        if (failure.status === 404 && failure.code === undefined) {
+          const unsupported = new Error(MODEL_TEST_UNSUPPORTED) as Error & { code: string; status: number };
+          unsupported.code = 'HOST_UNSUPPORTED';
+          unsupported.status = 404;
+          throw unsupported;
+        }
+        throw error;
+      }
     },
 
     async importSubagentBundle(body: SubagentImportRequest, profile?: string): Promise<SubagentImportResponse> {

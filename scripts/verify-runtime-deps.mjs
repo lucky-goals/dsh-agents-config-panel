@@ -167,6 +167,7 @@ console.log('✓ Imported built modules');
     '/plugins/dsh-wuyou-agent/api/teams/bootstrap',
     '/plugins/dsh-wuyou-agent/api/teams/import',
     '/plugins/dsh-wuyou-agent/api/subagents/import',
+    '/plugins/dsh-wuyou-agent/api/models/test',
   ];
   const actualRoutePaths = registeredRoutes.map((route) => route.path);
   if (

@@ -8,6 +8,37 @@ import { pathToFileURL } from 'node:url';
 import { readCatalog, DEFAULT_REASONING_EFFORTS } from './catalog.js';
 import type { ModelCatalog } from './catalog.js';
 
+/** Structural subset of dsh-llm `LlmFailure` (R4a). */
+export interface LlmFailure {
+  message: string;
+  code: string;
+  status?: number;
+  requestId?: string;
+}
+
+/** Structural subset of dsh-llm `FinishReason` (R4a). */
+export type LlmFinishReason =
+  | { kind: 'stop' | 'max-tokens' | 'tool-calls' }
+  | { kind: 'error' | 'aborted'; failure?: LlmFailure };
+
+/** Structural subset of dsh-llm `StreamChunk`; other chunk types are ignored. */
+export type LlmStreamChunk =
+  | { type: 'text-delta'; text: string }
+  | { type: 'reasoning-delta' }
+  | { type: 'finish'; reason: LlmFinishReason }
+  | { type: string };
+
+/** Structural subset of dsh-llm `GenerateOptions` used by the model test (R4a). */
+export interface LlmStreamOptions {
+  provider: string;
+  model: string;
+  messages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string }> }>;
+  reasoningEffort?: string;
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
 /**
  * LLM service interface matching @deepseek-ai/dsh-llm types.
  * listProviders is synchronous, listModels and resolveModelInfo are async.
@@ -20,6 +51,8 @@ export interface LLMService {
     modelId: string,
     signal?: AbortSignal
   ): Promise<{ reasoning?: { efforts: Array<{ id: string }> } }>;
+  /** The single completion entry point; absent on hosts without completion (R4a). */
+  stream?(options: LlmStreamOptions): AsyncIterable<LlmStreamChunk>;
 }
 
 export interface AtomicWriteUtils {

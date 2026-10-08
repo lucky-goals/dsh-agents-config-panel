@@ -304,6 +304,32 @@ export interface AcpTestResponse {
 }
 
 // ============================================================================
+// R4a Model Test (POST /models/test, docs/specs/r4a-model-test.md §1.1, §2.1)
+// ============================================================================
+
+export interface ModelTestRequest {
+  provider: string;
+  model: string;
+}
+
+/** The Host 200 body: the model call itself may have succeeded or failed. */
+export interface ModelTestResult {
+  provider: string;
+  model: string;
+  ok: boolean;
+  latencyMs: number | null;
+  firstTokenMs: number | null;
+  sample: string;
+  finish: string | null;
+  errorKind: string | null;
+  status: number | null;
+  message: string;
+  transient: boolean;
+  params: { effort: string | null; maxTokens: number; timeoutMs: number };
+  testedAt: string;
+}
+
+// ============================================================================
 // Mutation Success Response
 // ============================================================================
 

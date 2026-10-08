@@ -7,13 +7,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { PatchIO } from './patch-file.js';
 import type { ModelCatalog } from './catalog.js';
-import type { CatalogResult, CatalogSource } from './runtime-deps.js';
+import type { CatalogResult, CatalogSource, LLMService } from './runtime-deps.js';
 import { computeRevision } from './patch-io.js';
 import { listSubagents, createSubagent, updateSubagent, removeSubagent, moveSubagent } from './subagent-manager.js';
 import { subagentProviderDirectory, type SubagentProviderDirectory } from './subagent-providers.js';
 import { listTeamProfiles, listMembers, addMember, updateMember, removeMember } from './members-editor.js';
 import { listAcps, createAcp, updateAcp, removeAcp, importSubagentBundle, ACP_EDITABLE_FIELDS } from './acp-manager.js';
 import { probeAcp } from './acp-probe.js';
+import { probeModel, maskMessage } from './model-probe.js';
 import { createTeamProfile, importTeamProfiles, listTeamProfileConfigs, removeTeamProfile } from './teams-editor.js';
 import {
   AGENT_TEAMS_NOT_IN_PATCH,
@@ -77,6 +78,13 @@ export interface RouteContext {
   readInstalledAgentTeams?: () => InstalledAgentTeams | undefined;
   /** ACP test runner (v2.4); tests inject a fake or a short timeout. */
   probeAcp?: typeof probeAcp;
+  /**
+   * The live DSH `llm` runtime (R4a), read per request and never cached.
+   * Absent, undefined, or without `stream` means the model test answers 503.
+   */
+  getLlm?: () => LLMService | undefined;
+  /** Model test runner (R4a); tests inject a fake. */
+  probeModel?: typeof probeModel;
   /**
    * Seed `preset-standard-acp` when the user patch has no delegation group.
    * Returns the patch text to serve, plus a notice after this process writes it.
@@ -467,6 +475,28 @@ function validateBundleBody(body: Record<string, unknown>): { expectedRevision: 
   return { expectedRevision: revision, bundle: { acps: list('acps'), subagents: list('subagents') } };
 }
 
+/** Longest provider/model id accepted by POST /models/test. */
+const MODEL_TEST_ID_MAX = 256;
+const MODEL_TEST_FIELDS = ['provider', 'model'] as const;
+/** Host-wide model tests in flight; beyond this the route answers 409 (no queue). */
+const MODEL_TEST_MAX_ACTIVE = 3;
+
+/** POST /models/test: `{ provider, model }`, both non-empty and ≤256 chars, nothing else. */
+function validateModelTestBody(body: Record<string, unknown>): { provider: string; model: string } {
+  const provider = requireNonEmptyString(body, 'provider');
+  const model = requireNonEmptyString(body, 'model');
+  // 纯空白视为空（同一报错文案）；传给 probe 的值保持原样，不 trim。
+  if (provider.trim().length === 0) throw invalidField('provider', '必须是非空字符串');
+  if (model.trim().length === 0) throw invalidField('model', '必须是非空字符串');
+  for (const key of Object.keys(body)) {
+    if (!(MODEL_TEST_FIELDS as readonly string[]).includes(key)) throw invalidField(key, '不支持');
+  }
+  for (const [name, value] of [['provider', provider], ['model', model]] as const) {
+    if (value.length > MODEL_TEST_ID_MAX) throw invalidField(name, `长度不能超过 ${MODEL_TEST_ID_MAX}`);
+  }
+  return { provider, model };
+}
+
 function isCatalogResult(value: ModelCatalog | CatalogResult): value is CatalogResult {
   return 'catalog' in value && 'source' in value;
 }
@@ -579,6 +609,8 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
 
   /** ACP ids with a test in flight; one handshake per ACP at a time. */
   const probing = new Set<string>();
+  /** `provider\u0000model` keys with a model test in flight (R4a). */
+  const modelTesting = new Set<string>();
 
   const requirePost = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (req.method === 'POST') return true;
@@ -837,6 +869,56 @@ export function createRoutes(context: RouteContext): RouteDescriptor[] {
             notice: created.acps.length > 0 ? ACP_SAVED_NOTICE : SAVED_NOTICE,
             importReport: report,
           });
+        } catch (err) {
+          errorResponse(res, err, logger);
+        }
+      },
+    },
+
+    {
+      kind: 'exact',
+      path: '/plugins/dsh-wuyou-agent/api/models/test',
+      async handler(req, res) {
+        try {
+          if (!requirePost(req, res)) return;
+          const { provider, model } = validateModelTestBody(await readJsonBody(req));
+
+          let llm: LLMService | undefined;
+          try {
+            llm = context.getLlm?.();
+          } catch {
+            llm = undefined;
+          }
+          if (!llm || typeof llm.stream !== 'function') {
+            throw new RouteError('DEPENDENCY_UNAVAILABLE', '当前 DSH 未提供 LLM 服务，无法测试模型');
+          }
+
+          const key = `${provider}\u0000${model}`;
+          if (modelTesting.has(key)) throw new RouteError('BUSY', `模型 ${model} 正在测试，请稍候`);
+          if (modelTesting.size >= MODEL_TEST_MAX_ACTIVE) {
+            throw new RouteError('BUSY', `同时最多测试 ${MODEL_TEST_MAX_ACTIVE} 个模型，请稍后重试`);
+          }
+          // Claimed before the probe starts, released in finally.
+          modelTesting.add(key);
+
+          const controller = new AbortController();
+          // The client went away before we answered: cancel the request, write nothing.
+          const onClose = () => {
+            if (!res.writableEnded) controller.abort('client');
+          };
+          if (typeof res.on === 'function') res.on('close', onClose);
+          try {
+            const result = await (context.probeModel ?? probeModel)({ provider, model }, { llm, signal: controller.signal });
+            if (!controller.signal.aborted) sendJson(res, 200, { provider, model, ...result });
+          } catch (err) {
+            if (controller.signal.aborted) return;
+            // Never leak the probe failure text; log it masked.
+            logger?.error(`wuyou-agent: model test failed unexpectedly: ${maskMessage(errorMessage(err))}`);
+            sendJson(res, 500, { code: 'INTERNAL', message: '服务端内部错误' });
+          } finally {
+            modelTesting.delete(key);
+            if (typeof res.off === 'function') res.off('close', onClose);
+          }
         } catch (err) {
           errorResponse(res, err, logger);
         }

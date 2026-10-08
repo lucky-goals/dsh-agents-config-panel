@@ -17,17 +17,21 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createModelCapabilitiesStore } from './store';
-import type { SettingsOp } from './types';
+import type { SettingsOp, SettingsOpSet, WizardDraft } from './types';
 import { DS_ROUTE_ID, NS_DS, NS_PI } from './types';
 import type { FakePort, FakePortOptions, NamespaceSlice } from './test-fixtures';
 import {
   createFakePort,
+  createFakeTester,
+  createNonThenableTester,
+  createThrowingTester,
   defaultCreds,
   dsSlice,
   MAIN_MAP,
   piSlice,
   sliceWithExtraProvider,
   sliceWithModels,
+  type FakeTester,
 } from './test-fixtures';
 
 /** pi 提供方级 4 个默认键（R2 起它们真实存在于用户配置上，但不进草稿、不产生 op）。 */
@@ -1026,3 +1030,991 @@ describe('store.importConfig（1.4、1.8）', () => {
     expect(reloaded.store.getSnapshot().ui.importPreview).toBeNull();
   });
 });
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 6.5、7 节）：S1–S7。
+ *
+ * 只追加用例，不动 store.ts。4 个新方法还不存在，用 timeoutApi() 包一层：
+ * 缺失时抛出可读的错误，保证失败只落在这些新增用例里。
+ * ========================================================================== */
+
+const T_KEY = 'streamIdleTimeoutMs';
+
+interface TimeoutApi {
+  setTimeoutText(route: string, text: string): void;
+  blurTimeout(route: string): void;
+  setTimeoutPreset(route: string, ms: number): void;
+  resetTimeout(route: string): void;
+}
+
+function timeoutApi(store: ReturnType<typeof createModelCapabilitiesStore>): TimeoutApi {
+  const raw = store as unknown as Record<string, unknown>;
+  for (const name of ['setTimeoutText', 'blurTimeout', 'setTimeoutPreset', 'resetTimeout']) {
+    if (typeof raw[name] !== 'function') throw new Error(`store.${name} 还没有实现（R4b 红灯）`);
+  }
+  return raw as unknown as TimeoutApi;
+}
+
+function timeoutOf(p: ProviderDraft): unknown {
+  return (p as unknown as Record<string, unknown>)[T_KEY];
+}
+
+function timeoutTextOf(p: ProviderDraft): unknown {
+  return (p as unknown as Record<string, unknown>).timeoutText;
+}
+
+function routeFieldErrors(route: string, errors: Record<string, { route: Record<string, unknown> }>): unknown {
+  return errors[route]?.route?.[T_KEY];
+}
+
+describe('R4b S1 load', () => {
+  it('S1 新 fixture load → gpt/cc 草稿 1800000、DS undefined、extra 无键、dirty=0', async () => {
+    const { store } = setup();
+    await store.load();
+    const snap = store.getSnapshot();
+
+    expect(timeoutOf(snap.draft.providers['gpt-gateway'])).toBe(1800000);
+    expect(timeoutOf(snap.draft.providers['cc-gateway'])).toBe(1800000);
+    expect(timeoutOf(snap.draft.providers[DS_ROUTE_ID])).toBeUndefined();
+    for (const id of ['gpt-gateway', 'cc-gateway', DS_ROUTE_ID]) {
+      expect(snap.draft.providers[id].extra, `${id}.extra`).not.toHaveProperty(T_KEY);
+    }
+    expect(snap.ops.pi).toEqual([]);
+    expect(snap.ops.ds).toEqual([]);
+    expect(snap.ops.dirty).toBe(0);
+  });
+});
+
+describe('R4b S2 输入与 blur', () => {
+  it('S2 setTimeoutText(gpt,60) → 一条 set 3600000；blurTimeout → 删原文、留 3600000', async () => {
+    const { store } = setup();
+    await store.load();
+    const api = timeoutApi(store);
+
+    api.setTimeoutText('gpt-gateway', '60');
+    const typed = store.getSnapshot();
+    expect(typed.ops.pi).toEqual([
+      { op: 'set', path: ['providers', 'gpt-gateway', 'streamIdleTimeoutMs'], value: 3600000 },
+    ]);
+    expect(timeoutTextOf(typed.draft.providers['gpt-gateway'])).toBe('60');
+    expect(typed.ops.dirty).toBe(1);
+
+    api.blurTimeout('gpt-gateway');
+    const blurred = store.getSnapshot();
+    expect(timeoutTextOf(blurred.draft.providers['gpt-gateway'])).toBeUndefined();
+    expect(timeoutOf(blurred.draft.providers['gpt-gateway'])).toBe(3600000);
+  });
+});
+
+describe('R4b S3 错误阻止保存', () => {
+  it('S3 timeoutText=abc → errors 有该键；save 不调 mutate，status 是「请先修正标红字段。」', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    timeoutApi(store).setTimeoutText('gpt-gateway', 'abc');
+
+    const snap = store.getSnapshot();
+    expect(routeFieldErrors('gpt-gateway', snap.errors)).toBe('请输入分钟数，例如 30 或 0.5');
+    expect(timeoutTextOf(snap.draft.providers['gpt-gateway'])).toBe('abc');
+
+    await store.save();
+    expect(fake.mutate).not.toHaveBeenCalled();
+    expect(store.getSnapshot().ui.status).toBe('请先修正标红字段。');
+  });
+});
+
+describe('R4b S4 预设与重置', () => {
+  it('S4 预设 DS 1800000 + save → mutate(llm-deepseek, [set 1800000], 11)；resetTimeout(gpt) → unset', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    const api = timeoutApi(store);
+
+    api.setTimeoutText(DS_ROUTE_ID, '15');
+    api.setTimeoutPreset(DS_ROUTE_ID, 1800000);
+    expect(timeoutTextOf(store.getSnapshot().draft.providers[DS_ROUTE_ID])).toBeUndefined();
+    expect(timeoutOf(store.getSnapshot().draft.providers[DS_ROUTE_ID])).toBe(1800000);
+
+    await store.save();
+    expect(fake.mutate).toHaveBeenCalledTimes(1);
+    const [ns, ops, rev] = fake.mutate.mock.calls[0];
+    expect(ns).toBe(NS_DS);
+    expect(rev).toBe(11);
+    expect(ops).toEqual([{ op: 'set', path: ['streamIdleTimeoutMs'], value: 1800000 }]);
+    expect(store.getSnapshot().ops.dirty).toBe(0);
+
+    api.resetTimeout('gpt-gateway');
+    expect(store.getSnapshot().ops.pi).toEqual([
+      { op: 'unset', path: ['providers', 'gpt-gateway', 'streamIdleTimeoutMs'] },
+    ]);
+  });
+});
+
+describe('R4b S5 只读 / 保存中：4 个方法都是 no-op', () => {
+  const readonlyCases: Array<[string, FakePortOptions]> = [
+    ['hostLoopback=false', { hostLoopback: false }],
+    ['describe.status=unavailable', { describeStatus: 'unavailable' }],
+    ['describe.writable=false', { describeWritable: false }],
+    ['ns mode=memory', { pi: { ...piSlice(7), mode: 'memory' } }],
+  ];
+
+  it.each(readonlyCases)('S5 %s → 四个方法不改草稿、不产 op', async (_label, over) => {
+    const { store } = setup(over);
+    await store.load();
+    expect(store.getSnapshot().ui.readonly).toBe(true);
+
+    const before = JSON.stringify(store.getSnapshot());
+    const api = timeoutApi(store);
+    api.setTimeoutText('gpt-gateway', '60');
+    api.blurTimeout('gpt-gateway');
+    api.setTimeoutPreset('gpt-gateway', 3600000);
+    api.resetTimeout('gpt-gateway');
+    api.setTimeoutText(DS_ROUTE_ID, '15');
+    expect(JSON.stringify(store.getSnapshot())).toBe(before);
+  });
+
+  it('S5 ui.saving=true → 四个方法同样 no-op', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+
+    const original = fake.mutate.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fake.mutate.mockImplementation(async (ns, ops, rev) => {
+      await gate;
+      return original(ns, ops, rev);
+    });
+
+    const saving = store.save();
+    expect(store.getSnapshot().ui.saving).toBe(true);
+    const before = JSON.stringify(store.getSnapshot());
+
+    const api = timeoutApi(store);
+    api.setTimeoutText('gpt-gateway', '60');
+    api.blurTimeout('gpt-gateway');
+    api.setTimeoutPreset('gpt-gateway', 3600000);
+    api.resetTimeout('gpt-gateway');
+    expect(JSON.stringify(store.getSnapshot())).toBe(before);
+
+    release();
+    await saving;
+  });
+});
+
+describe('R4b S6 向导第 2 步', () => {
+  async function openWizard() {
+    const { fake, store } = setup({ ds: null });
+    await store.load();
+    store.openAddProvider();
+    store.wizardPatch({ api: 'openai-completions', id: 'fresh-gateway', ack: true, models: ['fresh-model'] });
+    const patch = (p: Record<string, unknown>) => store.wizardPatch(p as unknown as Partial<WizardDraft>);
+    return { fake, store, patch };
+  }
+
+  it('S6 默认 finish → 新建对象里是 1800000', async () => {
+    const { store } = await openWizard();
+    store.wizardFinish();
+
+    const op = store.getSnapshot().ops.pi[0];
+    expect(op.op).toBe('set');
+    expect(((op as SettingsOpSet).value as Record<string, unknown>)[T_KEY]).toBe(1800000);
+  });
+
+  it('S6 timeoutText 清空 → 新建对象里没有这个键', async () => {
+    const { store, patch } = await openWizard();
+    patch({ timeoutText: '' });
+    store.wizardFinish();
+
+    const op = store.getSnapshot().ops.pi[0];
+    expect(op.op).toBe('set');
+    expect(Object.keys((op as SettingsOpSet).value as Record<string, unknown>)).not.toContain(T_KEY);
+  });
+
+  it('S6 timeoutText=0 → wizardNext 停在 2，wizardFinish 不建提供方', async () => {
+    const { store, patch } = await openWizard();
+    store.wizardNext();
+    expect(store.getSnapshot().ui.wizard?.step).toBe(2);
+
+    patch({ timeoutText: '0' });
+    store.wizardNext();
+    expect(store.getSnapshot().ui.wizard?.step).toBe(2);
+    expect(store.getSnapshot().ui.wizard?.tried2).toBe(true);
+
+    store.wizardFinish();
+    expect(store.getSnapshot().draft.providers['fresh-gateway']).toBeUndefined();
+    expect(store.getSnapshot().ops.pi).toEqual([]);
+  });
+});
+
+describe('R4b S7 discard 与凭证无关', () => {
+  it('S7 改后 discard → 恢复 1800000、dirty=0', async () => {
+    const { store } = setup();
+    await store.load();
+    const api = timeoutApi(store);
+
+    api.setTimeoutText('gpt-gateway', '60');
+    api.blurTimeout('gpt-gateway');
+    expect(store.getSnapshot().ops.dirty).toBe(1);
+
+    store.discard();
+    const snap = store.getSnapshot();
+    expect(timeoutOf(snap.draft.providers['gpt-gateway'])).toBe(1800000);
+    expect(timeoutTextOf(snap.draft.providers['gpt-gateway'])).toBeUndefined();
+    expect(snap.ops.dirty).toBe(0);
+  });
+
+  it('S7 credWritable=false 仍可改，且不产生 cred op', async () => {
+    const { store } = setup({ creds: { ...defaultCreds(), GPT_GATEWAY_API_KEY: { configured: true, writable: false } } });
+    await store.load();
+    expect(store.getSnapshot().draft.providers['gpt-gateway'].credWritable).toBe(false);
+
+    const api = timeoutApi(store);
+    api.setTimeoutText('gpt-gateway', '60');
+    api.blurTimeout('gpt-gateway');
+
+    const snap = store.getSnapshot();
+    expect(timeoutOf(snap.draft.providers['gpt-gateway'])).toBe(3600000);
+    expect(snap.ops.cred).toEqual([]);
+  });
+});
+
+/* ==========================================================================
+ * R4a 模型可用性测试（docs/specs/r4a-model-test.md §2.2、§2.3、§4 节）：S01–S16。
+ *
+ * 只追加用例，不动 store.ts 与 r4b 的段落。方法还不存在，所以用 testApi() 包一层：
+ * 缺失时抛出可读的错误，保证失败只落在本段的新增用例里；`snap.test` 由 testState() 取。
+ * tester 由 test-fixtures 的 createFakeTester() 提供：每次调用返回可手动 resolve/reject
+ * 的 deferred，并记录 req 与 signal。
+ * ========================================================================== */
+
+interface TestEntryLike {
+  state: string;
+  result?: Record<string, unknown>;
+  at?: number;
+  startedAt?: number;
+  prev?: TestEntryLike;
+}
+
+interface TestBatchLike {
+  route: string;
+  keys: string[];
+  label: string;
+  stopped: boolean;
+  done: boolean;
+  startedAt: number;
+  endedAt?: number;
+}
+
+interface McTestStateLike {
+  hostUnsupported: boolean;
+  results: Record<string, TestEntryLike>;
+  batches: Record<string, TestBatchLike>;
+  open: string | null;
+  cost: { route: string; modelIds: string[]; label: string } | null;
+  skipCost: boolean;
+  blocked: Record<string, string | null>;
+  live: string;
+}
+
+type TestableStore = ReturnType<typeof createModelCapabilitiesStore>;
+
+/** 契约 §2.2：createModelCapabilitiesStore(port, { tester })。第二个参数现在还不被接受。 */
+const createTestStore = createModelCapabilitiesStore as unknown as (
+  port: unknown,
+  options?: { tester?: unknown },
+) => TestableStore;
+
+interface TestApi {
+  testModel(route: string, modelId: string): void;
+  testProvider(route: string): void;
+  retryFailed(route: string): void;
+  retryCancelled(route: string): void;
+  stopBatch(route: string): void;
+  dismissBatch(route: string): void;
+  toggleTestDetail(route: string, modelId: string): void;
+  confirmCost(skip: boolean): void;
+  cancelCost(): void;
+  copyTestDetail(route: string, modelId: string): string;
+}
+
+const TEST_API_NAMES = [
+  'testModel',
+  'testProvider',
+  'retryFailed',
+  'retryCancelled',
+  'stopBatch',
+  'dismissBatch',
+  'toggleTestDetail',
+  'confirmCost',
+  'cancelCost',
+  'copyTestDetail',
+] as const;
+
+function testApi(store: TestableStore): TestApi {
+  const raw = store as unknown as Record<string, unknown>;
+  for (const name of TEST_API_NAMES) {
+    if (typeof raw[name] !== 'function') throw new Error(`store.${name} 还没有实现（R4a 红灯）`);
+  }
+  return raw as unknown as TestApi;
+}
+
+function testState(store: TestableStore): McTestStateLike {
+  const snap = store.getSnapshot() as unknown as { test?: McTestStateLike };
+  if (!snap.test) throw new Error('snapshot.test 还没有实现（R4a 红灯）');
+  return snap.test;
+}
+
+function testerSetup(over: FakePortOptions = {}, tester: FakeTester = createFakeTester()) {
+  const fake = createFakePort({ pi: piSlice(7), ds: dsSlice(11), creds: defaultCreds(), ...over });
+  const store = createTestStore(fake.port, { tester: tester.fn });
+  return { fake, store, tester };
+}
+
+function modelEntry(id: string): Record<string, unknown> {
+  return { id, name: id, contextWindow: 272000, maxTokens: 128000, inputModalities: ['text'], reasoningEfforts: { ...MAIN_MAP } };
+}
+
+/** pi 的 gpt-gateway 换成一串 m1…mN（S02/S04 用的 5 个模型等）。 */
+function piWithModels(ids: string[]): NamespaceSlice {
+  return sliceWithModels(piSlice(7), 'gpt-gateway', ids.map(modelEntry));
+}
+
+const M5 = ['m1', 'm2', 'm3', 'm4', 'm5'];
+const key = (id: string): string => `gpt-gateway|${id}`;
+
+/**
+ * 5 个模型的批量：testProvider → 确认费用 → 3 running + 2 queued。
+ * `skipCost` 传 true 时顺带勾上「本次会话不再提示」，后面的重试就不会再弹确认（S04/S05）。
+ */
+async function startBatch5(skipCost = false) {
+  const setup = testerSetup({ pi: piWithModels(M5) });
+  await setup.store.load();
+  const api = testApi(setup.store);
+  api.testProvider('gpt-gateway');
+  api.confirmCost(skipCost);
+  return { ...setup, api };
+}
+
+describe('R4a S01 无 tester', () => {
+  it('S01 不注入 tester → snap.test 不存在，旧行为不变', async () => {
+    const { store } = setup();
+    await store.load();
+
+    const snap = store.getSnapshot() as unknown as { test?: unknown };
+    expect(snap.test).toBeUndefined();
+    expect(store.getSnapshot().ui.loading).toBe(false);
+    expect(store.getSnapshot().loadError).toBeNull();
+  });
+});
+
+describe('R4a S02 批量与费用确认', () => {
+  it('S02 testProvider 5 个模型且凭证已配 → cost 打开、tester 0 次；confirmCost(false) → 3 次、2 个 queued', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    const api = testApi(store);
+
+    api.testProvider('gpt-gateway');
+    const opened = testState(store);
+    expect(opened.cost).toEqual({ route: 'gpt-gateway', modelIds: M5, label: '全部模型' });
+    expect(opened.blocked['gpt-gateway']).toBeNull();
+    expect(tester.count()).toBe(0);
+
+    api.confirmCost(false);
+    const snap = testState(store);
+    expect(snap.cost).toBeNull();
+    expect(tester.count()).toBe(3);
+    expect(tester.calls.map((c) => c.req)).toEqual([
+      { provider: 'gpt-gateway', model: 'm1' },
+      { provider: 'gpt-gateway', model: 'm2' },
+      { provider: 'gpt-gateway', model: 'm3' },
+    ]);
+    expect(snap.results[key('m1')].state).toBe('running');
+    expect(snap.results[key('m2')].state).toBe('running');
+    expect(snap.results[key('m3')].state).toBe('running');
+    expect(snap.results[key('m4')].state).toBe('queued');
+    expect(snap.results[key('m5')].state).toBe('queued');
+    expect(snap.batches['gpt-gateway']).toMatchObject({
+      route: 'gpt-gateway',
+      keys: M5.map(key),
+      label: '全部模型',
+      stopped: false,
+      done: false,
+    });
+  });
+});
+
+describe('R4a S03 逐条返回', () => {
+  it('S03 resolve 第 1 个 → 第 4 个开始，结果 ok，live 含「可用，耗时」', async () => {
+    const { store, tester } = await startBatch5();
+
+    tester.call(0).resolve();
+    await tick();
+
+    expect(tester.count()).toBe(4);
+    expect(tester.call(3).req).toEqual({ provider: 'gpt-gateway', model: 'm4' });
+
+    const snap = testState(store);
+    expect(snap.results[key('m1')].state).toBe('ok');
+    expect(snap.results[key('m1')].result).toMatchObject({ ok: true, latencyMs: 812, firstTokenMs: 341 });
+    expect(snap.results[key('m4')].state).toBe('running');
+    expect(snap.live).toContain('可用，耗时');
+  });
+});
+
+describe('R4a S04 停止与重试已取消', () => {
+  it('S04 stopBatch → 2 个 queued 变 cancelled、running 仍回写；done 后 retryCancelled 只入 2 个', async () => {
+    const { store, tester } = await startBatch5(true);
+    const api = testApi(store);
+
+    api.stopBatch('gpt-gateway');
+    let snap = testState(store);
+    expect(snap.results[key('m4')].state).toBe('cancelled');
+    expect(snap.results[key('m5')].state).toBe('cancelled');
+    expect(snap.batches['gpt-gateway'].stopped).toBe(true);
+    expect(snap.batches['gpt-gateway'].done).toBe(false);
+    expect(snap.results[key('m1')].state).toBe('running');
+    expect(snap.live).toBe('已取消 2 个未开始的测试，3 个已发出的请求会等它返回。');
+
+    for (const call of tester.calls.slice(0, 3)) call.resolve();
+    await tick();
+
+    snap = testState(store);
+    expect(snap.batches['gpt-gateway'].done).toBe(true);
+    expect(snap.results[key('m1')].state).toBe('ok');
+    expect(snap.results[key('m2')].state).toBe('ok');
+    expect(snap.results[key('m3')].state).toBe('ok');
+
+    const before = tester.count();
+    api.retryCancelled('gpt-gateway');
+    expect(tester.count()).toBe(before + 2);
+    expect(tester.calls.slice(before).map((c) => c.req.model)).toEqual(['m4', 'm5']);
+    expect(testState(store).batches['gpt-gateway'].label).toBe('已取消的模型');
+  });
+});
+
+describe('R4a S05 重试失败项', () => {
+  it('S05 transient/fail 混合 → retryFailed 只含这两个，标签「重试失败项」', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(['m1', 'm2', 'm3']) });
+    await store.load();
+    const api = testApi(store);
+    api.testProvider('gpt-gateway');
+    api.confirmCost(true); // 不再提示费用，retryFailed 直接入队（S05 只关心键与标签）
+
+    tester.call(0).resolve();
+    tester.call(1).reject(Object.assign(new Error('bad request'), { status: 400, code: 'INVALID_REQUEST' }));
+    tester.call(2).reject(Object.assign(new Error('busy'), { status: 409, code: 'BUSY' }));
+    await tick();
+
+    const snap = testState(store);
+    expect(snap.results[key('m1')].state).toBe('ok');
+    expect(snap.results[key('m2')].state).toBe('fail');
+    expect(snap.results[key('m3')].state).toBe('transient');
+    expect(snap.batches['gpt-gateway'].done).toBe(true);
+
+    const before = tester.count();
+    api.retryFailed('gpt-gateway');
+    expect(tester.calls.slice(before).map((c) => c.req.model)).toEqual(['m2', 'm3']);
+    const retried = testState(store);
+    expect(retried.batches['gpt-gateway'].label).toBe('重试失败项');
+    expect(retried.batches['gpt-gateway'].keys).toEqual([key('m2'), key('m3')]);
+  });
+});
+
+describe('R4a S06 单个测试插队首', () => {
+  it('S06 active 满 3 时新键插队首，且不进批量统计', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    const api = testApi(store);
+
+    api.testModel('gpt-gateway', 'm1');
+    api.testModel('gpt-gateway', 'm2');
+    api.testModel('gpt-gateway', 'm3');
+    api.testModel('gpt-gateway', 'm4');
+    api.testModel('gpt-gateway', 'm5');
+
+    expect(tester.count()).toBe(3);
+    expect(testState(store).batches).toEqual({});
+    expect(testState(store).results[key('m4')].state).toBe('queued');
+    expect(testState(store).results[key('m5')].state).toBe('queued');
+
+    tester.call(0).resolve();
+    await tick();
+
+    expect(tester.count()).toBe(4);
+    expect(tester.call(3).req.model).toBe('m5');
+    expect(testState(store).batches).toEqual({});
+  });
+});
+
+describe('R4a S07 门控', () => {
+  it('S07 新建未保存的提供方 → 不调 tester，status 为「先保存再测试：这个提供方还没保存。」', async () => {
+    const { store, tester } = testerSetup();
+    await store.load();
+    store.openAddProvider();
+    store.wizardPatch({ api: 'openai-completions', id: 'fresh-gateway', ack: true, models: ['fresh-model'] });
+    store.wizardFinish();
+
+    testApi(store).testModel('fresh-gateway', 'fresh-model');
+    expect(tester.count()).toBe(0);
+    expect(store.getSnapshot().ui.status).toBe('先保存再测试：这个提供方还没保存。');
+    expect(testState(store).blocked['fresh-gateway']).toBe('先保存再测试：这个提供方还没保存');
+  });
+
+  it('S07 dirtySet 含路由 → 不调 tester，status 为「先保存再测试：Host 还不知道这个提供方的未保存改动。」', async () => {
+    const { store, tester } = testerSetup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+
+    testApi(store).testModel('gpt-gateway', 'gpt-6-luna');
+    expect(tester.count()).toBe(0);
+    expect(store.getSnapshot().ui.status).toBe('先保存再测试：Host 还不知道这个提供方的未保存改动。');
+  });
+
+  it('S07 setSecret 后 pendingCred → 不调 tester，status 为「先保存再测试：API Key 还没保存。」', async () => {
+    const { store, tester } = testerSetup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openAccess();
+    store.setSecret('sk-new-secret');
+
+    testApi(store).testModel('gpt-gateway', 'gpt-6-luna');
+    expect(tester.count()).toBe(0);
+    expect(store.getSnapshot().ui.status).toBe('先保存再测试：API Key 还没保存。');
+  });
+
+  it('S07 保存中 → 不调 tester，status 为「正在保存，稍后再测。」', async () => {
+    const { fake, store, tester } = testerSetup();
+    await store.load();
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+
+    const original = fake.mutate.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fake.mutate.mockImplementation(async (ns, ops, rev) => {
+      await gate;
+      return original(ns, ops, rev);
+    });
+
+    const saving = store.save();
+    expect(store.getSnapshot().ui.saving).toBe(true);
+    testApi(store).testModel('gpt-gateway', 'gpt-6-luna');
+    expect(tester.count()).toBe(0);
+    expect(store.getSnapshot().ui.status).toBe('正在保存，稍后再测。');
+
+    release();
+    await saving;
+  });
+});
+
+describe('R4a S08 旧 Host（HOST_UNSUPPORTED）', () => {
+  it('S08 404 HOST_UNSUPPORTED → hostUnsupported true、其余 signal aborted、queued 还原、批次清空、再测被拒', async () => {
+    const { store, tester } = await startBatch5();
+    const api = testApi(store);
+
+    tester.call(0).reject(Object.assign(new Error('当前 Host 不支持模型测试，重启 DSH 后可用'), {
+      code: 'HOST_UNSUPPORTED',
+      status: 404,
+    }));
+    await tick();
+
+    const snap = testState(store);
+    expect(snap.hostUnsupported).toBe(true);
+    expect(snap.batches).toEqual({});
+    expect(snap.cost).toBeNull();
+    expect(Object.keys(snap.results)).toEqual([]);
+    // 其余在途请求被 abort（发出去的那个已经 reject，不再要求）。
+    expect(tester.call(1).signal.aborted).toBe(true);
+    expect(tester.call(2).signal.aborted).toBe(true);
+    expect(store.getSnapshot().ui.status).toBe('当前 Host 不支持模型测试，重启 DSH 后可用');
+
+    const before = tester.count();
+    api.testModel('gpt-gateway', 'm1');
+    expect(tester.count()).toBe(before);
+    expect(store.getSnapshot().ui.status).toBe('当前 Host 不支持模型测试，重启 DSH 后可用。');
+  });
+});
+
+describe('R4a S09–S11 清空规则', () => {
+  it('S09 迟到回包：入队后 reload，再 resolve 旧 deferred → results 为空', async () => {
+    const { store, tester } = await startBatch5();
+    const stale = tester.call(0);
+
+    await store.reload();
+    expect(Object.keys(testState(store).results)).toEqual([]);
+
+    stale.resolve();
+    await tick();
+    expect(Object.keys(testState(store).results)).toEqual([]);
+  });
+
+  it('S10 save 成功后清空、skipCost 保留，状态文案仍是「已保存。」', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    const api = testApi(store);
+    api.testProvider('gpt-gateway');
+    api.confirmCost(true);
+    expect(tester.count()).toBe(3);
+    expect(testState(store).skipCost).toBe(true);
+
+    tester.call(0).resolve();
+    await tick();
+    expect(Object.keys(testState(store).results).length).toBeGreaterThan(0);
+
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+    await store.save();
+
+    const snap = testState(store);
+    expect(snap.results).toEqual({});
+    expect(snap.batches).toEqual({});
+    expect(snap.hostUnsupported).toBe(false);
+    expect(snap.skipCost).toBe(true);
+    expect(store.getSnapshot().ui.status).toBe('已保存。');
+  });
+
+  it('S11 discard 不清空结果', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    testApi(store).testModel('gpt-gateway', 'm1');
+    tester.call(0).resolve();
+    await tick();
+    expect(testState(store).results[key('m1')].state).toBe('ok');
+
+    store.enter('gpt-gateway');
+    store.openModel(0);
+    store.setModelName('Renamed');
+    store.discard();
+
+    expect(testState(store).results[key('m1')].state).toBe('ok');
+  });
+});
+
+describe('R4a S12–S14 何时弹费用确认', () => {
+  it('S12 confirmCost(true) 后再次批量不弹确认', async () => {
+    const { store, tester } = await startBatch5(true);
+    const api = testApi(store);
+
+    tester.calls.slice(0, 3).forEach((call) => call.resolve());
+    await tick();
+    tester.calls.slice(3, 5).forEach((call) => call.resolve());
+    await tick();
+    expect(testState(store).batches['gpt-gateway'].done).toBe(true);
+
+    const before = tester.count();
+    api.testProvider('gpt-gateway');
+    expect(testState(store).skipCost).toBe(true);
+    expect(testState(store).cost).toBeNull();
+    expect(tester.count()).toBe(before + 3);
+  });
+
+  it('S13 所有目标 credConfigured false → 不弹确认直接入队', async () => {
+    const { store, tester } = testerSetup();
+    await store.load();
+    expect(store.getSnapshot().draft.providers['cc-gateway'].credConfigured).toBe(false);
+
+    testApi(store).testProvider('cc-gateway');
+    expect(testState(store).cost).toBeNull();
+    expect(tester.count()).toBe(3);
+    expect(tester.calls.map((c) => c.req.provider)).toEqual(['cc-gateway', 'cc-gateway', 'cc-gateway']);
+  });
+
+  it('S14 单个模型批量不弹确认', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(['m1']) });
+    await store.load();
+
+    testApi(store).testProvider('gpt-gateway');
+    expect(testState(store).cost).toBeNull();
+    expect(tester.count()).toBe(1);
+  });
+});
+
+describe('R4a S15 错误映射', () => {
+  it('S15 409 BUSY → transient、errorKind BUSY', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(['m1']) });
+    await store.load();
+    testApi(store).testModel('gpt-gateway', 'm1');
+
+    tester.call(0).reject(Object.assign(new Error('模型 m1 正在测试，请稍候'), { status: 409, code: 'BUSY' }));
+    await tick();
+
+    const entry = testState(store).results[key('m1')];
+    expect(entry.state).toBe('transient');
+    expect(entry.result).toMatchObject({ ok: false, transient: true, errorKind: 'BUSY', status: 409, finish: null });
+  });
+
+  it('S15 无 status 的 TypeError → HOST_UNREACHABLE transient', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(['m1']) });
+    await store.load();
+    testApi(store).testModel('gpt-gateway', 'm1');
+
+    tester.call(0).reject(new TypeError('Failed to fetch'));
+    await tick();
+
+    const entry = testState(store).results[key('m1')];
+    expect(entry.state).toBe('transient');
+    expect(entry.result).toMatchObject({ ok: false, transient: true, errorKind: 'HOST_UNREACHABLE' });
+  });
+});
+
+describe('R4a S16 详情开关与 dispose', () => {
+  it('S16 toggleTestDetail 两次回 null、backToList 置 null、无 result 的键不生效', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    const api = testApi(store);
+    api.testModel('gpt-gateway', 'm1');
+    tester.call(0).resolve();
+    await tick();
+
+    expect(testState(store).open).toBeNull();
+    api.toggleTestDetail('gpt-gateway', 'm2');
+    expect(testState(store).open).toBeNull();
+
+    api.toggleTestDetail('gpt-gateway', 'm1');
+    expect(testState(store).open).toBe(key('m1'));
+    api.toggleTestDetail('gpt-gateway', 'm1');
+    expect(testState(store).open).toBeNull();
+
+    api.toggleTestDetail('gpt-gateway', 'm1');
+    store.backToList();
+    expect(testState(store).open).toBeNull();
+  });
+
+  it('S16 copyTestDetail 返回详情文本并写 status', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await store.load();
+    const api = testApi(store);
+    api.testModel('gpt-gateway', 'm1');
+    tester.call(0).resolve();
+    await tick();
+
+    const detail = api.copyTestDetail('gpt-gateway', 'm1');
+    expect(JSON.parse(detail)).toMatchObject({ model: 'm1', provider: 'gpt-gateway', ok: true, latencyMs: 812 });
+    expect(store.getSnapshot().ui.status).toBe('已复制 m1 的测试详情（不含密钥）。');
+  });
+
+  it('S16 dispose → abort 全部在途信号', async () => {
+    const { store, tester } = await startBatch5();
+    const inFlight = tester.calls.slice(0, 3).map((call) => call.signal);
+
+    store.dispose();
+
+    for (const signal of inFlight) expect(signal.aborted).toBe(true);
+  });
+});
+
+/* ==========================================================================
+ * R4a 返工轮（F2、F3）：异常 tester 的兜底与 dispose 之后的 publish。
+ *
+ * 期望行为（orchestrator 决定，见审查 F2/F3）：
+ * - tester 同步抛错、或返回非 thenable 时，active 不许泄漏：条目落到终态 fail、
+ *   errorKind HOST_ERROR、非 transient，后续 job 照常开始（并发槽归还）；
+ * - 只有 fetch 网络失败（TypeError 且无 status）才映射 HOST_UNREACHABLE，由既有 S15 守住；
+ * - dispose 之后 stopBatch / toggleTestDetail / copyTestDetail 不得再通知 subscribe 监听器。
+ * ========================================================================== */
+
+describe('R4a S17–S20 返工轮：异常 tester 与 dispose 之后不再 publish', () => {
+  it('S17 tester 同步抛错 → 终态 fail、HOST_ERROR 非 transient，队列继续推进', async () => {
+    const tester = createThrowingTester(new Error('boom'));
+    const { store } = testerSetup({ pi: piWithModels(M5) }, tester);
+    await store.load();
+    const api = testApi(store);
+
+    for (const id of M5) api.testModel('gpt-gateway', id);
+    await tick();
+
+    for (const id of M5) {
+      const entry = testState(store).results[key(id)];
+      expect(entry?.state, `${id} 应落到终态 fail（不是 running/transient）`).toBe('fail');
+      expect(entry?.result).toMatchObject({ ok: false, transient: false, errorKind: 'HOST_ERROR' });
+    }
+    expect(tester.count(), '5 个 job 都要真正开始：并发槽没有泄漏').toBe(5);
+  });
+
+  it('S18 tester 返回非 thenable（undefined）→ 与 S17 相同：不抛给调用方，条目终态 fail', async () => {
+    const tester = createNonThenableTester();
+    const { store } = testerSetup({ pi: piWithModels(M5) }, tester);
+    await store.load();
+    const api = testApi(store);
+
+    const thrown: unknown[] = [];
+    for (const id of M5) {
+      try {
+        api.testModel('gpt-gateway', id);
+      } catch (error) {
+        thrown.push(error);
+      }
+    }
+    await tick();
+
+    expect(thrown, 'testModel 不应把注入 tester 的异常抛回给调用方').toEqual([]);
+    for (const id of M5) {
+      const entry = testState(store).results[key(id)];
+      expect(entry?.state, `${id} 应落到终态 fail（不是 running）`).toBe('fail');
+      expect(entry?.result).toMatchObject({ ok: false, transient: false, errorKind: 'HOST_ERROR' });
+    }
+    expect(tester.count(), '5 个 job 都要真正开始：并发槽没有泄漏').toBe(5);
+  });
+
+  it('S19 dispose 之后 stopBatch / toggleTestDetail / copyTestDetail 不再通知监听器', async () => {
+    const { store } = await startBatch5();
+    const api = testApi(store);
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    store.dispose();
+    notified = 0;
+    api.stopBatch('gpt-gateway');
+    api.toggleTestDetail('gpt-gateway', 'm1');
+    api.copyTestDetail('gpt-gateway', 'm1');
+
+    expect(notified).toBe(0);
+  });
+
+  it('S20 无 status 的普通 Error → HOST_ERROR 非 transient（TypeError 才是 HOST_UNREACHABLE）', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(['m1']) });
+    await store.load();
+    testApi(store).testModel('gpt-gateway', 'm1');
+
+    tester.call(0).reject(new Error('boom'));
+    await tick();
+
+    const entry = testState(store).results[key('m1')];
+    expect(entry.state).toBe('fail');
+    expect(entry.result).toMatchObject({ ok: false, transient: false, errorKind: 'HOST_ERROR', status: null, message: 'boom' });
+  });
+});
+
+/* ==========================================================================
+ * R4 回归（线上 bug）：设置面板关闭后再次打开，提供方详情页的所有按钮失效。
+ *
+ * 现象：第一次打开设置时「进入 →」「返回」都正常；关闭设置（或切到别的 tab）
+ * 再打开之后，点「进入 →」没有任何反应，console 也没有报错。
+ *
+ * 期望语义（orchestrator 已定）：
+ * - dispose 只结束本次挂载周期：取消事件订阅、清掉测试队列，并且「dispose 之后、
+ *   下一次 load 之前」不再 publish（S19 的语义保持不变，由 RM5 守住）；
+ * - 下一次 load() 重新启用 store：事件订阅、进入/返回、事件回调、模型测试全部恢复。
+ *
+ * RM1–RM4 在修复前应当是红的（publish 被 `if (disposed) return` 永久吞掉），
+ * RM5 是守卫用例，修复前后都应当是绿的。
+ * ========================================================================== */
+
+describe('R4 回归：dispose 后再次 load 重新启用（面板重新挂载）', () => {
+  /** 面板第一次挂载（load）→ 关闭设置（dispose）→ 再次打开（load）。 */
+  async function remount(store: TestableStore): Promise<void> {
+    await store.load();
+    store.dispose();
+    await store.load();
+  }
+
+  it('RM1 重新挂载后 enter / backToList 恢复，并且通知 subscribe 监听器', async () => {
+    const { store } = setup();
+    await remount(store);
+
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    store.enter('gpt-gateway');
+    const detail = store.getSnapshot();
+    expect(detail.ui.view, '「进入 →」必须切到详情页（线上点了没反应的就是这一步）').toBe('detail');
+    expect(detail.ui.route).toBe('gpt-gateway');
+    expect(notified, '重新挂载后的 publish 必须通知监听器').toBeGreaterThan(0);
+
+    const entered = notified;
+    store.backToList();
+    const list = store.getSnapshot();
+    expect(list.ui.view).toBe('list');
+    expect(list.ui.route).toBeNull();
+    expect(notified, '「返回」同样要通知监听器').toBeGreaterThan(entered);
+  });
+
+  it('RM2 StrictMode 的 load → dispose → load 序列后加载完成，且能进入 / 返回', async () => {
+    const { store } = setup();
+
+    void store.load(); // 首次挂载：effect 里的 load 还没结束……
+    store.dispose(); // ……StrictMode 立刻 cleanup
+    await store.load(); // 第二次挂载：重新 load
+
+    const loaded = store.getSnapshot();
+    expect(loaded.ui.loading, '重新挂载后加载必须结束（loading=false）').toBe(false);
+    expect(Object.keys(loaded.draft.providers), 'draft 必须真的加载出来').toContain('gpt-gateway');
+
+    store.enter('gpt-gateway');
+    expect(store.getSnapshot().ui.view).toBe('detail');
+    expect(store.getSnapshot().ui.route).toBe('gpt-gateway');
+
+    store.backToList();
+    expect(store.getSnapshot().ui.view).toBe('list');
+  });
+
+  it('RM3 重新挂载后事件订阅恢复，document-updated 的效果不再被吞掉', async () => {
+    const { fake, store } = setup();
+    await store.load();
+    const subscriptionsAfterFirstMount = fake.on.mock.calls.length;
+    expect(subscriptionsAfterFirstMount, '首次挂载要订阅事件').toBeGreaterThan(0);
+
+    store.dispose();
+    for (const disposer of fake.disposers) expect(disposer).toHaveBeenCalled();
+
+    await store.load();
+    expect(fake.on.mock.calls.length, '重新挂载要重新订阅事件').toBeGreaterThan(subscriptionsAfterFirstMount);
+
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    // 外部把 gpt-gateway 的模型表换成 m1，并广播新 revision。
+    fake.setSlice(NS_PI, sliceWithModels(piSlice(9), 'gpt-gateway', [modelEntry('m1')]));
+    fake.emit('settings/document-updated', NS_PI, 9);
+
+    await vi.waitFor(() => {
+      expect(
+        store.getSnapshot().draft.providers['gpt-gateway']?.models.map((model) => model.id),
+        '重新挂载后的事件回调不能吞掉 publish',
+      ).toEqual(['m1']);
+    });
+    expect(notified, '事件处理后的 publish 必须通知监听器').toBeGreaterThan(0);
+  });
+
+  it('RM4 带 tester 时重新挂载后 testModel 仍能启动，条目进入 running', async () => {
+    const { store, tester } = testerSetup({ pi: piWithModels(M5) });
+    await remount(store);
+
+    const firstModelId = M5[0]; // gpt-gateway 的第一个模型
+    testApi(store).testModel('gpt-gateway', firstModelId);
+
+    expect(tester.count(), '重新挂载后 testModel 必须真的调用 tester').toBe(1);
+    expect(tester.call(0).req).toEqual({ provider: 'gpt-gateway', model: firstModelId });
+    expect(testState(store).results[key(firstModelId)].state).toBe('running');
+  });
+
+  it('RM5 守卫：dispose 之后、没有再次 load 时不通知监听器（S19 语义不变）', async () => {
+    const { store } = setup();
+    await store.load();
+    store.dispose();
+
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    store.enter('gpt-gateway');
+    store.backToList();
+
+    expect(notified, 'dispose 之后、下一次 load 之前不许 publish').toBe(0);
+    expect(store.getSnapshot().ui.view).toBe('list');
+    expect(store.getSnapshot().ui.route).toBeNull();
+  });
+});
+

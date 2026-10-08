@@ -121,7 +121,7 @@ describe('index', () => {
   it.each([
     ['undefined config', undefined],
     ['empty config', {}],
-  ])('registers nine routes and defaults to standard-acp with %s', async (_label, config) => {
+  ])('registers ten routes and defaults to standard-acp with %s', async (_label, config) => {
     const profileDir = await createFixtureProfile();
     const web = createWebServer();
     const connection = { requestRejection: vi.fn().mockReturnValue(undefined) };
@@ -143,8 +143,9 @@ describe('index', () => {
       '/plugins/dsh-wuyou-agent/api/teams/bootstrap',
       '/plugins/dsh-wuyou-agent/api/teams/import',
       '/plugins/dsh-wuyou-agent/api/subagents/import',
+      '/plugins/dsh-wuyou-agent/api/models/test',
     ]);
-    expect(harness.ctx.effect).toHaveBeenCalledTimes(9);
+    expect(harness.ctx.effect).toHaveBeenCalledTimes(10);
     expect(harness.effectDisposers).toEqual(web.disposers);
 
     const stateRoute = web.routes.find(
@@ -189,11 +190,11 @@ describe('index', () => {
     expect(web.register).not.toHaveBeenCalled();
 
     harness.setService('webServer', web.server);
-    expect(web.register).toHaveBeenCalledTimes(9);
+    expect(web.register).toHaveBeenCalledTimes(10);
 
     harness.setService('webServer', web.server);
     harness.setService('unrelated', {});
-    expect(web.register).toHaveBeenCalledTimes(9);
+    expect(web.register).toHaveBeenCalledTimes(10);
   });
 
   it('wraps handlers with the real connection service object shape', async () => {
@@ -220,6 +221,42 @@ describe('index', () => {
     expect(response.end).toHaveBeenCalledWith(expect.stringContaining('unauthorized'));
   });
 
+  it('R4a models/test 被拒绝时不调 llm.stream', async () => {
+    const web = createWebServer();
+    const requestRejection = vi.fn().mockReturnValue(401);
+    const stream = vi.fn();
+    const llm = {
+      listProviders: vi.fn(() => []),
+      listModels: vi.fn(async () => []),
+      resolveModelInfo: vi.fn(async () => ({})),
+      stream,
+    };
+    const harness = createContext({
+      webServer: web.server,
+      connection: { requestRejection },
+      profileContext: createProfileContext(),
+      llm,
+    });
+
+    apply(harness.ctx as any, {});
+    const modelsTestRoute = web.routes.find(
+      (route) => route.path === '/plugins/dsh-wuyou-agent/api/models/test'
+    );
+    expect(modelsTestRoute).toBeDefined();
+
+    const request = {
+      method: 'POST',
+      url: '/plugins/dsh-wuyou-agent/api/models/test',
+    };
+    const response = { writeHead: vi.fn(), end: vi.fn() };
+    await modelsTestRoute!.handler(request, response);
+
+    expect(requestRejection).toHaveBeenCalledWith(request);
+    expect(response.writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    expect(response.end).toHaveBeenCalledWith(expect.stringContaining('unauthorized'));
+    expect(stream).not.toHaveBeenCalled();
+  });
+
   it('fails closed with 503 while the connection service is unavailable', async () => {
     const web = createWebServer();
     const harness = createContext({
@@ -228,7 +265,7 @@ describe('index', () => {
     });
 
     apply(harness.ctx as any, {});
-    expect(web.register).toHaveBeenCalledTimes(9);
+    expect(web.register).toHaveBeenCalledTimes(10);
 
     const stateRoute = web.routes.find(
       (route) => route.path === '/plugins/dsh-wuyou-agent/api/state'
