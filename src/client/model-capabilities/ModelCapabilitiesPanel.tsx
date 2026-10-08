@@ -3,10 +3,10 @@
  * subscribes with useSyncExternalStore, loads on mount, disposes on unmount,
  * and renders one view per snap.ui.
  *
- * Layout: [关闭] · scrolling main area (banners on top) · edit/bulk layer
+ * Layout: scrolling main area (banners on top) · edit/bulk layer
  * (absolute, 48px left for the save bar) · save bar · dialog · import preview ·
  * row menu. The import preview (ui.importPreview) counts as a dialog.
- * A layer makes the main area and the top bar inert; a dialog also makes the
+ * A layer makes the main area inert; a dialog also makes the
  * layer and the save bar inert. With a layer and no dialog, Tab cycles through
  * the layer and the save bar only; after a dialog, focus returns to the layer.
  */
@@ -18,6 +18,7 @@ import { focusableWithin, nextFocusTarget } from '../ui/focus-trap';
 import { mcStyles as s } from './styles';
 import { AddProviderWizard } from './components/AddProviderWizard';
 import { BulkLayer } from './components/BulkLayer';
+import { CostConfirmDialog } from './components/CostConfirmDialog';
 import { DeleteDialog } from './components/DeleteDialog';
 import { EditAccessLayer } from './components/EditAccessLayer';
 import { ImportPreviewDialog } from './components/ImportPreviewDialog';
@@ -28,11 +29,11 @@ import { ProviderDetail } from './components/ProviderDetail';
 import { ListHead, ProviderList } from './components/ProviderList';
 import { RowMenu } from './components/RowMenu';
 import { SaveBar } from './components/SaveBar';
-import { Banners, useInert, useIsoLayoutEffect } from './components/shared';
+import { Banner, Banners, useInert, useIsoLayoutEffect } from './components/shared';
 
 export interface ModelCapabilitiesPanelProps {
   store: ModelCapabilitiesStore;
-  /** Host settings close (settings.section props); the button is hidden when absent. */
+  /** Host settings close (settings.section props); accepted for compatibility, no button is rendered. */
   close?: () => void;
 }
 
@@ -114,7 +115,8 @@ function MainView({ snap, store }: { snap: McSnapshot; store: ModelCapabilitiesS
 }
 
 export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.Element | null {
-  const { store, close } = props;
+  // `close` stays on the props type for the host contract, but is not rendered.
+  const { store } = props;
   const snap = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const { ui } = snap;
 
@@ -127,16 +129,15 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
   const mainRef = useRef<HTMLDivElement>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const topRef = useRef<HTMLDivElement>(null);
 
   const layer = layerOf(snap);
-  // The import preview is not in ui.dialog, but counts as an open dialog (R3 1.8).
-  const dialog = !!ui.dialog || ui.importPreview != null;
+  // The import preview is not in ui.dialog, but counts as an open dialog (R3 1.8);
+  // so does the R4a cost confirmation.
+  const dialog = !!ui.dialog || ui.importPreview != null || !!snap.test?.cost;
   const mainHidden = !!layer || dialog;
   useInert(mainRef, mainHidden);
   useInert(layerRef, dialog);
   useInert(barRef, dialog);
-  useInert(topRef, mainHidden);
 
   // Dialog over a layer: remember the layer control that had focus, and give it
   // back once the dialog is gone. This runs after useInert above has lifted the
@@ -217,13 +218,26 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
     }
   }, [layerKey]);
 
-  // Escape: menu → layer → bulk → preview → wizard (the Modal owns it while a dialog is open).
+  // Escape: menu → layer → bulk → test detail → preview → wizard (the Modal owns it while a dialog is open).
+  // Close the open test detail and give focus back to its strip toggle.
+  const closeTestDetail = (key: string) => {
+    const cut = key.indexOf('|');
+    const route = key.slice(0, cut);
+    const modelId = key.slice(cut + 1);
+    store.toggleTestDetail(route, modelId);
+    setTimeout(() => {
+      const toggles = Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[data-mc-detail]') ?? []);
+      toggles.find((el) => el.getAttribute('data-mc-detail') === modelId)?.focus();
+    }, 0);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing || dialog) return;
     let handled = true;
     if (ui.menuIdx != null) store.closeMenu();
     else if (ui.edit) store.closeLayer();
     else if (ui.bulk) store.closeBulk();
+    else if (snap.test?.open) closeTestDetail(snap.test.open);
     else if (ui.view === 'preview') store.closePreview();
     else if (ui.view === 'wizard') store.wizardCancel();
     else handled = false;
@@ -232,15 +246,15 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
 
   return (
     <div ref={rootRef} style={s.root} onKeyDown={onKeyDown}>
-      {close && (
-        <div ref={topRef} style={s.topbar} aria-hidden={mainHidden ? 'true' : undefined}>
-          <Button onClick={close}>关闭</Button>
-        </div>
-      )}
       {/* Content column: the layer covers it down to the 48px save bar. */}
       <div style={s.body}>
         <div ref={mainRef} style={s.scroll} aria-hidden={mainHidden ? 'true' : undefined}>
           <Banners snap={snap} store={store} />
+          {snap.test?.hostUnsupported && (
+            <Banner tone="error" dataMc="test-unsupported" sub="这个 Host 版本没有测试接口（返回 404）。配置的查看、编辑和保存不受影响。">
+              当前 Host 不支持模型测试，重启 DSH 后可用。
+            </Banner>
+          )}
           <MainView snap={snap} store={store} />
         </div>
         {layer && (
@@ -265,7 +279,11 @@ export function ModelCapabilitiesPanel(props: ModelCapabilitiesPanelProps): JSX.
           <SaveBar snap={snap} store={store} />
         </div>
       </div>
+      {snap.test && (
+        <span role="status" aria-live="polite" style={s.srOnly} data-mc="test-live">{snap.test.live}</span>
+      )}
       <DeleteDialog snap={snap} store={store} />
+      <CostConfirmDialog snap={snap} store={store} />
       <ImportPreviewDialog snap={snap} store={store} />
       <RowMenu snap={snap} store={store} anchor={anchor} />
     </div>

@@ -1,10 +1,12 @@
 import { modelCap } from './capacity';
 import { deriveEnv, orderedEfforts } from './efforts';
 import { modelCapBad } from './validate';
+import { parseTimeoutMinutes } from './timeout';
 import {
   DS_ROUTE_ID,
   NS_DS,
   NS_PI,
+  TIMEOUT_KEY,
   type DraftState,
   type ModelDraft,
   type NamespaceSlice,
@@ -16,8 +18,8 @@ import {
 
 export const SKIP: unique symbol = Symbol('skip');
 
-export const PI_FIELDS = ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'headers'] as const;
-export const DS_FIELDS = ['thinking', 'reasoningEffort'] as const;
+export const PI_FIELDS = ['api', 'displayName', 'baseURL', 'apiKeyEnv', 'headers', 'streamIdleTimeoutMs'] as const;
+export const DS_FIELDS = ['thinking', 'reasoningEffort', 'streamIdleTimeoutMs'] as const;
 
 const has = (o: object, key: string): boolean => Object.prototype.hasOwnProperty.call(o, key);
 const isPi = (p: ProviderDraft): boolean => p.ns === NS_PI;
@@ -58,6 +60,15 @@ export function modelWrite(p: ProviderDraft, m: ModelDraft): Record<string, unkn
 }
 
 export function fieldOut(p: ProviderDraft, key: string): unknown | typeof SKIP {
+  if (key === TIMEOUT_KEY) {
+    // 正在输入的分钟原文优先；非法原文跳过写入（fieldOps 仍计入 dirty）。
+    if (p.timeoutText !== undefined) {
+      const parsed = parseTimeoutMinutes(p.timeoutText);
+      if (parsed.kind === 'error') return SKIP;
+      return parsed.kind === 'empty' ? undefined : parsed.ms;
+    }
+    return p.streamIdleTimeoutMs;
+  }
   const value = (p as unknown as Record<string, unknown>)[key];
   if (key === 'apiKeyEnv' && has(p, key) && !String(value ?? '').trim()) return SKIP;
   if (value == null) return undefined;
@@ -94,6 +105,11 @@ function fieldOps(list: SettingsOp[], fields: readonly string[], base: ProviderD
   for (const key of fields) {
     const next = fieldOut(draft, key);
     if (next === SKIP) {
+      // base 从不带 timeoutText，出现非法超时原文必然是编辑。
+      if (key === TIMEOUT_KEY) {
+        changed += 1;
+        continue;
+      }
       if (!equal((base as unknown as Record<string, unknown>)[key], (draft as unknown as Record<string, unknown>)[key])) changed += 1;
       continue;
     }
@@ -261,7 +277,10 @@ function providerDraft(
       }
     }
   }
-  const known = new Set([...fieldNames, 'defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens', 'maxTokens', 'models']);
+  // 流空闲超时只看 user 层：value 层每个路由都有 schema 默认 300000，读它会把默认当显式。
+  const userTimeout = has(userRaw, TIMEOUT_KEY) ? userRaw[TIMEOUT_KEY] : undefined;
+  if (typeof userTimeout === 'number' && Number.isFinite(userTimeout)) p.streamIdleTimeoutMs = userTimeout;
+  const known = new Set([...fieldNames, TIMEOUT_KEY, 'defaultInput', 'reasoning', 'defaultContextWindow', 'defaultMaxTokens', 'maxTokens', 'models']);
   for (const [key, value] of Object.entries(effective)) if (!known.has(key)) p.extra[key] = clone(value);
   const ref = p.apiKeyEnv && String(p.apiKeyEnv).trim() ? String(p.apiKeyEnv).trim() : ns === NS_DS ? 'DEEPSEEK_API_KEY' : deriveEnv(id);
   const status = creds[ref] ?? { configured: false, writable: true };

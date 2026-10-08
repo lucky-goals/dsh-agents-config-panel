@@ -1,0 +1,1241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>模型能力 · 模型可用性测试 · 交互原型</title>
+<style id="tokens">
+/* ===== Token 定义（唯一允许出现字面色值的地方） =====
+   --dsw-* 沿用 prototype.html / Host；--mc-* 为本原型补充的派生 token */
+body {
+  --dsw-alias-bg-base: #fff;
+  --dsw-alias-bg-layer-1: #fff;
+  --dsw-alias-bg-layer-2: #fff;
+  --dsw-alias-bg-layer-3: #fff;
+  --dsw-alias-label-primary: #0f1115;
+  --dsw-alias-label-secondary: #61666b;
+  --dsw-alias-label-tertiary: #81858c;
+  --dsw-alias-label-primary-foreground: #fff;
+  --dsw-alias-button-primary-fill: #0f1115;
+  --dsw-alias-button-primary-hover: #43454a;
+  --dsw-alias-border-l2: #0000001a;
+  --dsw-alias-border-l4: #00000029;
+  --dsw-alias-state-success-primary: #22c55e;
+  --dsw-alias-state-error-primary: #ec1313;
+  --dsw-alias-state-warn-primary: #f59e0b;
+  --dsw-alias-link: #4176e6;
+  --dsw-alias-specific-sidebar-fill: #f9fafb;
+  --dsw-specific-sidebar-nav-item-active: #0000000d;
+  --dsw-radius-panel: 20px;
+  --dsw-focus-ring: #4176E6;
+  --dsw-radius-xs: 4px;
+  --dsw-radius-sm: 8px;
+  --dsw-radius-md: 12px;
+  --dsw-radius-lg: 16px;
+  --dsw-radius-xl: 20px;
+  --mc-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  --mc-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --mc-ease: 180ms ease;
+  /* 补充：状态文字（满足白底对比度）与浅底 */
+  --mc-ok-text: #15803d;
+  --mc-warn-text: #b45309;
+  --mc-ok-soft: #22c55e1a;
+  --mc-err-soft: #ec131312;
+  --mc-warn-soft: #f59e0b1f;
+  --mc-fill-subtle: #0000000a;
+  --mc-fill-track: #0000000f;
+  --mc-stage: #eef0f2;
+  --mc-shadow: 0 16px 40px #0000001a, 0 1px 3px #00000014;
+  --mc-scrim: #0f111540;
+  /* 原型控制台专用（产品 UI 不使用） */
+  --mc-proto: #7c4ddb;
+  --mc-proto-fill: #7c4ddb0d;
+}
+body[data-ds-dark-theme] {
+  --dsw-alias-bg-base: #151517;
+  --dsw-alias-bg-layer-1: #232324;
+  --dsw-alias-bg-layer-2: #2c2c2e;
+  --dsw-alias-bg-layer-3: #353638;
+  --dsw-alias-label-primary: #f9fafb;
+  --dsw-alias-label-secondary: #cfd3d6;
+  --dsw-alias-label-tertiary: #adb2b8;
+  --dsw-alias-label-primary-foreground: #0f1115;
+  --dsw-alias-button-primary-fill: #f9fafb;
+  --dsw-alias-button-primary-hover: #ebeef2;
+  --dsw-alias-border-l2: #ffffff1f;
+  --dsw-alias-border-l4: #ffffff33;
+  --dsw-alias-state-error-primary: #f25a5a;
+  --dsw-alias-state-warn-primary: #fbbf24;
+  --dsw-alias-link: #7aaaff;
+  --dsw-alias-specific-sidebar-fill: #1b1b1c;
+  --dsw-specific-sidebar-nav-item-active: #ffffff14;
+  --dsw-focus-ring: #7AAAFF;
+  --mc-ok-text: #4ade80;
+  --mc-warn-text: #fbbf24;
+  --mc-ok-soft: #22c55e24;
+  --mc-err-soft: #f25a5a24;
+  --mc-warn-soft: #fbbf2424;
+  --mc-fill-subtle: #ffffff0a;
+  --mc-fill-track: #ffffff14;
+  --mc-stage: #0d0d0e;
+  --mc-shadow: 0 16px 40px #00000080, 0 0 0 0.5px #ffffff14;
+  --mc-scrim: #00000080;
+  --mc-proto: #b69cff;
+  --mc-proto-fill: #b69cff12;
+}
+</style>
+<style>
+/* ===== 基础（以下样式只用 var(--…)） ===== */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: var(--mc-font);
+  font-size: 14px; line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--mc-stage);
+  min-height: 100vh;
+  /* 不压缩行尾全角标点，避免「（…）」在断行判断时少算宽度而溢出 */
+  text-spacing-trim: space-all;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled, input:disabled, [aria-disabled="true"] { cursor: not-allowed; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--dsw-focus-ring); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mono { font-family: var(--mc-mono); }
+.num { font-variant-numeric: tabular-nums; }
+/* 有意截断的省略号元素统一打 data-ellipsis（尺寸验收豁免 scrollWidth） */
+[data-ellipsis] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* ===== 舞台：演示控制台 + 800px 设置对话框 ===== */
+.stage { min-width: 860px; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 12px 30px 24px; }
+
+/* 演示控制台（原型控制，非产品 UI）：与对话框同宽，自身换行 */
+.proto {
+  width: 800px; flex: none; padding: 8px 12px;
+  border: 1px dashed var(--mc-proto); border-radius: var(--dsw-radius-md);
+  background: var(--mc-proto-fill);
+  font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary);
+  display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+}
+.proto .ptag { font-family: var(--mc-mono); font-size: 11px; font-weight: 600; color: var(--mc-proto); white-space: nowrap; }
+.proto .pgrp { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.proto .plbl { color: var(--dsw-alias-label-tertiary); margin-right: 2px; }
+.proto button {
+  height: 24px; padding: 0 9px; border-radius: var(--dsw-radius-xs);
+  border: 1px dashed var(--dsw-alias-border-l4); background: transparent;
+  color: var(--dsw-alias-label-secondary); font-size: 12px;
+}
+.proto button:hover { color: var(--dsw-alias-label-primary); border-color: var(--mc-proto); }
+.proto button[aria-pressed="true"] { border-style: solid; border-color: var(--mc-proto); color: var(--mc-proto); background: var(--dsw-alias-bg-layer-1); font-weight: 500; }
+.proto .pnote { flex-basis: 100%; color: var(--dsw-alias-label-tertiary); }
+
+/* 设置对话框：尺寸逐项对齐 @deepseek-ai/dsh-client-ui-settings-general */
+.panel {
+  width: 800px; height: min(800px, calc(100vh - 48px)); max-width: calc(100vw - 48px); flex: none; position: relative;
+  display: flex; overflow: hidden;
+  border-radius: var(--dsw-radius-panel); background: var(--dsw-alias-bg-layer-2);
+  /* 描边用 box-shadow，不占盒宽：内容区严格 800 − 188 − 48 */
+  box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l4), var(--mc-shadow);
+}
+.nav { width: 188px; flex: none; padding: 22px 12px 0; display: flex; flex-direction: column; gap: 18px; }
+.nav-title { padding: 0 12px; font-size: 16px; font-weight: 500; line-height: 24px; }
+.nav-list { display: flex; flex-direction: column; gap: 2px; }
+.nav-cell {
+  height: 40px; padding: 9px 16px 9px 12px; font-size: 14px; line-height: 22px; text-align: left;
+  border: 0; background: transparent; border-radius: var(--dsw-radius-md); color: var(--dsw-alias-label-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nav-cell:hover { background: var(--mc-fill-subtle); }
+.nav-cell[aria-current="page"] { background: var(--dsw-specific-sidebar-nav-item-active); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.content-header {
+  height: 54px; flex: none; padding: 20px 14px 8px 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 16px; font-weight: 500; line-height: 24px;
+}
+.content-header .title { padding-left: 14px; }
+.options { flex: 1; min-height: 0; padding: 0 24px 24px; overflow-y: auto; scrollbar-gutter: stable; }
+
+/* 插件挂载根：宽度 = 800 − 188 − 48 = 564px（经典滚动条下再减滚动条宽度） */
+.mcroot { min-height: 100%; display: flex; flex-direction: column; gap: 12px; }
+.savebar {
+  position: sticky; bottom: -24px; z-index: 5; margin: auto 0 -24px; padding: 10px 0 12px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-top: 0.5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2);
+}
+.savebar .count { flex: 1 1 160px; min-width: 0; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+
+/* ===== 排版 ===== */
+.h1 { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
+.h2 { margin: 0; font-size: 14px; font-weight: 500; line-height: 22px; }
+.desc { margin: 0; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-tertiary); }
+.small { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.row { display: flex; align-items: center; gap: 8px; }
+.row.wrap { flex-wrap: wrap; }
+.spacer { flex: 1; }
+.head { display: flex; align-items: flex-start; gap: 12px; }
+.head > div:first-child { flex: 1; min-width: 0; }
+.head .h1.mono { overflow-wrap: anywhere; }
+.statusline { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); min-height: 18px; overflow-wrap: anywhere; }
+.readonly-line { font-size: 12px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+
+/* ===== 按钮 ===== */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; flex: none;
+  height: 28px; padding: 0 10px; border-radius: var(--dsw-radius-sm);
+  border: 0.5px solid var(--dsw-alias-border-l4); background: transparent;
+  color: var(--dsw-alias-label-primary); font-size: 13px;
+  transition: background var(--mc-ease), color var(--mc-ease), opacity var(--mc-ease);
+}
+.btn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--mc-fill-subtle); }
+.btn.primary {
+  height: 36px; padding: 0 16px; border-radius: var(--dsw-radius-md); border: 0;
+  background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); font-size: 14px; font-weight: 500;
+}
+.btn.primary:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--dsw-alias-button-primary-hover); }
+.btn.primary.sm { height: 28px; padding: 0 12px; border-radius: var(--dsw-radius-sm); font-size: 13px; }
+.btn.ghost { border: 0; color: var(--dsw-alias-label-secondary); }
+.btn.edit { padding: 0 8px; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: .45; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--dsw-alias-link); font-size: 13px; white-space: nowrap; flex: none; }
+.linkbtn:hover:not(:disabled):not([aria-disabled="true"]) { text-decoration: underline; }
+.linkbtn:disabled, .linkbtn[aria-disabled="true"] { opacity: .45; }
+.iconbtn {
+  width: 28px; height: 28px; flex: none; padding: 0; border: 0; background: transparent; border-radius: var(--dsw-radius-sm);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 1;
+}
+.iconbtn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--mc-fill-subtle); color: var(--dsw-alias-label-primary); }
+.iconbtn[aria-disabled="true"] { opacity: .4; }
+.iconbtn.retry { color: var(--mc-warn-text); }
+.iconslot { width: 28px; height: 28px; flex: none; }
+/* 状态条里的紧凑文字按钮（重测 / 重试） */
+.xbtn {
+  flex: none; min-width: 58px; height: 22px; padding: 0 8px; border-radius: var(--dsw-radius-xs); white-space: nowrap;
+  border: 0.5px solid var(--dsw-alias-border-l4); background: transparent; font-size: 12px; line-height: 20px; color: var(--dsw-alias-label-secondary);
+}
+.xbtn:hover:not([aria-disabled="true"]) { background: var(--mc-fill-subtle); color: var(--dsw-alias-label-primary); }
+.xbtn.retry { color: var(--mc-warn-text); border-color: var(--dsw-alias-state-warn-primary); }
+.xbtn[aria-disabled="true"] { opacity: .45; }
+
+/* ===== 卡 / 标签 ===== */
+.card {
+  border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1);
+  border-radius: var(--dsw-radius-xl); padding: 12px 14px;
+}
+.pcard { display: flex; flex-direction: column; gap: 8px; }
+.pcard .top { display: flex; align-items: flex-start; gap: 10px; }
+.pcard .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pcard .name { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.pcard .url { font-size: 12px; color: var(--dsw-alias-label-tertiary); font-family: var(--mc-mono); }
+.pcard .meta { font-size: 12px; color: var(--dsw-alias-label-secondary); display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; }
+.pcard .acts { flex: none; display: flex; align-items: center; gap: 4px; }
+.pcard .why { margin: 0; padding-top: 8px; border-top: 0.5px solid var(--dsw-alias-border-l2); display: flex; align-items: center; gap: 6px; }
+.meta .sep { color: var(--dsw-alias-label-tertiary); }
+.meta .grp { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tag {
+  display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: var(--dsw-radius-xs); white-space: nowrap;
+  border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); font-weight: 400;
+}
+.tag.warn { border-color: var(--dsw-alias-state-warn-primary); color: var(--mc-warn-text); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--dsw-alias-state-success-primary); }
+.dot.bad { background: var(--dsw-alias-state-error-primary); }
+.dot.warn { background: var(--dsw-alias-state-warn-primary); }
+.dot.hollow { background: transparent; border: 1px solid var(--dsw-alias-label-tertiary); }
+/* 提供方卡片上的测试汇总徽标 */
+.tbadge {
+  display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 7px; border-radius: var(--dsw-radius-xs);
+  font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tbadge.ok { background: var(--mc-ok-soft); color: var(--mc-ok-text); }
+.tbadge.bad { background: var(--mc-err-soft); color: var(--dsw-alias-state-error-primary); }
+.tbadge.warn { background: var(--mc-warn-soft); color: var(--mc-warn-text); }
+.tbadge.run { border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); }
+
+/* ===== 信息条：文字换行，按钮在右侧不压缩 ===== */
+.banner {
+  display: flex; align-items: flex-start; gap: 8px 10px; flex-wrap: wrap; padding: 10px 12px; border-radius: var(--dsw-radius-md);
+  border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); font-size: 13px; line-height: 20px;
+}
+.banner.error { border-color: var(--dsw-alias-state-error-primary); }
+.banner.warn { border-color: var(--dsw-alias-state-warn-primary); }
+.banner .txt { flex: 1 1 280px; min-width: 0; overflow-wrap: anywhere; }
+.banner .txt .sub { display: block; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.banner .mark { width: 16px; height: 16px; border-radius: 50%; flex: none; margin-top: 2px; font-size: 11px; line-height: 15px; text-align: center; border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); }
+.banner.error .mark { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+.banner.warn .mark { border-color: var(--dsw-alias-state-warn-primary); color: var(--mc-warn-text); }
+.banner .btn { margin-left: auto; }
+
+.section { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--dsw-radius-lg); border: 0.5px solid var(--dsw-alias-border-l2); }
+.section-title { font-size: 13px; font-weight: 500; }
+.kv { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+.kv span { white-space: nowrap; }
+.kv b { font-weight: 400; color: var(--dsw-alias-label-tertiary); margin-right: 6px; }
+.check { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; cursor: pointer; }
+.check input { margin: 0; accent-color: var(--dsw-alias-button-primary-fill); }
+
+/* ===== 模型表：保持真实 6 轨道（styles.ts:383-390），不加列 ===== */
+.mtable {
+  border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-lg); padding: 0 12px;
+  display: grid;
+  grid-template-columns: 24px minmax(96px,1.6fr) minmax(64px,1fr) minmax(56px,1.2fr) minmax(84px,max-content) max-content;
+  column-gap: 8px;
+}
+/* 分隔线用 border-image-outset 伸到表格内边距：只产生墨迹溢出，不产生可滚动溢出 */
+.sepline { border-top: 0.5px solid transparent; border-image: linear-gradient(var(--dsw-alias-border-l2), var(--dsw-alias-border-l2)) 1 0 0 0 / 0.5px 0 0 0 / 0 12px; }
+.mrow {
+  grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center;
+  padding: 8px 0; font-size: 13px; min-height: 52px;
+}
+.mrow.has-strip { padding-bottom: 2px; min-height: 0; }
+.mrow > * { min-width: 0; }
+.mrow > .selcell { display: flex; align-items: center; }
+.mrow > .selcell input { margin: 0; accent-color: var(--dsw-alias-button-primary-fill); }
+.mrow.hdr { font-size: 12px; color: var(--dsw-alias-label-tertiary); padding: 6px 0; min-height: 0; }
+.mrow .mcell { display: flex; flex-direction: column; }
+.mrow .mid { font-family: var(--mc-mono); font-size: 12.5px; font-weight: 500; }
+.mrow .mname { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+.mrow .sum { color: var(--dsw-alias-label-secondary); }
+.mrow .cap { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-secondary); }
+.mrow .cap.inh { color: var(--dsw-alias-label-tertiary); }
+/* 操作列：▷ 测试（28）+ 编辑 + ···（28，DeepSeek 用同宽占位），列宽恒定 */
+.mrow .ops { display: flex; gap: 2px; justify-content: flex-end; align-items: center; }
+.mfoot { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+
+/* 状态子行：跨整行，从第 2 轨开始，与模型列左对齐；未测试的行不渲染 */
+.mstrip { grid-column: 2 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 0 8px; font-size: 12px; line-height: 18px; }
+.mstrip .fullid { display: none; }
+.mstrip .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mstrip .line { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.mstrip .line > [data-ellipsis] { flex: 0 1 auto; }
+.mstrip .fullid {
+  font-family: var(--mc-mono); font-size: 11.5px; color: var(--dsw-alias-label-tertiary);
+  white-space: normal; word-break: break-all; overflow-wrap: anywhere;
+}
+.mstrip.cut .fullid { display: block; }
+.stoggle {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; text-align: left;
+  margin: 0; padding: 2px 6px; border: 0; background: transparent; border-radius: var(--dsw-radius-xs);
+  transition: background var(--mc-ease);
+}
+.stoggle:hover, .stoggle[aria-expanded="true"] { background: var(--mc-fill-subtle); }
+.chev {
+  flex: none; width: 6px; height: 6px; margin: 0 4px 3px 2px;
+  border-right: 1px solid var(--dsw-alias-label-tertiary); border-bottom: 1px solid var(--dsw-alias-label-tertiary);
+  transform: rotate(45deg); transition: transform var(--mc-ease);
+}
+.stoggle[aria-expanded="true"] .chev { transform: translateY(3px) rotate(-135deg); }
+.mstrip .lbl { font-weight: 500; white-space: nowrap; }
+.mstrip.ok .lbl { color: var(--mc-ok-text); }
+.mstrip.fail .lbl { color: var(--dsw-alias-state-error-primary); }
+.mstrip.transient .lbl { color: var(--mc-warn-text); }
+.mstrip.idle .lbl, .mstrip.cancelled .lbl, .mstrip.queued .lbl, .mstrip.running .lbl { font-weight: 400; color: var(--dsw-alias-label-secondary); }
+.mstrip .ms { color: var(--dsw-alias-label-primary); white-space: nowrap; }
+.mstrip .code { font-family: var(--mc-mono); font-size: 11px; white-space: nowrap; }
+.mstrip .mut { color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.mstrip .sep { color: var(--dsw-alias-label-tertiary); }
+.mstrip .plain { flex: 1; min-width: 0; padding: 2px 6px; }
+/* 暂时性失败：半圆箭头图标，区别于实心红点 */
+.reico {
+  width: 14px; height: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 11px; line-height: 1; font-weight: 600;
+  color: var(--mc-warn-text); background: var(--mc-warn-soft); box-shadow: inset 0 0 0 1px var(--dsw-alias-state-warn-primary);
+}
+.spin {
+  width: 12px; height: 12px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--dsw-alias-border-l4); border-top-color: var(--dsw-alias-label-primary);
+  animation: spin .8s linear infinite;
+}
+.spin.sm { width: 9px; height: 9px; border-width: 1.5px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 展开的测试详情：跨整行，紧跟状态条；dl 两列 */
+.mdetail {
+  grid-column: 1 / -1; margin: 0 0 10px; padding: 10px 12px; min-width: 0;
+  border-radius: var(--dsw-radius-md); background: var(--mc-fill-subtle); border: 0.5px solid var(--dsw-alias-border-l2);
+  font-size: 12px; line-height: 18px; display: flex; flex-direction: column; gap: 8px;
+}
+.mdetail.enter { animation: drop 160ms ease; }
+@keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.mdetail dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 4px 14px; }
+.mdetail dt { color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.mdetail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary); }
+.mdetail dd.id { font-family: var(--mc-mono); word-break: break-all; }
+.mdetail .q { font-family: var(--mc-mono); font-size: 11.5px; background: var(--dsw-alias-bg-layer-1); border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xs); padding: 1px 6px; word-break: break-all; }
+.mdetail .advice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding-top: 8px; border-top: 0.5px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); }
+.mdetail .advice .txt { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+
+/* ===== 选择栏：左「已选 N 个 · 全选 · 清除」，右三个按钮；放不下整体换行 ===== */
+.seltool { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-height: 28px; }
+.seltool .left { display: flex; align-items: center; gap: 10px; flex: 1 0 auto; }
+.seltool .selcount { font-size: 14px; font-weight: 500; line-height: 22px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.seltool .grp { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+
+/* ===== 批量测试进度 / 汇总（564px 紧凑版） ===== */
+.trun {
+  border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-1);
+  padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.trun .top { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px 8px; }
+.trun .tt { flex: 1 1 220px; min-width: 0; }
+.trun .ttl { font-size: 13px; font-weight: 500; line-height: 20px; font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trun .sub { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.trun .acts { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+.trun .counts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.trun .counts span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.trun .note { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+/* 签名：逐条分段进度条，每段对应一个模型，等分填满，每段至少 4px */
+.segs { display: flex; gap: 2px; height: 6px; min-width: 0; }
+.seg { flex: 1 1 0; min-width: 4px; border-radius: 3px; background: var(--mc-fill-track); transition: background 240ms ease; }
+.seg.running { background: var(--dsw-alias-label-tertiary); animation: pulse 1s ease-in-out infinite; }
+.seg.ok { background: var(--dsw-alias-state-success-primary); }
+.seg.fail { background: var(--dsw-alias-state-error-primary); }
+.seg.transient { background: var(--dsw-alias-state-warn-primary); }
+.seg.cancelled { background: repeating-linear-gradient(135deg, var(--dsw-alias-border-l4) 0 2px, transparent 2px 5px); }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.foot-note { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); margin: 0; }
+
+/* ===== 对话框：盖住整个 800px 面板居中，宽 ≤ 400px ===== */
+.dlgroot:empty { display: none; }
+.scrim { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: var(--mc-scrim); animation: fade 140ms ease; }
+@keyframes fade { from { opacity: 0; } }
+.dialog {
+  width: 400px; max-width: calc(100% - 32px); padding: 18px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--dsw-alias-bg-layer-1); border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-lg);
+  box-shadow: var(--mc-shadow);
+}
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dialog .lead { margin: 0; font-size: 14px; line-height: 22px; }
+.dialog .lead strong { font-weight: 500; }
+.facts { margin: 0; padding: 10px 12px; list-style: none; border-radius: var(--dsw-radius-md); background: var(--mc-fill-subtle); display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.facts li { display: flex; gap: 8px; }
+.facts li b { width: 64px; flex: none; font-weight: 400; color: var(--dsw-alias-label-tertiary); }
+.facts li span { min-width: 0; overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .spin { border-top-color: var(--dsw-alias-label-secondary); }
+}
+</style>
+</head>
+<body>
+<div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+<div class="stage">
+  <section class="proto" aria-label="原型控制，非产品 UI">
+    <span class="ptag">原型控制 · 非产品 UI</span>
+    <div class="pgrp" role="group" aria-label="演示场景">
+      <span class="plbl">场景</span>
+      <button type="button" data-act="scen" data-arg="normal" data-fk="scen:normal" aria-pressed="true">正常</button>
+      <button type="button" data-act="scen" data-arg="allok" data-fk="scen:allok" aria-pressed="false">全部成功</button>
+      <button type="button" data-act="scen" data-arg="mixed" data-fk="scen:mixed" aria-pressed="false">混合失败</button>
+      <button type="button" data-act="scen" data-arg="host404" data-fk="scen:host404" aria-pressed="false">旧 Host 404</button>
+      <button type="button" data-act="scen" data-arg="unsaved" data-fk="scen:unsaved" aria-pressed="false">提供方未保存</button>
+      <button type="button" data-act="scen" data-arg="slow" data-fk="scen:slow" aria-pressed="false">网络慢</button>
+    </div>
+    <div class="pgrp">
+      <button type="button" data-act="refresh" data-fk="refresh">模拟刷新</button>
+      <button type="button" data-act="theme" data-fk="theme" aria-pressed="false">暗色主题</button>
+    </div>
+    <span class="pnote" id="proto-note" aria-live="polite"></span>
+  </section>
+  <!-- 设置对话框：800 × min(800, 100vh − 48)；nav 188；options 内边距 0 24 24 → 插件内容宽 564px -->
+  <div class="panel" data-proto="panel" role="dialog" aria-modal="false" aria-labelledby="nav-title">
+    <nav class="nav" data-proto="nav" aria-label="设置分区">
+      <div class="nav-title" id="nav-title">设置</div>
+      <div class="nav-list">
+        <button type="button" class="nav-cell" data-act="noop" data-arg="原型只做「模型能力」页。">无忧Subagent</button>
+        <button type="button" class="nav-cell" data-act="noop" data-arg="原型只做「模型能力」页。">无忧Teams</button>
+        <button type="button" class="nav-cell" aria-current="page" data-act="noop" data-arg="">模型能力</button>
+      </div>
+    </nav>
+    <div class="content">
+      <div class="content-header"><span class="title">模型能力</span>
+        <button type="button" class="iconbtn" aria-label="关闭设置（原型中不可用）" data-act="noop" data-arg="关闭设置在原型中不可用。">✕</button>
+      </div>
+      <div class="options" id="options" data-proto="options">
+        <div class="mcroot" id="app" data-proto="content"></div>
+      </div>
+    </div>
+    <div class="dlgroot" id="dlgroot"></div>
+  </div>
+</div>
+<script>
+'use strict';
+/* =====================================================================
+   模型可用性测试 · 交互原型
+   mock 与 Host 契约一致：每次测试 = 一次真实请求（短提示、maxTokens≈32、
+   最低推理档、超时 20s）；返回 {ok, latencyMs, firstTokenMs, sample,
+   errorKind, status, message, transient}；批量由 Host 限并发 3，逐条返回。
+   ===================================================================== */
+const CONC = 3;
+const TIMEOUT_MS = 20000;
+const $ = (s, el) => (el || document).querySelector(s);
+const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
+const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const kOf = (rid, mid) => rid + '|' + mid;
+
+/* 错误码 → 文案（与 Host 判定一致；transient = 暂时性，可重试） */
+const ERR = {
+  AUTH:               { short: '鉴权失败',   long: '鉴权失败（401/403），检查 API Key', transient: false },
+  MISSING_CREDENTIAL: { short: '未配置 Key', long: '未配置 API Key',                   transient: false },
+  QUOTA:              { short: '额度不足',   long: '余额或额度不足',                   transient: false },
+  RATE_LIMIT:         { short: '被限流',     long: '被限流（429），稍后重试',           transient: true },
+  SERVER:             { short: '服务端错误', long: '服务端错误（5xx），稍后重试',       transient: true },
+  TRANSPORT:          { short: '网络不可达', long: '网络不可达，稍后重试',             transient: true },
+  TIMEOUT:            { short: '超时',       long: '超时（20s），稍后重试',             transient: true },
+  INVALID_REQUEST:    { short: '请求被拒',   long: '请求被拒',                         transient: false },
+  HTTP_404:           { short: '模型不存在', long: '请求被拒或模型不存在（404）',       transient: false },
+  UNKNOWN_MODEL:      { short: '未注册',     long: '模型未在配置中注册',               transient: false },
+  NO_ADAPTER:         { short: '尚未生效',   long: '提供方尚未生效，刚保存时可能出现，稍后重试', transient: true },
+  PI_AI_ERROR:        { short: '未知错误',   long: '未分类错误',                       transient: false }
+};
+const ADVICE = {
+  AUTH: '到「编辑接入」核对 API Key 和 baseURL。',
+  MISSING_CREDENTIAL: '这次没有发出请求。到「编辑接入」填写 API Key 并保存后再测。',
+  QUOTA: '到提供方后台充值或调整额度，再重测。',
+  INVALID_REQUEST: '检查模型的思考档位和输入类型是否被这个模型支持。',
+  HTTP_404: '核对模型 ID 是否和提供方文档一致。',
+  UNKNOWN_MODEL: '保存配置后再测；仍出现说明这个模型没有写进配置。',
+  PI_AI_ERROR: '复制详情排查，或稍后重测。'
+};
+const TRANSIENT_ADVICE = '暂时性失败，通常稍后重试即可。';
+
+/* ================= 示例数据 ================= */
+const API_NAME = { 'openai-completions': 'OpenAI Chat Completions', 'openai-responses': 'OpenAI Responses', 'anthropic-messages': 'Anthropic Messages' };
+const m = (id, name, input, think, cw, mt, sample) => ({ id, name, input, think, cw, mt, sample });
+function seedRoutes() {
+  return {
+    'deepseek-official': {
+      official: true, api: null, base: 'api.deepseek.com', cred: true, thinking: 'high',
+      models: [
+        m('deepseek-chat', 'DeepSeek Chat', '文本', '跟随提供方', '1M', '256K', 'OK'),
+        m('deepseek-reasoner', 'DeepSeek Reasoner', '文本', '跟随提供方', '1M', '256K', '好的，OK。')
+      ]
+    },
+    openrouter: {
+      api: 'openai-completions', base: 'openrouter.ai/api/v1', cred: true, keyEnv: 'OPENROUTER_API_KEY',
+      models: [
+        m('anthropic/claude-sonnet-4', 'Claude Sonnet 4', '文本 · 图片', 'low – max', '200K', '64K', 'OK'),
+        m('openai/gpt-4.1-mini', 'GPT-4.1 mini', '文本 · 图片', '不思考', '1M', '32K', 'OK'),
+        m('google/gemini-2.5-flash', 'Gemini 2.5 Flash', '文本 · 图片', 'off – high', '1M', '64K', 'OK.'),
+        m('meta-llama/llama-3.3-70b-instruct', 'Llama 3.3 70B Instruct', '文本', '不思考', '128K', '继承', 'OK! Is there anything specific you would like me to help you with today? I can assist with coding, writing'),
+        m('qwen/qwen3-coder', 'Qwen3 Coder', '文本', '不思考', '262K', '继承', 'OK'),
+        m('mistralai/mistral-small-3.2', 'Mistral Small 3.2', '文本 · 图片', '不思考', '128K', '继承', 'OK'),
+        m('x-ai/grok-3-mini', 'Grok 3 mini', '文本', 'low – high', '128K', '继承', 'OK')
+      ]
+    },
+    'local-ollama': {
+      api: 'openai-completions', base: '127.0.0.1:11434/v1', cred: false, keyEnv: 'LOCAL_OLLAMA_API_KEY',
+      models: [
+        m('qwen2.5-coder:14b', 'Qwen2.5 Coder 14B', '文本', '不思考', '继承', '继承', 'OK'),
+        m('llama3.1:8b', 'Llama 3.1 8B', '文本', '不思考', '继承', '继承', 'OK')
+      ]
+    },
+    siliconflow: {
+      api: 'openai-completions', base: 'api.siliconflow.cn/v1', cred: true, credUnsaved: true, isNew: true, keyEnv: 'SILICONFLOW_API_KEY',
+      models: [
+        m('deepseek-ai/DeepSeek-V3', 'DeepSeek V3', '文本', '不思考', '128K', '继承', 'OK'),
+        m('Qwen/Qwen3-235B-A22B', 'Qwen3 235B A22B', '文本', 'off – high', '128K', '继承', 'OK')
+      ]
+    }
+  };
+}
+
+/* ================= 状态 ================= */
+const S = {
+  scen: 'normal', dark: false, view: 'list', route: null,
+  routes: seedRoutes(), dirty: new Set(['siliconflow']),
+  hostMissing: false,      // 已探测到旧 Host 没有测试路由（404）
+  justSaved: {},           // rid → 保存时间；短时间内测试会返回 NO_ADAPTER
+  res: {},                 // key → { state, r, at, startedAt, prev }
+  runs: {},                // rid → 批量运行
+  sel: {},                 // rid → Set(model id)
+  open: null,              // 展开详情的 key
+  openEnter: false,
+  dialog: null,
+  skipCost: false,
+  status: '', statusTimer: 0,
+  autoOpen: null
+};
+let gen = 0;               // 场景切换/保存/刷新时自增，作废迟到的 mock 回包
+let seed = 7;
+function rnd() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }
+const between = (a, b) => Math.round(a + rnd() * (b - a));
+
+/* ================= 测试引擎：Host 侧并发 3 的队列 ================= */
+const queue = [];
+let active = 0;
+function enqueue(rid, mid, front) {
+  const k = kOf(rid, mid);
+  const cur = S.res[k];
+  S.res[k] = { state: 'queued', prev: cur && cur.state !== 'queued' && cur.state !== 'running' ? cur : (cur && cur.prev) };
+  const job = { k, rid, mid, gen };
+  if (front) queue.unshift(job); else queue.push(job);
+}
+function pump() {
+  while (active < CONC && queue.length) {
+    const job = queue.shift();
+    const e = S.res[job.k];
+    if (job.gen !== gen || !e || e.state !== 'queued') continue;   // 已取消或已作废
+    active++;
+    e.state = 'running'; e.startedAt = performance.now();
+    const plan = mockPlan(job.rid, job.mid);
+    setTimeout(() => {
+      if (job.gen !== gen) return;          // 场景切换/保存/刷新后迟到的回包直接丢弃
+      active--;
+      if (plan.host404) hostGone(); else finish(job, plan.r);
+      pump();
+    }, plan.delay);
+  }
+  render();
+}
+function finish(job, r) {
+  const e = S.res[job.k];
+  if (!e) return;
+  e.r = r; e.at = new Date(); e.state = r.ok ? 'ok' : (r.transient ? 'transient' : 'fail'); delete e.prev;
+  const run = S.runs[job.rid];
+  const inRun = run && run.keys.includes(job.k);
+  if (S.autoOpen === job.mid) { S.open = job.k; S.openEnter = true; S.autoOpen = null; }
+  announce(job.mid + (r.ok ? ' 可用，耗时 ' + fmtMs(r.latencyMs) : (r.transient ? ' 暂时失败：' : ' 失败：') + ERR[r.errorKind].short) +
+    (inRun ? '。' + progressText(run) : ''));
+  if (inRun) checkRunDone(run);
+}
+/* 旧 Host：第一次请求就 404，整批撤销，回到测试前的状态 */
+function hostGone() {
+  S.hostMissing = true;
+  resetEngine();
+  Object.keys(S.res).forEach((k) => {
+    const e = S.res[k];
+    if (e.state === 'queued' || e.state === 'running') { if (e.prev) S.res[k] = e.prev; else delete S.res[k]; }
+  });
+  S.runs = {};
+  S.dialog = null;
+  announce('当前 Host 不支持模型测试，重启 DSH 后可用。');
+}
+
+function stats(run) {
+  const s = { total: run.keys.length, ok: 0, fail: 0, transient: 0, cancelled: 0, running: 0, queued: 0 };
+  run.keys.forEach((k) => { const e = S.res[k]; if (e && s[e.state] != null) s[e.state]++; });
+  s.done = s.ok + s.fail + s.transient;
+  s.failed = s.fail + s.transient;
+  return s;
+}
+function progressText(run) {
+  const s = stats(run);
+  return '已完成 ' + s.done + '/' + s.total + '，失败 ' + s.failed;
+}
+function checkRunDone(run) {
+  const s = stats(run);
+  if (run.done || s.running || s.queued) return;
+  run.done = true; run.endedAt = Date.now();
+  announce((run.stopped ? '已停止。' : '测试完成。') + '可用 ' + s.ok + '，失败 ' + s.failed + (s.cancelled ? '，已取消 ' + s.cancelled : '') + '。');
+}
+function startRun(rid, mids, label) {
+  const keys = mids.map((mid) => kOf(rid, mid));
+  S.runs[rid] = { rid, keys, label, stopped: false, done: false, startedAt: Date.now() };
+  mids.forEach((mid) => enqueue(rid, mid));
+  announce('开始测试 ' + mids.length + ' 个模型，并发 ' + CONC + '。');
+  pump();
+}
+function stopRun(rid) {
+  const run = S.runs[rid];
+  if (!run || run.done) return;
+  run.stopped = true;
+  let n = 0;
+  run.keys.forEach((k) => { const e = S.res[k]; if (e && e.state === 'queued') { e.state = 'cancelled'; delete e.prev; n++; } });
+  const s = stats(run);
+  announce('已取消 ' + n + ' 个未开始的测试' + (s.running ? '，' + s.running + ' 个已发出的请求会等它返回。' : '。'));
+  checkRunDone(run);
+  render({ focus: s.running ? ['stop:' + rid] : ['run-retry:' + rid, 'run-cancelled:' + rid, 'run-dismiss:' + rid] });
+}
+function testOne(rid, mid) {
+  const why = blockReason(rid);
+  if (why) { flash(why); return; }
+  const e = S.res[kOf(rid, mid)];
+  if (e && (e.state === 'queued' || e.state === 'running')) return;
+  enqueue(rid, mid, true);   // 单测插队到最前，不影响批量统计
+  pump();
+}
+
+/* ================= mock：按场景生成 Host 返回 ================= */
+const HTTP = { AUTH: 401, QUOTA: 402, RATE_LIMIT: 429, SERVER: 503, TIMEOUT: null, TRANSPORT: null, INVALID_REQUEST: 400, HTTP_404: 404, UNKNOWN_MODEL: null, NO_ADAPTER: null, MISSING_CREDENTIAL: null, PI_AI_ERROR: 500 };
+const MSG = {
+  AUTH: 'Incorrect API key provided: sk-or-v1-••••••••3f2a',
+  QUOTA: 'Insufficient credits. Add more credits at your account settings page.',
+  RATE_LIMIT: 'Rate limit exceeded: free-models-per-min. Retry after 7s.',
+  SERVER: 'Service Unavailable: upstream provider overloaded (request id req_••••91c)',
+  TRANSPORT: 'fetch failed: getaddrinfo ENOTFOUND',
+  TIMEOUT: 'Request aborted after 20000ms',
+  INVALID_REQUEST: 'reasoning_effort "minimal" is not supported by this model',
+  HTTP_404: 'No endpoints found for this model id.',
+  UNKNOWN_MODEL: 'model is not registered in pi-ai config',
+  NO_ADAPTER: 'no adapter for provider (config reload pending)',
+  MISSING_CREDENTIAL: 'API key env is not set; request not sent',
+  PI_AI_ERROR: 'Unexpected end of JSON input'
+};
+const MIXED = {
+  'deepseek-reasoner': 'SERVER',
+  'openai/gpt-4.1-mini': 'RATE_LIMIT',
+  'meta-llama/llama-3.3-70b-instruct': 'HTTP_404',
+  'mistralai/mistral-small-3.2': 'TIMEOUT',
+  'x-ai/grok-3-mini': 'INVALID_REQUEST'
+};
+function okResult(model, delay) {
+  const ftr = 0.35 + rnd() * 0.35;
+  const s = model.sample || 'OK';
+  return { ok: true, latencyMs: delay, firstTokenMs: Math.round(delay * ftr), sample: s, errorKind: null, status: 200, message: '', transient: false, finish: s.length > 40 ? 'max-tokens' : 'stop' };
+}
+function errResult(code, delay) {
+  return { ok: false, latencyMs: delay, firstTokenMs: null, sample: '', errorKind: code, status: HTTP[code], message: MSG[code], transient: ERR[code].transient, finish: code === 'TIMEOUT' ? 'aborted' : 'error' };
+}
+function mockPlan(rid, mid) {
+  const r = S.routes[rid];
+  const model = r.models.find((x) => x.id === mid);
+  if (S.scen === 'host404') return { host404: true, delay: between(250, 450) };
+  if (!r.cred) { const d = between(60, 140); return { delay: d, r: errResult('MISSING_CREDENTIAL', d) }; }
+  if (S.justSaved[rid] && Date.now() - S.justSaved[rid] < 4000) { const d = between(120, 260); return { delay: d, r: errResult('NO_ADAPTER', d) }; }
+  const slow = S.scen === 'slow';
+  let d = slow ? between(3000, 6000) : between(300, 4000);
+  let code = null;
+  if (S.scen === 'mixed') code = MIXED[mid] || null;
+  else if (S.scen === 'normal' || slow) code = rnd() < 0.1 ? (rnd() < 0.6 ? 'RATE_LIMIT' : 'TRANSPORT') : null;
+  if (code === 'TIMEOUT') return { delay: slow ? 6000 : 4200, r: errResult('TIMEOUT', TIMEOUT_MS) };   // 原型压缩等待，结果仍显示 20s
+  if (code) return { delay: d, r: errResult(code, d) };
+  return { delay: d, r: okResult(model, d) };
+}
+
+function resetEngine() { gen++; active = 0; queue.length = 0; }
+
+/* ================= 格式与判定 ================= */
+function fmtMs(ms) { return ms == null ? '—' : ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + ' s'; }
+function fmtTime(d) { const p = (n) => String(n).padStart(2, '0'); return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); }
+const isOfficial = (rid) => !!S.routes[rid].official;
+const rname = (rid) => isOfficial(rid) ? 'DeepSeek 官方' : rid;
+/* 测试入口禁用原因（null = 可测）。凭证未配置不禁用：结果直接返回 MISSING_CREDENTIAL */
+function blockReason(rid) {
+  const r = S.routes[rid];
+  if (S.hostMissing) return '当前 Host 不支持模型测试，重启 DSH 后可用';
+  if (S.dirty.has(rid)) return '先保存再测试：Host 还不知道这个提供方的未保存改动';
+  if (r.credUnsaved) return '先保存再测试：API Key 还没保存';
+  return null;
+}
+const isBusy = (e) => e && (e.state === 'queued' || e.state === 'running');
+const runLive = (rid) => S.runs[rid] && !S.runs[rid].done;
+function effortOf(rid, model) {
+  if (isOfficial(rid)) return 'off（临时关闭思考）';
+  return /off|不思考/.test(model.think) ? 'off' : 'low（该模型最低档）';
+}
+
+/* ================= 视图：提供方列表 ================= */
+const LIST_DESC = '补充官方「模型」页：输入类型、思考档位、上下文窗口和最大输出，以及提供方和模型的增删改。';
+function viewList() {
+  let h = '<div class="head"><div><h2 class="h1">模型能力</h2><p class="desc">' + LIST_DESC + '</p></div>' +
+    '<button type="button" class="btn primary" data-act="noop" data-arg="添加提供方与测试无关，原型中省略。" data-fk="add-provider">添加提供方</button></div>';
+  Object.keys(S.routes).forEach((rid) => { h += cardHTML(rid); });
+  h += '<p class="readonly-line">默认模型（只读）：deepseek-official / deepseek-chat · high</p>';
+  return h;
+}
+/* 564px 卡片：顶部「信息 | 测试全部 + 进入 →」；徽标在 meta 行内可换行；「先保存再测试」放卡片内单独一行 */
+function cardHTML(rid) {
+  const r = S.routes[rid];
+  const name = rname(rid);
+  const why = blockReason(rid);
+  const live = runLive(rid);
+  const n = r.models.length;
+  const sep = '<span class="sep" aria-hidden="true">·</span>';
+  let h = '<div class="card pcard"><div class="top"><div class="main">' +
+    '<div class="name">' + esc(name) + ' <span class="tag">' + (r.official ? '官方' : esc(API_NAME[r.api])) + '</span>' +
+    (S.dirty.has(rid) ? '<span class="tag warn">未保存</span>' : '') + (r.isNew ? '<span class="tag">新</span>' : '') + '</div>' +
+    (r.official ? '' : '<div class="url" data-ellipsis title="' + esc(r.base) + '">' + esc(r.base) + '</div>') +
+    '<div class="meta"><span class="grp">' + credHTML(r) + '</span>' + sep + '<span class="grp">' + n + ' 个模型</span>' + sep +
+    '<span class="grp">' + (r.official ? '思考 ' + r.thinking + ' · 不可删除' : '未设默认档') + '</span>' + badgeHTML(rid) + '</div></div><div class="acts">';
+  h += '<button type="button" class="btn ghost" data-act="test-all" data-arg="' + esc(rid) + '" data-fk="card-test:' + esc(rid) + '"' +
+    ' aria-label="测试 ' + esc(name) + ' 的全部 ' + n + ' 个模型"' +
+    (why ? ' aria-disabled="true" title="' + esc(why) + '" data-why="' + esc(why) + '" aria-describedby="cwhy-' + esc(rid) + '"'
+      : live ? ' aria-disabled="true" title="正在测试，进入详情可停止" data-why="正在测试，进入详情可停止。"' : ' title="对每个模型发 1 次真实请求"') + '>' +
+    (live ? '<span class="spin sm" aria-hidden="true"></span>测试中' : '测试全部') + '</button>' +
+    '<button type="button" class="btn" data-act="enter" data-arg="' + esc(rid) + '" data-fk="enter:' + esc(rid) + '" aria-label="进入 ' + esc(name) + '">进入 →</button></div></div>';
+  if (why) h += '<p class="why small" id="cwhy-' + esc(rid) + '"><span class="dot warn" aria-hidden="true"></span>' +
+    (S.hostMissing ? '当前 Host 不支持模型测试，重启 DSH 后可用' : '先保存再测试') + '</p>';
+  return h + '</div>';
+}
+function credHTML(r) {
+  if (!r.cred) return '<span class="dot bad" aria-hidden="true"></span>凭证缺失';
+  if (r.credUnsaved) return '<span class="dot warn" aria-hidden="true"></span>凭证未保存';
+  return '<span class="dot ok" aria-hidden="true"></span>已配置';
+}
+/* 卡片徽标：最近一次（本次会话内）测试的汇总 */
+function badgeHTML(rid) {
+  const r = S.routes[rid];
+  const run = S.runs[rid];
+  if (run && !run.done) {
+    const s = stats(run);
+    return '<span class="tbadge run"><span class="spin sm" aria-hidden="true"></span>测试中 ' + s.done + '/' + s.total + '</span>';
+  }
+  let tested = 0, ok = 0, fail = 0, tr = 0;
+  r.models.forEach((x) => {
+    const e = S.res[kOf(rid, x.id)];
+    if (!e || !e.r) return;
+    tested++;
+    if (e.state === 'ok') ok++; else if (e.state === 'transient') tr++; else if (e.state === 'fail') fail++;
+  });
+  if (!tested) return '';
+  const n = r.models.length;
+  const tip = ' title="本次会话内最近一次测试结果；保存或刷新后清空"';
+  if (fail) return '<span class="tbadge bad"' + tip + '>' + (fail + tr) + ' 个失败 · ' + ok + '/' + n + ' 可用</span>';
+  if (tr) return '<span class="tbadge warn"' + tip + '>' + tr + ' 个暂时失败 · ' + ok + '/' + n + ' 可用</span>';
+  return '<span class="tbadge ok"' + tip + '>✓ ' + ok + '/' + n + ' 可用' + (tested < n ? '（已测 ' + tested + '）' : '') + '</span>';
+}
+
+/* ================= 视图：提供方详情 ================= */
+function viewDetail(rid) {
+  const r = S.routes[rid];
+  let h = '<div><button type="button" class="linkbtn" data-act="back" data-fk="back">← 返回提供方</button></div>';
+  h += '<div class="head"><div>' +
+    (r.official ? '<h2 class="h1">DeepSeek 官方 <span class="tag mono">' + rid + '</span></h2>' : '<h2 class="h1 mono">' + esc(rid) + '</h2>') +
+    '<p class="desc">' + (r.official ? '官方提供方由「模型」页接入，这里改思考、输入类型和容量。' : 'ID 写入后不能修改。它是配置键，也是密钥环境变量名的词干。') + '</p>' +
+    '<div class="meta small row wrap" style="margin-top:4px;gap:4px 8px">' + (r.official ? '' : '<span class="tag">' + esc(API_NAME[r.api]) + '</span>') +
+    '<span class="row" style="gap:6px">' + credHTML(r) + '</span>' +
+    (S.dirty.has(rid) ? '<span class="tag warn">未保存</span>' : '') + badgeHTML(rid) + '</div>' +
+    (r.official ? '' : '<div class="small mono" data-ellipsis style="margin-top:2px" title="' + esc(r.base) + '">' + esc(r.base) + '</div>') + '</div>' +
+    (r.official ? '' : '<button type="button" class="btn" data-act="noop" data-arg="编辑接入与测试无关，原型中省略。" data-fk="edit-access">编辑接入</button>') + '</div>';
+  // 提供方默认值：与测试无关，只保留外观占位
+  h += '<div class="section"><div class="section-title">' + (r.official ? '思考与提供方默认值' : '提供方默认值') + '</div><div class="kv">' +
+    (r.official ? '<span><b>思考</b>已开启 · ' + r.thinking + '</span><span><b>上下文窗口</b>1M（运行默认）</span><span><b>最大输出</b>256K（运行默认）</span>'
+      : '<span><b>默认输入</b>文本（继承）</span><span><b>路由默认档</b>未设置</span><span><b>上下文窗口</b>262K（运行默认）</span><span><b>最大输出</b>32K（运行默认）</span>') +
+    '</div></div>';
+  if (S.dirty.has(rid) || r.credUnsaved) {
+    h += '<div class="banner warn" role="note" id="why-' + esc(rid) + '"><span class="mark" aria-hidden="true">!</span><span class="txt">先保存再测试' +
+      '<span class="sub">' + (r.isNew ? '这个提供方还没保存，Host 不认识它。' : '这个提供方有未保存的改动，Host 只认已保存的配置。') + '保存后测试入口自动恢复。</span></span>' +
+      '<button type="button" class="btn" data-act="save" data-fk="banner-save">保存</button></div>';
+  } else if (!r.cred) {
+    h += '<div class="banner" role="note"><span class="mark" aria-hidden="true">i</span><span class="txt">还没有配置 API Key' +
+      '<span class="sub">仍然可以测试，但不会发出请求，结果会是「未配置 Key」。</span></span></div>';
+  }
+  h += seltoolHTML(rid);
+  if (S.runs[rid]) h += runPanelHTML(S.runs[rid]);
+  h += tableHTML(rid);
+  h += '<p class="foot-note">测试结果只保留在本次设置会话内，保存或刷新后清空，不写入配置。每次测试是一次真实请求：短提示、maxTokens 32、最低推理档、超时 20 秒，会产生少量费用。</p>';
+  return h;
+}
+/* 选择栏：「全部测试」从已取消的「可用性」列表头移到这里，和「测试所选」并排 */
+function seltoolHTML(rid) {
+  const r = S.routes[rid];
+  const sel = S.sel[rid] || new Set();
+  const n = sel.size, nm = r.models.length;
+  const busyWhy = blockReason(rid) || (runLive(rid) ? '正在批量测试，先等它完成或停止' : null);
+  const why = busyWhy || (n ? null : '先勾选要测试的模型');
+  const dis = (w, tip) => w ? ' aria-disabled="true" title="' + esc(w) + '" data-why="' + esc(w) + '"' : ' title="' + tip + '"';
+  return '<div class="seltool" role="group" aria-label="模型选择"><div class="left">' +
+    '<span class="selcount" role="status">' + (n ? '已选 ' + n + ' 个' : '模型') + '</span>' +
+    '<button type="button" class="linkbtn" data-act="sel-all" data-fk="sel-all"' + (n === nm ? ' disabled' : '') + '>全选</button>' +
+    '<button type="button" class="linkbtn" data-act="sel-clear" data-fk="sel-clear"' + (n ? '' : ' disabled') + '>清除</button></div>' +
+    '<div class="grp">' +
+    '<button type="button" class="btn" data-act="test-all" data-arg="' + esc(rid) + '" data-fk="hdr-test-all" aria-label="全部测试（' + nm + ' 个模型）"' +
+    dis(busyWhy, '对全部 ' + nm + ' 个模型各发 1 次真实请求') + '>全部测试</button>' +
+    '<button type="button" class="btn" data-act="test-sel" data-arg="' + esc(rid) + '" data-fk="test-sel"' +
+    dis(why, '对勾选的模型各发 1 次真实请求') + '>测试所选（' + n + '）</button>' +
+    '<button type="button" class="btn" data-act="noop" data-arg="批量设置与测试无关，原型中省略。" data-fk="bulk">批量设置</button></div></div>';
+}
+function tableHTML(rid) {
+  const r = S.routes[rid];
+  const sel = S.sel[rid] || new Set();
+  const all = sel.size === r.models.length;
+  let h = '<div class="mtable" role="table" aria-label="模型列表">';
+  h += '<div class="mrow hdr" role="row"><span role="columnheader" class="selcell"><input type="checkbox" aria-label="全选模型" data-field="selall" data-fk="selall"' + (all ? ' checked' : '') + '></span>' +
+    '<span role="columnheader">模型</span><span role="columnheader">输入</span><span role="columnheader">思考</span>' +
+    '<span role="columnheader" aria-label="上下文 / 输出">容量</span>' +
+    '<span role="columnheader" aria-label="操作"></span></div>';
+  r.models.forEach((x, i) => {
+    const k = kOf(rid, x.id);
+    const e = S.res[k];
+    const strip = stripHTML(rid, x, i, e);
+    h += '<div class="mrow sepline' + (strip ? ' has-strip' : '') + '" role="row">' +
+      '<span role="cell" class="selcell"><input type="checkbox" aria-label="选择 ' + esc(x.id) + '" data-field="sel" data-arg="' + esc(x.id) + '" data-fk="sel:' + esc(x.id) + '"' + (sel.has(x.id) ? ' checked' : '') + '></span>' +
+      '<span role="cell" class="mcell"><span class="mid" data-ellipsis title="' + esc(x.id) + '">' + esc(x.id) + '</span><span class="mname" data-ellipsis title="' + esc(x.name) + '">' + esc(x.name) + '</span></span>' +
+      '<span role="cell" class="sum" data-ellipsis title="' + esc(x.input) + '">' + esc(x.input) + '</span>' +
+      '<span role="cell" class="sum" data-ellipsis title="' + esc(r.official ? '跟随提供方：' + r.thinking : x.think) + '">' + (r.official ? '跟随提供方：' + r.thinking : esc(x.think)) + '</span>' +
+      '<span role="cell" class="cap' + (x.cw === '继承' ? ' inh' : '') + '">' + esc(x.cw) + ' / ' + esc(x.mt) + '</span>' +
+      '<span role="cell" class="ops">' + testBtn(rid, x, e) +
+      '<button type="button" class="btn ghost edit" data-act="noop" data-arg="编辑层与测试无关，原型中省略。" data-fk="edit:' + esc(x.id) + '" aria-label="编辑 ' + esc(x.id) + '">编辑</button>' +
+      (r.official ? '<span class="iconslot" aria-hidden="true"></span>' : '<button type="button" class="iconbtn" data-act="noop" data-arg="行菜单（复制 / 上移 / 下移 / 删除）与测试无关，原型中省略。" data-fk="menu:' + esc(x.id) + '" aria-haspopup="menu" aria-label="更多操作：' + esc(x.id) + '">···</button>') +
+      '</span></div>' + strip;
+    if (S.open === k && e && e.r) h += detailHTML(rid, x, i, e);
+  });
+  if (!r.official) h += '<div class="mfoot sepline"><button type="button" class="btn" data-act="noop" data-arg="添加模型与测试无关，原型中省略。" data-fk="add-model">+ 添加模型</button></div>';
+  return h + '</div>';
+}
+/* 状态子行（colspan）：只在测过 / 测试中 / 排队 / 已取消时出现；未测试的行不占高度。
+   模型 id 在表格里被截断时（.cut），状态条第一行显示全名，可换行。 */
+function stripHTML(rid, x, i, e) {
+  const st = e ? e.state : 'idle';
+  if (st === 'idle') return '';
+  const full = '<span class="fullid">' + esc(x.id) + '</span>';
+  const wrap = (cls, inner, tail) => '<div class="mstrip ' + cls + '" role="row" data-strip="' + esc(x.id) + '"><div role="cell" style="display:contents">' + inner + (tail || '') + '</div></div>';
+  if (st === 'queued') return wrap('queued', '<div class="plain main">' + full + '<span class="line"><span class="dot hollow" aria-hidden="true"></span><span class="lbl">排队中</span><span class="sep" aria-hidden="true">·</span><span class="mut" data-ellipsis>并发上限 ' + CONC + '</span></span></div>');
+  if (st === 'running') {
+    const lag = -((performance.now() - e.startedAt) % 800) | 0;
+    return wrap('running', '<div class="plain main">' + full + '<span class="line"><span class="spin" style="animation-delay:' + lag + 'ms" aria-hidden="true"></span><span class="lbl">测试中</span>' +
+      '<span class="mut num">已等 <span data-since="' + e.startedAt + '">' + ((performance.now() - e.startedAt) / 1000).toFixed(1) + '</span>s / 20s</span></span></div>');
+  }
+  if (st === 'cancelled') return wrap('cancelled', '<div class="plain main">' + full + '<span class="line"><span class="lbl">已取消</span><span class="sep" aria-hidden="true">·</span><span class="mut" data-ellipsis>未发出请求</span></span></div>', retestBtn(rid, x, e));
+  const r = e.r;
+  const open = S.open === kOf(rid, x.id);
+  let line, aria;
+  if (st === 'ok') {
+    line = '<span class="dot ok" aria-hidden="true"></span><span class="lbl">可用</span><span class="sep" aria-hidden="true">·</span><span class="ms">' + fmtMs(r.latencyMs) + '</span>' +
+      '<span class="sep" aria-hidden="true">·</span><span class="mut" data-ellipsis>首 token ' + fmtMs(r.firstTokenMs) + '</span>';
+    aria = '可用，总耗时 ' + fmtMs(r.latencyMs) + '，首 token ' + fmtMs(r.firstTokenMs);
+  } else {
+    const t = ERR[r.errorKind];
+    line = (st === 'transient' ? '<span class="reico" aria-hidden="true">↻</span>' : '<span class="dot bad" aria-hidden="true"></span>') + '<span class="lbl">' + t.short + '</span>' +
+      '<span class="sep" aria-hidden="true">·</span><span class="code" data-ellipsis>' + r.errorKind + (r.status ? ' · ' + r.status : '') + '</span>';
+    aria = (st === 'transient' ? '暂时失败，可重试：' : '失败：') + t.long;
+  }
+  line += '<span class="sep" aria-hidden="true">·</span><span class="mut num">' + fmtTime(e.at).slice(3) + '</span><span class="spacer"></span><span class="chev" aria-hidden="true"></span>';
+  const toggle = '<button type="button" class="stoggle main" data-act="detail" data-arg="' + esc(x.id) + '" data-fk="detail:' + esc(x.id) + '"' +
+    ' aria-expanded="' + open + '" aria-controls="mdet-' + i + '" aria-label="' + esc(x.id) + ' ' + esc(aria) + '。' + (open ? '收起详情' : '查看详情') + '" title="' + esc(x.id) + '">' +
+    full + '<span class="line">' + line + '</span></button>';
+  return wrap(st, toggle, retestBtn(rid, x, e));
+}
+/* 状态条右侧的文字按钮：重测 / ↻ 重试 / 测试（已取消） */
+function retestBtn(rid, x, e) {
+  const why = blockReason(rid);
+  const st = e.state;
+  const transient = st === 'transient';
+  const label = transient ? '↻ 重试' : st === 'cancelled' ? '测试' : '重测';
+  const attrs = why ? ' aria-disabled="true" title="' + esc(why) + '" data-why="' + esc(why) + '"' : ' title="再发 1 次真实请求"';
+  return '<button type="button" class="xbtn' + (transient && !why ? ' retry' : '') + '" data-act="test-one" data-arg="' + esc(x.id) + '" data-fk="retest:' + esc(x.id) + '"' +
+    ' aria-label="' + (transient ? '重试' : st === 'cancelled' ? '测试' : '重测') + ' ' + esc(x.id) + '"' + attrs + '>' + label + '</button>';
+}
+/* 操作列的 28px 图标按钮：▷ 测试；暂时性失败时变 ↻；测试中 / 排队时禁用 */
+function testBtn(rid, x, e) {
+  const why = blockReason(rid);
+  const st = e ? e.state : 'idle';
+  const busy = isBusy(e);
+  const transient = st === 'transient';
+  const verb = transient ? '重试' : (st === 'idle' || st === 'cancelled') ? '测试' : '重测';
+  let attrs = '';
+  if (why) attrs = ' aria-disabled="true" title="' + esc(why) + '" data-why="' + esc(why) + '"' + (S.hostMissing ? '' : ' aria-describedby="why-' + esc(rid) + '"');
+  else if (busy) attrs = ' aria-disabled="true" title="' + (st === 'queued' ? '排队中' : '测试中') + '" data-why="' + esc(x.id) + ' 正在测试。"';
+  else attrs = ' title="' + verb + '：发 1 次真实请求（maxTokens 32，最低推理档）"';
+  return '<button type="button" class="iconbtn' + (transient && !why ? ' retry' : '') + '" data-act="test-one" data-arg="' + esc(x.id) + '" data-fk="test:' + esc(x.id) + '"' +
+    ' aria-label="' + verb + ' ' + esc(x.id) + '"' + attrs + '><span aria-hidden="true">' + (transient ? '↻' : '▷') + '</span></button>';
+}
+function detailHTML(rid, x, i, e) {
+  const r = e.r;
+  const ok = r.ok;
+  const sample = r.sample ? (r.sample.length > 80 ? r.sample.slice(0, 80) + '…' : r.sample) : '';
+  const verdict = ok ? '可用' + (r.finish === 'max-tokens' ? '（输出到 maxTokens 截断，仍算可用）' : '') : ERR[r.errorKind].long;
+  let h = '<div class="mdetail' + (S.openEnter ? ' enter' : '') + '" role="row" id="mdet-' + i + '"><div role="cell" style="display:contents">' +
+    '<dl><dt>模型</dt><dd class="id">' + esc(x.id) + '</dd>' +
+    '<dt>结果</dt><dd>' + esc(verdict) + '</dd>' +
+    '<dt>错误码</dt><dd class="mono">' + (r.errorKind || '—') + '</dd><dt>HTTP 状态</dt><dd class="mono">' + (r.status == null ? '—（未收到响应）' : r.status) + '</dd>' +
+    '<dt>耗时</dt><dd class="num">总 ' + fmtMs(r.latencyMs) + ' · 首 token ' + fmtMs(r.firstTokenMs) + '</dd>' +
+    '<dt>测试时间</dt><dd class="num">' + fmtTime(e.at) + '</dd>' +
+    '<dt>样例回复</dt><dd>' + (sample ? '<span class="q">' + esc(sample) + '</span>' + (r.sample.length > 80 ? ' <span class="small">前 80 字符</span>' : '') : '—') + '</dd>' +
+    '<dt>message</dt><dd class="mono">' + (r.message ? esc(r.message) + ' <span class="small">（已脱敏）</span>' : '—') + '</dd>' +
+    '<dt>请求参数</dt><dd class="small">短提示「只回复 OK」 · maxTokens 32 · 推理档 ' + esc(effortOf(rid, x)) + ' · 超时 20s</dd></dl>';
+  const adv = ok ? '' : (r.transient ? TRANSIENT_ADVICE : (ADVICE[r.errorKind] || ''));
+  h += '<div class="advice"><span class="txt">' + esc(adv || '这个模型能正常返回。') + '</span>' +
+    '<button type="button" class="linkbtn" data-act="copy" data-arg="' + esc(x.id) + '" data-fk="copy:' + esc(x.id) + '">复制详情</button>' +
+    '<button type="button" class="btn" data-act="detail" data-arg="' + esc(x.id) + '" data-fk="close-detail:' + esc(x.id) + '">收起</button></div></div></div>';
+  return h;
+}
+/* 批量测试进度 / 汇总（564px：标题 + 操作同一行，放不下时操作换到下一行；图例换行） */
+function runPanelHTML(run) {
+  const s = stats(run);
+  const live = !run.done;
+  const segs = run.keys.map((k) => {
+    const e = S.res[k];
+    const st = e ? e.state : 'queued';
+    return '<span class="seg ' + st + '" title="' + esc(k.split('|')[1]) + '"></span>';
+  }).join('');
+  let title, sub, acts = '';
+  if (live) {
+    title = (run.stopped ? '正在停止 · ' : '') + '已完成 ' + s.done + '/' + s.total + '，失败 ' + s.failed;
+    sub = run.stopped ? '未开始的已取消，等待 ' + s.running + ' 个已发出的请求返回' : run.label + ' · 并发 ' + CONC + ' · 单个超时 20s';
+    acts = '<button type="button" class="btn" data-act="stop" data-arg="' + esc(run.rid) + '" data-fk="stop:' + esc(run.rid) + '"' +
+      (run.stopped ? ' aria-disabled="true" data-why="正在停止，等待已发出的请求返回。">停止中…' : '>停止') + '</button>';
+  } else {
+    title = (run.stopped ? '已停止' : '测试完成');
+    sub = run.label + ' · 用时 ' + fmtMs(run.endedAt - run.startedAt);
+    if (s.failed) acts += '<button type="button" class="btn" data-act="retry-failed" data-arg="' + esc(run.rid) + '" data-fk="run-retry:' + esc(run.rid) + '">仅重试失败项（' + s.failed + '）</button>';
+    if (s.cancelled) acts += '<button type="button" class="btn" data-act="retry-cancelled" data-arg="' + esc(run.rid) + '" data-fk="run-cancelled:' + esc(run.rid) + '">测试已取消的 ' + s.cancelled + ' 个</button>';
+    acts += '<button type="button" class="iconbtn" data-act="dismiss-run" data-arg="' + esc(run.rid) + '" data-fk="run-dismiss:' + esc(run.rid) + '" aria-label="收起测试汇总">✕</button>';
+  }
+  const counts = '<div class="counts"><span><span class="dot ok" aria-hidden="true"></span>可用 ' + s.ok + '</span>' +
+    '<span><span class="dot bad" aria-hidden="true"></span>失败 ' + s.fail + '</span>' +
+    '<span><span class="dot warn" aria-hidden="true"></span>暂时失败 ' + s.transient + '</span>' +
+    (s.cancelled ? '<span><span class="dot hollow" aria-hidden="true"></span>已取消 ' + s.cancelled + '</span>' : '') +
+    (live ? '<span>进行中 ' + s.running + ' · 排队 ' + s.queued + '</span>' : '') + '</div>';
+  return '<div class="trun" role="region" aria-label="批量测试">' +
+    '<div class="top"><div class="tt"><div class="ttl">' + (live ? '<span class="spin" aria-hidden="true"></span>' : '') + title + '</div><div class="sub">' + esc(sub) + '</div></div>' +
+    '<div class="acts">' + acts + '</div></div>' +
+    '<div class="segs" role="progressbar" aria-label="批量测试进度" aria-valuemin="0" aria-valuemax="' + s.total + '" aria-valuenow="' + (s.done + s.cancelled) + '"' +
+    ' aria-valuetext="' + esc('已完成 ' + s.done + '/' + s.total + '，失败 ' + s.failed + (s.cancelled ? '，已取消 ' + s.cancelled : '')) + '">' + segs + '</div>' +
+    counts + (!live && s.transient ? '<div class="note">暂时失败（被限流、超时、服务端错误等）通常稍后重试即可。</div>' : '') + '</div>';
+}
+
+/* ================= 横幅 / 保存条 / 对话框 ================= */
+function bannersHTML() {
+  let h = '';
+  if (S.hostMissing) {
+    h += '<div class="banner error" role="note"><span class="mark" aria-hidden="true">!</span><span class="txt">当前 Host 不支持模型测试，重启 DSH 后可用。' +
+      '<span class="sub">这个 Host 版本没有测试接口（返回 404）。配置的查看、编辑和保存不受影响。</span></span></div>';
+  }
+  if (S.status) h += '<div class="statusline">' + esc(S.status) + '</div>';
+  return h;
+}
+/* 保存条：插件根底部 sticky，宽度跟随 564px 内容区 */
+function savebarHTML() {
+  const n = S.dirty.size;
+  return '<div class="savebar"><span class="count" role="status">' + (n ? '未保存 ' + n + ' 处' : '没有未保存的更改') + '</span>' +
+    '<button type="button" class="btn" data-act="noop" data-arg="预览变更与测试无关，原型中省略。" data-fk="preview">预览变更</button>' +
+    '<button type="button" class="btn" data-act="discard" data-fk="discard"' + (n ? '' : ' disabled') + '>放弃</button>' +
+    '<button type="button" class="btn primary sm" data-act="save" data-fk="save"' + (n ? '' : ' disabled') + '>保存</button></div>';
+}
+function dialogHTML() {
+  const d = S.dialog;
+  if (!d) return '';
+  const n = d.mids.length;
+  return '<div class="scrim" data-act="scrim"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-t" aria-describedby="dlg-d">' +
+    '<h3 class="h2" id="dlg-t">测试 ' + n + ' 个模型？</h3>' +
+    '<p class="lead" id="dlg-d">将对 <strong>' + n + ' 个模型</strong>各发送 1 次真实请求，会产生少量费用。</p>' +
+    '<ul class="facts"><li><b>提供方</b><span class="mono">' + esc(d.rid) + '</span></li>' +
+    '<li><b>每次请求</b><span>短提示，maxTokens 32，最低推理档（能关就关）</span></li>' +
+    '<li><b>超时</b><span>单个 20 秒</span></li><li><b>并发</b><span>最多 ' + CONC + ' 个，逐条返回，可随时停止</span></li></ul>' +
+    '<label class="check"><input type="checkbox" data-field="skipcost" data-fk="skipcost">不再提示 <span class="small">（仅原型演示，本页有效）</span></label>' +
+    '<div class="actions"><button type="button" class="btn" data-act="dlg-cancel" data-fk="dlg-cancel">取消</button>' +
+    '<button type="button" class="btn primary sm" data-act="dlg-ok" data-fk="dlg-ok">开始测试</button></div></div></div>';
+}
+
+/* ================= 主渲染 + 焦点保持 ================= */
+const app = $('#app');
+const optionsEl = $('#options');
+const dlgroot = $('#dlgroot');
+let lastDlg = '';
+const findFk = (k) => k ? $$('[data-fk]').find((el) => el.dataset.fk === k) : null;
+function render(opts) {
+  opts = opts || {};
+  const act = document.activeElement;
+  const fk = act && act.dataset ? act.dataset.fk : null;
+  const scrollTop = optionsEl.scrollTop;
+  const prevView = app.dataset.view;
+  const main = S.view === 'detail' && S.routes[S.route] ? viewDetail(S.route) : (S.view = 'list', viewList());
+  const viewKey = S.view + ':' + (S.route || '');
+  app.innerHTML = bannersHTML() + main + savebarHTML();
+  app.dataset.view = viewKey;
+  optionsEl.scrollTop = prevView === viewKey ? scrollTop : 0;
+  // 模型 id 在表格里被截断时，状态条第一行显示全名
+  $$('.mrow .mid', app).forEach((el) => {
+    if (el.scrollWidth <= el.clientWidth) return;
+    const st = $$('[data-strip]', app).find((s) => s.dataset.strip === el.title);
+    if (st) st.classList.add('cut');
+  });
+  const dh = dialogHTML();
+  if (lastDlg !== dh) { dlgroot.innerHTML = dh; lastDlg = dh; }   // 内容不变就不重建，保留复选框与焦点
+  const dlg = !!S.dialog;
+  [$('.nav'), $('.content'), $('.proto')].forEach((el) => { el.inert = dlg; });
+  S.openEnter = false;
+  // 主题 / 场景按钮
+  document.body.toggleAttribute('data-ds-dark-theme', S.dark);
+  const tb = $('[data-act="theme"]'); tb.setAttribute('aria-pressed', String(S.dark)); tb.textContent = S.dark ? '亮色主题' : '暗色主题';
+  $$('[data-act="scen"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.arg === S.scen)));
+  // 焦点：显式目标 → 原焦点同 key 元素
+  const targets = [].concat(opts.focus || []);
+  let t = null;
+  for (const k of targets) { t = findFk(k); if (t) break; }
+  if (!t && fk && !(act && document.contains(act))) {
+    t = findFk(fk);
+    // 停止按钮在批量结束后消失：焦点落到汇总操作上
+    if (!t && fk.startsWith('stop:')) { const r = fk.slice(5); t = findFk('run-retry:' + r) || findFk('run-cancelled:' + r) || findFk('run-dismiss:' + r); }
+    // 状态条里的「重测」在测试中消失：焦点落到同一行操作列的 ▷
+    if (!t && fk.startsWith('retest:')) t = findFk('test:' + fk.slice(7));
+  }
+  if (t) t.focus({ preventScroll: !opts.focus });
+}
+/* 测试中计时：只改文字，不整页重绘 */
+setInterval(() => {
+  const now = performance.now();
+  $$('[data-since]').forEach((el) => { el.textContent = ((now - Number(el.dataset.since)) / 1000).toFixed(1); });
+}, 100);
+let liveTimer = 0;
+function announce(msg) {
+  const live = $('#live');
+  clearTimeout(liveTimer);
+  live.textContent = '';
+  liveTimer = setTimeout(() => { live.textContent = msg; }, 60);
+}
+function flash(msg) {
+  S.status = msg; announce(msg);
+  clearTimeout(S.statusTimer);
+  S.statusTimer = setTimeout(() => { S.status = ''; render(); }, 4500);
+  render();
+}
+
+/* ================= 动作 ================= */
+function requestBatch(rid, mids, label, opener) {
+  const why = blockReason(rid);
+  if (why) { flash(why + '。'); return; }
+  if (runLive(rid)) { flash('正在批量测试，先等它完成或停止。'); return; }
+  mids = mids.filter((mid) => !isBusy(S.res[kOf(rid, mid)]));
+  if (!mids.length) { flash('没有可测试的模型。'); return; }
+  const r = S.routes[rid];
+  // 凭证缺失不会发出请求，不弹费用确认
+  if (mids.length > 1 && r.cred && !S.skipCost) { S.dialog = { rid, mids, label, opener }; render({ focus: 'dlg-cancel' }); return; }
+  startRun(rid, mids, label);
+  render({ focus: S.view === 'detail' ? 'stop:' + rid : opener });
+}
+function save() {
+  if (!S.dirty.size) return;
+  const saved = [...S.dirty];
+  saved.forEach((rid) => { const r = S.routes[rid]; if (r) { r.isNew = false; r.credUnsaved = false; S.justSaved[rid] = Date.now(); } });
+  S.dirty.clear();
+  resetEngine(); S.res = {}; S.runs = {}; S.open = null;
+  flash('已保存。测试结果已清空。刚保存的提供方几秒内测试可能返回「尚未生效」（NO_ADAPTER），稍后重试即可。');
+}
+function discard() {
+  if (!S.dirty.size) return;
+  [...S.dirty].forEach((rid) => { if (S.routes[rid] && S.routes[rid].isNew) delete S.routes[rid]; });
+  S.dirty.clear();
+  if (!S.routes[S.route]) { S.view = 'list'; S.route = null; }
+  flash('已放弃未保存的更改。');
+}
+const NOTES = {
+  normal: '正常：大多数模型可用，偶尔出现暂时性失败（限流 / 网络）。local-ollama 未配置 Key；siliconflow 未保存。',
+  allok: '全部成功：所有已保存且有 Key 的模型都可用（本场景 local-ollama 视为已配置 Key）。',
+  mixed: '混合失败：deepseek-reasoner 503、gpt-4.1-mini 429、llama-3.3 404、mistral 超时（演示压缩为约 4s，结果仍显示 20s）、grok-3-mini 请求被拒。',
+  host404: '旧 Host 404：第一次测试即发现 Host 没有测试路由，整批撤销并显示横幅，测试入口全部禁用。',
+  unsaved: '提供方未保存：openrouter 有未保存改动、siliconflow 是新建未保存。测试入口禁用；保存后恢复（几秒内可能返回 NO_ADAPTER）。',
+  slow: '网络慢：每次测试 3–6 秒，便于观察并发 3 的逐条返回。'
+};
+function applyScenario(sc) {
+  S.scen = sc;
+  S.routes = seedRoutes();
+  S.dirty = new Set(['siliconflow']);
+  if (sc === 'unsaved') S.dirty.add('openrouter');
+  if (sc === 'allok') S.routes['local-ollama'].cred = true;
+  S.hostMissing = false; S.justSaved = {}; S.res = {}; S.runs = {}; S.sel = {}; S.open = null; S.dialog = null; S.autoOpen = null;
+  resetEngine(); seed = 7;
+  if (S.view === 'detail' && !S.routes[S.route]) S.view = 'list';
+  $('#proto-note').textContent = NOTES[sc] + ' mock 延迟 300ms–4s（网络慢 3–6s），Host 并发 3。';
+}
+
+document.addEventListener('click', (ev) => {
+  if (ev.target.matches && ev.target.matches('.scrim')) { closeDialog(); return; }
+  const el = ev.target.closest('[data-act]');
+  if (!el || el.dataset.act === 'scrim') return;
+  if (el.getAttribute('aria-disabled') === 'true') { if (el.dataset.why) flash(el.dataset.why.replace(/[。.]?$/, '。')); return; }
+  const a = el.dataset.act, arg = el.dataset.arg;
+  const rid = S.route;
+  switch (a) {
+    case 'scen': applyScenario(arg); render({ focus: 'scen:' + arg }); break;
+    case 'theme': S.dark = !S.dark; render({ focus: 'theme' }); break;
+    case 'refresh':
+      resetEngine(); S.res = {}; S.runs = {}; S.open = null; S.hostMissing = false;
+      flash('已模拟刷新：测试结果清空（结果只保留在本次会话内）。'); break;
+    case 'noop': if (arg) flash(arg); break;
+    case 'enter': S.view = 'detail'; S.route = arg; S.open = null; render({ focus: 'back' }); optionsEl.scrollTop = 0; break;
+    case 'back': { const from = S.route; S.view = 'list'; S.route = null; S.open = null; render({ focus: 'enter:' + from }); break; }
+    case 'test-all': requestBatch(arg, S.routes[arg].models.map((x) => x.id), '全部模型', el.dataset.fk); break;
+    case 'test-sel': requestBatch(arg, S.routes[arg].models.map((x) => x.id).filter((id) => (S.sel[arg] || new Set()).has(id)), '所选模型', 'test-sel'); break;
+    case 'retry-failed': {
+      const run = S.runs[arg];
+      const mids = run.keys.filter((k) => S.res[k] && (S.res[k].state === 'fail' || S.res[k].state === 'transient')).map((k) => k.split('|')[1]);
+      requestBatch(arg, mids, '重试失败项', 'run-retry:' + arg); break;
+    }
+    case 'retry-cancelled': {
+      const run = S.runs[arg];
+      const mids = run.keys.filter((k) => S.res[k] && S.res[k].state === 'cancelled').map((k) => k.split('|')[1]);
+      requestBatch(arg, mids, '已取消的模型', 'run-cancelled:' + arg); break;
+    }
+    case 'stop': stopRun(arg); break;
+    case 'dismiss-run': delete S.runs[arg]; render({ focus: 'hdr-test-all' }); break;
+    case 'test-one': testOne(rid, arg); break;
+    case 'detail': {
+      const k = kOf(rid, arg);
+      const closing = S.open === k;
+      S.open = closing ? null : k; S.openEnter = !closing;
+      render({ focus: closing ? 'detail:' + arg : null });
+      break;
+    }
+    case 'copy': {
+      const e = S.res[kOf(rid, arg)];
+      const txt = JSON.stringify(Object.assign({ model: arg, provider: rid, testedAt: e.at.toISOString() }, e.r), null, 2);
+      const done = () => flash('已复制 ' + arg + ' 的测试详情（不含密钥）。');
+      if (navigator.clipboard) navigator.clipboard.writeText(txt).then(done, done); else done();
+      break;
+    }
+    case 'sel-all': S.sel[rid] = new Set(S.routes[rid].models.map((x) => x.id)); render({ focus: 'sel-clear' }); break;
+    case 'sel-clear': S.sel[rid] = new Set(); render({ focus: 'sel-all' }); break;
+    case 'save': save(); break;
+    case 'discard': discard(); break;
+    case 'dlg-cancel': closeDialog(); break;
+    case 'dlg-ok': {
+      const d = S.dialog;
+      const cb = $('[data-field="skipcost"]');
+      if (cb && cb.checked) S.skipCost = true;
+      S.dialog = null;
+      startRun(d.rid, d.mids, d.label);
+      render({ focus: S.view === 'detail' ? 'stop:' + d.rid : d.opener });
+      break;
+    }
+  }
+});
+document.addEventListener('change', (ev) => {
+  const el = ev.target;
+  const f = el.dataset && el.dataset.field;
+  if (f !== 'sel' && f !== 'selall') return;
+  const rid = S.route;
+  const set = S.sel[rid] || (S.sel[rid] = new Set());
+  if (f === 'selall') { if (el.checked) S.routes[rid].models.forEach((x) => set.add(x.id)); else set.clear(); }
+  else if (el.checked) set.add(el.dataset.arg); else set.delete(el.dataset.arg);
+  render();
+});
+function closeDialog() {
+  const d = S.dialog; if (!d) return;
+  S.dialog = null;
+  render({ focus: d.opener });
+}
+document.addEventListener('keydown', (ev) => {
+  if (S.dialog) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closeDialog(); return; }
+    if (ev.key === 'Tab') {   // 焦点圈在对话框内
+      const f = $$('.dialog button, .dialog input', dlgroot);
+      const i = f.indexOf(document.activeElement);
+      if (ev.shiftKey && i <= 0) { ev.preventDefault(); f[f.length - 1].focus(); }
+      else if (!ev.shiftKey && i === f.length - 1) { ev.preventDefault(); f[0].focus(); }
+    }
+    return;
+  }
+  if (ev.key === 'Escape' && S.open) {
+    const mid = S.open.split('|')[1];
+    S.open = null; render({ focus: 'detail:' + mid });
+  }
+});
+
+/* ================= 启动（hash 参数仅供截图自动化：#scenario=mixed&theme=dark&view=openrouter&auto=all&open=…） ================= */
+(function boot() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  S.dark = p.get('theme') === 'dark';
+  applyScenario(NOTES[p.get('scenario')] ? p.get('scenario') : 'normal');
+  const v = p.get('view');
+  if (v && S.routes[v]) { S.view = 'detail'; S.route = v; }
+  if (p.get('sel')) S.sel[v] = new Set(S.routes[v].models.slice(0, Number(p.get('sel'))).map((x) => x.id));
+  if (p.get('open')) S.autoOpen = p.get('open');
+  render();
+  const auto = p.get('auto');
+  if (auto === 'all' && S.view === 'detail') { startRun(S.route, S.routes[S.route].models.map((x) => x.id), '全部模型'); }
+  else if (auto === 'list') {
+    Object.keys(S.routes).forEach((rid) => { if (!blockReason(rid)) startRun(rid, S.routes[rid].models.map((x) => x.id), '全部模型'); });
+  } else if (auto === 'confirm' && S.view === 'detail') {
+    requestBatch(S.route, S.routes[S.route].models.map((x) => x.id).filter((id) => !S.sel[S.route] || !S.sel[S.route].size || S.sel[S.route].has(id)), '所选模型', 'test-sel');
+  }
+})();
+</script>
+</body>
+</html>

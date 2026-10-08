@@ -1,4 +1,7 @@
 import type { ImportItem } from './io';
+import type { ModelTestRequest, ModelTestResult } from '../shared/api-types';
+
+export type { ModelTestRequest, ModelTestResult };
 
 export const NS_PI = 'llm-pi-ai' as const;
 export const NS_DS = 'llm-deepseek' as const;
@@ -22,6 +25,17 @@ export const CAP_PRESETS: readonly (readonly [string, number])[] = [
   ['1M', 1000000],
 ];
 export const CAP_FMT_ERR = '填正整数，可用 K 或 M 后缀（如 128K、1M）。';
+/** 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 1.1）。 */
+export const TIMEOUT_KEY = 'streamIdleTimeoutMs' as const;
+export const DSH_DEFAULT_TIMEOUT_MS = 300000; // DSH schema 默认，仅用于展示
+export const SUGGESTED_TIMEOUT_MS = 1800000; // 30 分钟：新建默认 + 建议值
+export const TIMEOUT_MIN_MS = 1000; // 界面与导入下限（1 秒）
+export const TIMEOUT_MAX_MS = 2147483647; // schema 上限
+export const TIMEOUT_PRESETS: readonly (readonly [string, number])[] = [
+  ['5 分钟', 300000],
+  ['30 分钟', 1800000],
+  ['60 分钟', 3600000],
+];
 export const LIST_DESC = '补充官方「模型」页：输入类型、思考档位、上下文窗口和最大输出，以及提供方和模型的增删改。';
 
 export interface HeaderPair { k: string; v: string }
@@ -48,6 +62,10 @@ export interface ProviderDraft {
   thinking?: 'enabled' | 'disabled';
   reasoningEffort?: string;
   headers?: HeaderPair[];
+  /** 显式值；undefined = user 层没有这个键。 */
+  streamIdleTimeoutMs?: number;
+  /** 仅编辑中：用户正在输入的分钟原文。不写回、不导出、不进 extra。 */
+  timeoutText?: string;
   models: ModelDraft[];
   extra: Record<string, unknown>;
   credConfigured: boolean;
@@ -81,6 +99,7 @@ export interface FieldErrors {
   baseURL?: string;
   secret?: string;
   headers?: string;
+  streamIdleTimeoutMs?: string;
   [spell: `spell_${string}`]: string | undefined;
 }
 export interface AllErrors { [routeId: string]: { route: FieldErrors; models: FieldErrors[] } }
@@ -136,6 +155,8 @@ export interface WizardDraft {
   headersOpen: boolean;
   headers: HeaderPair[];
   models: string[];
+  /** 流空闲超时的分钟原文；defaultWizard() 中为 '30'。 */
+  timeoutText: string;
 }
 export type DialogState =
   | { type: 'delete'; route: string; text: string }
@@ -177,6 +198,38 @@ export interface McSnapshot {
   hasPi: boolean;
   hasDs: boolean;
   secretSet: Record<string, boolean>;
+  /** R4a 模型测试状态；仅注入 tester 时存在。 */
+  test?: McTestState;
+}
+/* ---------------- R4a 模型测试（docs/specs/r4a-model-test.md §2.2、§2.3） ---------------- */
+export type ModelTester = (req: ModelTestRequest, signal: AbortSignal) => Promise<ModelTestResult>;
+export type TestState = 'queued' | 'running' | 'ok' | 'fail' | 'transient' | 'cancelled';
+export interface TestEntry {
+  state: TestState;
+  result?: ModelTestResult;
+  at?: number;
+  startedAt?: number;
+  prev?: TestEntry;
+}
+export type TestBatchLabel = '全部模型' | '所选模型' | '重试失败项' | '已取消的模型';
+export interface TestBatch {
+  route: string;
+  keys: string[];
+  label: TestBatchLabel;
+  stopped: boolean;
+  done: boolean;
+  startedAt: number;
+  endedAt?: number;
+}
+export interface McTestState {
+  hostUnsupported: boolean;
+  results: Record<string, TestEntry>;
+  batches: Record<string, TestBatch>;
+  open: string | null;
+  cost: { route: string; modelIds: string[]; label: TestBatchLabel } | null;
+  skipCost: boolean;
+  blocked: Record<string, string | null>;
+  live: string;
 }
 export interface RemoteError { code: string; details?: unknown }
 export type RemoteResult = { ok: true; value: NamespaceSlice } | { ok: false; error: RemoteError };
@@ -269,5 +322,22 @@ export interface ModelCapabilitiesStore {
   undoDelete(): void;
   toggleAdv(railKey: string): void;
   dismissStatus(): void;
+  setTimeoutText(route: string, text: string): void;
+  blurTimeout(route: string): void;
+  setTimeoutPreset(route: string, ms: number): void;
+  resetTimeout(route: string): void;
+  /* R4a 模型测试：未注入 tester 时均为 no-op（copyTestDetail 返回 ''）。 */
+  testModel(route: string, modelId: string): void;
+  testProvider(route: string): void;
+  testAll(): void;
+  testSelected(): void;
+  retryFailed(route: string): void;
+  retryCancelled(route: string): void;
+  stopBatch(route: string): void;
+  dismissBatch(route: string): void;
+  toggleTestDetail(route: string, modelId: string): void;
+  confirmCost(skip: boolean): void;
+  cancelCost(): void;
+  copyTestDetail(route: string, modelId: string): string;
 }
 export interface DOMRectLike { left: number; right: number; top: number; bottom: number }

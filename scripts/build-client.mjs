@@ -26,7 +26,7 @@ if (!body) {
 }
 
 const wrapped = `window.__ModuleLoader__.load({
-  id: '@nanmicoder/dsh-wuyou-agent',
+  id: '@luckygoals/dsh-wuyou-agent',
   factory(require) {
     var module = { exports: {} };
     var exports = module.exports;

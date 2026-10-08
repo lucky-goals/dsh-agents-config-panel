@@ -1344,3 +1344,70 @@ describe('R2F-6 「完成添加」后离开向导，保存能直接写入', () =
     expect(ops.some((op) => op.op === 'set' && op.path.join('/') === 'providers/fresh-gateway')).toBe(true);
   });
 });
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 9 节）：R4b-1、R4b-2。
+ *
+ * 只追加用例，不动实现文件。
+ * ========================================================================== */
+
+const R4B_KEY = 'streamIdleTimeoutMs';
+
+function r4bTimeoutOf(p: ProviderDraft): unknown {
+  return (p as unknown as Record<string, unknown>)[R4B_KEY];
+}
+
+describe('R4b-1 新 fixture 不编辑 → 无 timeout op，schema 默认 300000 从不被 set/unset', () => {
+  it('R4b-1 不做任何编辑：两侧 op 为空、dirty=0，DS 不把 value 层的 300000 当显式值', () => {
+    const base = draftFromNamespaces({ pi: piSlice(7), ds: dsSlice(11), creds: defaultCreds() });
+
+    // 显式值只来自 user 层：两个 pi 路由是 1800000，DS 没有显式值
+    expect(r4bTimeoutOf(base.providers['gpt-gateway'])).toBe(1800000);
+    expect(r4bTimeoutOf(base.providers['cc-gateway'])).toBe(1800000);
+    expect(r4bTimeoutOf(base.providers[DS_ROUTE_ID])).toBeUndefined();
+    for (const id of ['gpt-gateway', 'cc-gateway', DS_ROUTE_ID]) {
+      expect(base.providers[id].extra, `${id}.extra`).not.toHaveProperty(R4B_KEY);
+    }
+
+    const ops = computeOps(base, deepClone(base), {});
+    expect(ops.pi.filter((op) => op.path.includes(R4B_KEY))).toEqual([]);
+    expect(ops.ds.filter((op) => op.path.includes(R4B_KEY))).toEqual([]);
+    expect(ops.dirty).toBe(0);
+    expect(ops.dirtySet.size).toBe(0);
+
+    // schema 默认 300000 从不被写：既没有 set 也没有 unset 带着这个值
+    expect(JSON.stringify(ops)).not.toContain('300000');
+  });
+
+  it('R4b-1 load 之后同样：dirty=0，DS 的 300000 不产生任何 op', async () => {
+    const { fake, store } = setup();
+    await store.load();
+
+    const snap = store.getSnapshot();
+    expect(snap.ops.dirty).toBe(0);
+    expect(r4bTimeoutOf(snap.draft.providers[DS_ROUTE_ID])).toBeUndefined();
+    expect(snap.ops.ds).toEqual([]);
+    expect(fake.mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe('R4b-2 向导新建对象带 1800000，仍无 6 个默认键', () => {
+  it('R4b-2 默认向导 finish → 新建对象 streamIdleTimeoutMs=1800000，且没有 6 个默认键', async () => {
+    const { store } = setup({ ds: null });
+    await store.load();
+    store.openAddProvider();
+    store.wizardPatch({ api: 'openai-completions', id: 'fresh-gateway', ack: true, models: ['fresh-model'] });
+    store.wizardFinish();
+
+    const op = store.getSnapshot().ops.pi[0];
+    expect(op.op).toBe('set');
+    const value = (op as Extract<SettingsOp, { op: 'set' }>).value as Record<string, unknown>;
+    expect(value[R4B_KEY]).toBe(1800000);
+    expect(typeof value[R4B_KEY]).toBe('number');
+    const keys = Object.keys(value);
+    expect(keys.indexOf(R4B_KEY)).toBeLessThan(keys.indexOf('models'));
+    for (const key of [...PI_DEFAULT_KEYS, ...DS_DEFAULT_KEYS]) {
+      expect(value, `新建对象不应带 ${key}`).not.toHaveProperty(key);
+    }
+  });
+});

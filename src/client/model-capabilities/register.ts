@@ -5,7 +5,7 @@
  */
 import { createElement } from 'react';
 import { NS_DS, NS_PI } from './types';
-import type { CredResult, DescribeResult, ModelCapabilitiesPort, NamespaceSlice, RemoteResult, SettingsOp } from './types';
+import type { CredResult, DescribeResult, ModelCapabilitiesPort, ModelTester, NamespaceSlice, RemoteResult, SettingsOp } from './types';
 import { createModelCapabilitiesStore } from './store';
 import { ModelCapabilitiesPanel } from './ModelCapabilitiesPanel';
 
@@ -140,9 +140,10 @@ export function createPort(sub: any): ModelCapabilitiesPort {
   };
 }
 
-export function registerModelCapabilities(sub: any): void {
+/** `deps.testModel`（R4a）：模型测试调用；缺省时 store 不提供测试功能。 */
+export function registerModelCapabilities(sub: any, deps: { testModel?: ModelTester } = {}): void {
   const port = createPort(sub);
-  const store = createModelCapabilitiesStore(port);
+  const store = createModelCapabilitiesStore(port, { tester: deps.testModel });
   sub.slots.inject('settings.section', () =>
     sub.slots.register(MODEL_CAP_SECTION, (props: { close?: () => void }) =>
       createElement(ModelCapabilitiesPanel, { ...props, store }),

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -848,6 +848,305 @@ describe('v2.4 POST /acps/test (real fixture)', () => {
       ['command', 'fail'], ['interpreter', 'skip'], ['cwd', 'skip'], ['handshake', 'skip'],
     ]);
     expect(data.checks[0].detail).toBe('/opt/example/bin/claude-agent-acp 不存在');
+  });
+});
+
+describe('r4a POST /models/test', () => {
+  const PATH = '/plugins/dsh-wuyou-agent/api/models/test';
+  const TARGET = { provider: 'openrouter', model: 'openai/gpt-4.1-mini' };
+
+  /** 契约 §1.1 的 200 体形状（probe 结果）。 */
+  const RESULT = {
+    ok: true,
+    latencyMs: 812,
+    firstTokenMs: 341,
+    sample: 'OK',
+    finish: 'stop',
+    errorKind: null,
+    status: null,
+    message: '',
+    transient: false,
+    params: { effort: 'off', maxTokens: 32, timeoutMs: 20_000 },
+    testedAt: '2026-10-08T02:40:00.000Z',
+  };
+
+  /** 一个「像 LlmRuntime」的服务；不传 stream 时模拟旧版/无补全能力。 */
+  function llmWithStream(stream?: unknown) {
+    return {
+      listProviders: () => [{ id: TARGET.provider }],
+      listModels: async () => [],
+      resolveModelInfo: async () => ({}),
+      ...(stream === undefined ? {} : { stream }),
+    };
+  }
+
+  function createTestRoutes(
+    overrides: Record<string, unknown> = {},
+    probeModel: any = vi.fn(async () => ({ ...RESULT })),
+  ) {
+    const store = memoryIO(REAL_FIXTURE);
+    const routes = createRoutes({
+      io: store.io,
+      profileDefault: 'standard-acp',
+      getCatalog: asyncCatalog(),
+      getLlm: () => llmWithStream(async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; }),
+      probeModel,
+      ...overrides,
+    } as RouteContext);
+    return { routes, probeModel };
+  }
+
+  /** 红灯阶段第 10 条路由还没注册：在用例内 fail（throw 只发生在 it 里，不污染 describe 顶层）。 */
+  function testRoute(routes: ReturnType<typeof createRoutes>) {
+    const route = routes.find((r) => r.path === PATH);
+    if (!route) throw new Error(`r4a 路由尚未注册：${PATH}（红灯阶段预期）`);
+    return route;
+  }
+
+  async function request(
+    routes: ReturnType<typeof createRoutes>,
+    method: string,
+    body?: Record<string, unknown>,
+  ) {
+    const [res, getResponse] = createMockRes();
+    await testRoute(routes).handler(createMockReq(method, PATH, body), res);
+    const response = getResponse();
+    return {
+      status: response.statusCode,
+      headers: response.headers,
+      data: response.body ? JSON.parse(response.body) : undefined,
+      raw: response.body,
+    };
+  }
+
+  async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+    for (let i = 0; i < 200; i += 1) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error(`等待超时：${label}`);
+  }
+
+  /** 在途请求不会被 await 到底时（红灯阶段路由缺失），避免未处理拒绝污染其他用例。 */
+  function swallow<T>(promise: Promise<T>): Promise<T> {
+    promise.catch(() => {});
+    return promise;
+  }
+
+  /** HR12 本地 res：支持 on('close')/emit('close')，并记录写出的响应（共享 helper 不满足这里）。 */
+  function createClosableRes() {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const state = { writes: [] as Array<{ status: number; body: string }>, ended: false };
+    const res: any = {
+      writableEnded: false,
+      writeHead(status: number) {
+        state.writes.push({ status, body: '' });
+        return res;
+      },
+      end(body?: string | Buffer) {
+        state.ended = true;
+        res.writableEnded = true;
+        if (body !== undefined && state.writes.length > 0) {
+          state.writes[state.writes.length - 1].body = String(body);
+        }
+      },
+      on(event: string, listener: (...args: unknown[]) => void) {
+        const list = listeners.get(event) ?? [];
+        list.push(listener);
+        listeners.set(event, list);
+        return res;
+      },
+      emit(event: string, ...args: unknown[]) {
+        for (const listener of listeners.get(event) ?? []) listener(...args);
+        return true;
+      },
+    };
+    return { res: res as ServerResponse, state, close: () => res.emit('close') };
+  }
+
+  it('HR01 非 POST：405、allow POST、空体、不调 probe', async () => {
+    const { routes, probeModel } = createTestRoutes();
+
+    const response = await request(routes, 'GET');
+
+    expect(response.status).toBe(405);
+    expect(response.headers.allow).toBe('POST');
+    expect(response.raw).toBe('');
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR02 空体：400 字段 provider 必须是非空字符串', async () => {
+    const { routes, probeModel } = createTestRoutes();
+
+    const response = await request(routes, 'POST', {});
+
+    expect(response.status).toBe(400);
+    expect(response.data).toEqual({ code: 'INVALID', message: '字段 provider 必须是非空字符串' });
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR03 未知键：400 字段 x 不支持', async () => {
+    const { routes, probeModel } = createTestRoutes();
+
+    const response = await request(routes, 'POST', { provider: 'a', model: 'b', x: 1 });
+
+    expect(response.status).toBe(400);
+    expect(response.data).toEqual({ code: 'INVALID', message: '字段 x 不支持' });
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR04 model 257 字符：400 长度超过 256', async () => {
+    const { routes, probeModel } = createTestRoutes();
+
+    const response = await request(routes, 'POST', { provider: 'a', model: 'm'.repeat(257) });
+
+    expect(response.status).toBe(400);
+    expect(response.data).toEqual({ code: 'INVALID', message: '字段 model 长度不能超过 256' });
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR05 getLlm 为空：503 DEPENDENCY_UNAVAILABLE，不调 probe', async () => {
+    const { routes, probeModel } = createTestRoutes({ getLlm: () => undefined });
+
+    const response = await request(routes, 'POST', TARGET);
+
+    expect(response.status).toBe(503);
+    expect(response.data).toEqual({
+      code: 'DEPENDENCY_UNAVAILABLE',
+      message: '当前 DSH 未提供 LLM 服务，无法测试模型',
+    });
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR06 llm 没有 stream：503 DEPENDENCY_UNAVAILABLE，不调 probe', async () => {
+    const { routes, probeModel } = createTestRoutes({ getLlm: () => llmWithStream() });
+
+    const response = await request(routes, 'POST', TARGET);
+
+    expect(response.status).toBe(503);
+    expect(response.data.code).toBe('DEPENDENCY_UNAVAILABLE');
+    expect(probeModel).not.toHaveBeenCalled();
+  });
+
+  it('HR07 probe 返回结果：200 { provider, model, ...result }，probe 收到 llm 与 signal', async () => {
+    const llm = llmWithStream(async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; });
+    const { routes, probeModel } = createTestRoutes({ getLlm: () => llm });
+
+    const response = await request(routes, 'POST', TARGET);
+
+    expect(response.status).toBe(200);
+    expect(response.data).toEqual({ provider: TARGET.provider, model: TARGET.model, ...RESULT });
+    expect(probeModel).toHaveBeenCalledTimes(1);
+    const [target, probeDeps] = probeModel.mock.calls[0];
+    expect(target).toEqual(TARGET);
+    expect(probeDeps.llm).toBe(llm);
+    expect(probeDeps.signal).toBeInstanceOf(AbortSignal);
+    expect(probeDeps.signal.aborted).toBe(false);
+  });
+
+  it('HR08 同一 provider+model 在途：第二个请求 409 BUSY', async () => {
+    const releases: Array<() => void> = [];
+    const probeModel = vi.fn(() => new Promise((resolve) => {
+      releases.push(() => resolve({ ...RESULT }));
+    }));
+    const { routes } = createTestRoutes({}, probeModel);
+
+    const first = swallow(request(routes, 'POST', TARGET));
+    await waitUntil(() => probeModel.mock.calls.length === 1, 'HR08 第一个 probe 开始');
+
+    const second = await request(routes, 'POST', TARGET);
+
+    expect(second.status).toBe(409);
+    expect(second.data).toEqual({ code: 'BUSY', message: `模型 ${TARGET.model} 正在测试，请稍候` });
+
+    releases[0]();
+    expect((await first).status).toBe(200);
+  });
+
+  it('HR09 全局在途已 3 个：第 4 个请求 409 BUSY', async () => {
+    const releases: Array<() => void> = [];
+    const probeModel = vi.fn(() => new Promise((resolve) => {
+      releases.push(() => resolve({ ...RESULT }));
+    }));
+    const { routes } = createTestRoutes({}, probeModel);
+
+    const pending = [
+      swallow(request(routes, 'POST', { provider: 'p1', model: 'm1' })),
+      swallow(request(routes, 'POST', { provider: 'p2', model: 'm2' })),
+      swallow(request(routes, 'POST', { provider: 'p3', model: 'm3' })),
+    ];
+    await waitUntil(() => probeModel.mock.calls.length === 3, 'HR09 三个 probe 都在途');
+
+    const fourth = await request(routes, 'POST', { provider: 'p4', model: 'm4' });
+
+    expect(fourth.status).toBe(409);
+    expect(fourth.data).toEqual({ code: 'BUSY', message: '同时最多测试 3 个模型，请稍后重试' });
+
+    for (const release of releases) release();
+    for (const started of pending) expect((await started).status).toBe(200);
+  });
+
+  it('HR10 完成与 probe 抛错后都释放占位：同一键可以再次测试', async () => {
+    const probeModel = vi.fn()
+      .mockResolvedValueOnce({ ...RESULT })
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ ...RESULT });
+    const { routes } = createTestRoutes({}, probeModel);
+
+    expect((await request(routes, 'POST', TARGET)).status).toBe(200);
+    expect((await request(routes, 'POST', TARGET)).status).toBe(500);
+    expect((await request(routes, 'POST', TARGET)).status).toBe(200);
+    expect(probeModel).toHaveBeenCalledTimes(3);
+  });
+
+  it('HR11 probe 意外抛错：500 INTERNAL 服务端内部错误（不泄露原文）', async () => {
+    const probeModel = vi.fn(async () => {
+      throw new Error('probe exploded with Bearer sk-secret123456');
+    });
+    const { routes } = createTestRoutes({}, probeModel);
+
+    const response = await request(routes, 'POST', TARGET);
+
+    expect(response.status).toBe(500);
+    expect(response.data).toEqual({ code: 'INTERNAL', message: '服务端内部错误' });
+  });
+
+  it('HR12 res 发 close：传给 probe 的 signal 被 abort，且不写出 200', async () => {
+    const signals: AbortSignal[] = [];
+    const releases: Array<() => void> = [];
+    const probeModel = vi.fn((_target: unknown, probeDeps: { signal: AbortSignal }) => {
+      signals.push(probeDeps.signal);
+      return new Promise((resolve) => {
+        releases.push(() => resolve({ ...RESULT }));
+      });
+    });
+    const { routes } = createTestRoutes({}, probeModel);
+    const { res, state, close } = createClosableRes();
+
+    const pending = testRoute(routes).handler(createMockReq('POST', PATH, TARGET), res);
+    await waitUntil(() => signals.length === 1, 'HR12 probe 开始');
+    close();
+    await waitUntil(() => signals[0].aborted, 'HR12 signal 被 abort');
+
+    releases[0]();
+    await pending;
+
+    expect(signals[0].aborted).toBe(true);
+    expect(state.writes).toEqual([]);
+  });
+
+  it('HR13 纯空白的 provider / model：400 必须是非空字符串，不调 probe', async () => {
+    const { routes, probeModel } = createTestRoutes();
+
+    const blankProvider = await request(routes, 'POST', { provider: '  ', model: 'm' });
+    expect(blankProvider.status).toBe(400);
+    expect(blankProvider.data).toEqual({ code: 'INVALID', message: '字段 provider 必须是非空字符串' });
+
+    const blankModel = await request(routes, 'POST', { provider: 'p', model: ' \t' });
+    expect(blankModel.status).toBe(400);
+    expect(blankModel.data).toEqual({ code: 'INVALID', message: '字段 model 必须是非空字符串' });
+
+    expect(probeModel).not.toHaveBeenCalled();
   });
 });
 

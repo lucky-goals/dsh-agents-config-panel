@@ -7,6 +7,9 @@
  *   defaultMaxTokens，DS 的 defaultContextWindow/maxTokens）都真实存在于用户配置上，
  *   用来验证它们「只进 known、不进草稿字段、不进 extra、不产生 op」（见 r2.md 第 2 节）。
  * - DeepSeek 的 user 只放这 2 个默认键，列表数据仍以 value 为准。
+ * - R4b：`streamIdleTimeoutMs` 在两个 pi 路由的 value 层是 schema 默认 300000，
+ *   user 层是显式值 1800000；DS 只在 value 层有 300000，user 层故意不带这个键，
+ *   用来验证「不读 value 层、只认 user 层的显式值」（docs/specs/r4b-stream-idle-timeout.md §9）。
  */
 import { vi, type Mock } from 'vitest';
 import type {
@@ -93,6 +96,9 @@ export function piValue(): Record<string, unknown> {
         defaultContextWindow: 262144,
         defaultMaxTokens: 32768,
         defaultInput: ['text'],
+        // R4b：schema 默认值（DSH 的 .default(300000)）。它出现在 value 层，
+        // 显式值只能从 user 层判断（契约 r4b 1.2）。
+        streamIdleTimeoutMs: 300000,
         models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-terra', 'gpt-6-luna'].map(gptModel),
       },
       'cc-gateway': {
@@ -103,6 +109,7 @@ export function piValue(): Record<string, unknown> {
         defaultInput: ['text'],
         defaultContextWindow: 262144,
         defaultMaxTokens: 32768,
+        streamIdleTimeoutMs: 300000,
         models: [
           { ...ccModel('claude-fable-5-1', 'Fable 5.1', 1000000, 128000, { ...FOUR_LEVEL_MAP }), inputModalities: ['text', 'image'] },
           ccModel('claude-opus-5-5', 'Opus 5.5', 1000000, 128000, { ...FOUR_LEVEL_MAP }),
@@ -124,6 +131,8 @@ export function piUser(): Record<string, unknown> {
         defaultInput: ['text'],
         defaultContextWindow: 262144,
         defaultMaxTokens: 32768,
+        // R4b：用户手写的显式值（30 分钟）；dsUser() 故意不带这个键。
+        streamIdleTimeoutMs: 1800000,
         models: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-terra', 'gpt-6-luna'].map(gptModel),
       },
       'cc-gateway': {
@@ -132,6 +141,7 @@ export function piUser(): Record<string, unknown> {
         apiKeyEnv: 'CC_GATEWAY_API_KEY',
         reasoning: 'high',
         defaultInput: ['text'],
+        streamIdleTimeoutMs: 1800000,
         models: [
           { ...ccModel('claude-fable-5-1', 'Fable 5.1', 1000000, 128000, { ...FOUR_LEVEL_MAP }), inputModalities: ['text', 'image'] },
           ccModel('claude-opus-5-5', 'Opus 5.5', 1000000, 128000, { ...FOUR_LEVEL_MAP }),
@@ -150,6 +160,7 @@ export function dsValue(): Record<string, unknown> {
     apiKeyEnv: 'DEEPSEEK_API_KEY',
     defaultContextWindow: 1000000,
     maxTokens: 256000,
+    streamIdleTimeoutMs: 300000,
     models: [
       { id: 'deepseek-flash', name: 'V41-Flash', inputModalities: ['text', 'image'] },
       { id: 'deepseek-v4-pro', inputModalities: ['text'] },
@@ -433,6 +444,147 @@ export function createFakePort(options: FakePortOptions = {}): FakePort {
       return ns === NS_PI ? state.pi : ns === NS_DS ? state.ds : null;
     },
   };
+}
+
+/* ---------------- R4a 模型测试：可手动 resolve/reject 的 fake tester ---------------- */
+
+/**
+ * R4a 测试结果的本地形状（契约 r4a §1.1 的 200 体）。
+ *
+ * api-types 的 `ModelTestResult` 现在是 r4a coder 的活，测试先自带一份结构类型，
+ * 免得 store / model-test 用例依赖还未实现的模块。
+ */
+export interface FakeTestResult {
+  provider: string;
+  model: string;
+  ok: boolean;
+  latencyMs: number | null;
+  firstTokenMs: number | null;
+  sample: string;
+  finish: string | null;
+  errorKind: string | null;
+  status: number | null;
+  message: string;
+  transient: boolean;
+  params: { effort: string | null; maxTokens: number; timeoutMs: number };
+  testedAt: string;
+}
+
+export interface FakeTestCall {
+  req: { provider: string; model: string };
+  signal: AbortSignal;
+  settled: boolean;
+  /** resolve 时用契约默认值补齐（成功、812 ms、首 token 341 ms、sample 'OK'、effort off）。 */
+  resolve(over?: Partial<FakeTestResult>): void;
+  reject(error: unknown): void;
+}
+
+export interface FakeTester {
+  fn(req: { provider: string; model: string }, signal: AbortSignal): Promise<FakeTestResult>;
+  calls: FakeTestCall[];
+  call(i?: number): FakeTestCall;
+  count(): number;
+}
+
+/** 契约默认的成功结果；provider/model 默认 gpt-gateway / gpt-6-luna。 */
+export function fakeTestResult(over: Partial<FakeTestResult> = {}): FakeTestResult {
+  return {
+    provider: 'gpt-gateway',
+    model: 'gpt-6-luna',
+    ok: true,
+    latencyMs: 812,
+    firstTokenMs: 341,
+    sample: 'OK',
+    finish: 'stop',
+    errorKind: null,
+    status: null,
+    message: '',
+    transient: false,
+    params: { effort: 'off', maxTokens: 32, timeoutMs: 20000 },
+    testedAt: '2026-10-08T02:40:00.000Z',
+    ...over,
+  };
+}
+
+/**
+ * R4a store 用例的 fake tester（契约 §2.2 的 ModelTester）：每次调用返回一个可以手动
+ * resolve/reject 的 deferred，并把 req 与 signal 记进 `calls`（信号是否被 abort 就看它）。
+ */
+export function createFakeTester(): FakeTester {
+  const calls: FakeTestCall[] = [];
+  const fn = (req: { provider: string; model: string }, signal: AbortSignal): Promise<FakeTestResult> => {
+    let resolvePromise!: (result: FakeTestResult) => void;
+    let rejectPromise!: (error: unknown) => void;
+    const promise = new Promise<FakeTestResult>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    const call: FakeTestCall = {
+      req,
+      signal,
+      settled: false,
+      resolve(over = {}) {
+        call.settled = true;
+        resolvePromise(fakeTestResult({ provider: req.provider, model: req.model, ...over }));
+      },
+      reject(error) {
+        call.settled = true;
+        rejectPromise(error);
+      },
+    };
+    calls.push(call);
+    return promise;
+  };
+  return {
+    fn,
+    calls,
+    call(i = calls.length - 1) {
+      return calls[i];
+    },
+    count: () => calls.length,
+  };
+}
+
+/* ---------------- R4a 返工轮（F2）：异常的注入 tester 变体（只追加） ---------------- */
+
+/**
+ * 记录调用、但返回值完全由 handler 决定的 tester 骨架。
+ * 同步抛错与返回非 thenable 都不能手动 resolve/reject，所以 calls 里的两个回调只用来报错。
+ */
+function scriptedTester(
+  handler: (req: { provider: string; model: string }, signal: AbortSignal) => unknown,
+): FakeTester {
+  const calls: FakeTestCall[] = [];
+  const fn = ((req: { provider: string; model: string }, signal: AbortSignal) => {
+    calls.push({
+      req,
+      signal,
+      settled: false,
+      resolve() { throw new Error('scripted tester 不支持手动 resolve'); },
+      reject() { throw new Error('scripted tester 不支持手动 reject'); },
+    });
+    return handler(req, signal);
+  }) as unknown as FakeTester['fn'];
+  return {
+    fn,
+    calls,
+    call(i = calls.length - 1) {
+      return calls[i];
+    },
+    count: () => calls.length,
+  };
+}
+
+/** S17 用：每次调用都同步抛错（模拟注入的 tester 直接 throw，例如参数校验失败）。 */
+export function createThrowingTester(error: unknown = new Error('boom')): FakeTester {
+  return scriptedTester(() => {
+    throw error;
+  });
+}
+
+/** S18 用：每次调用返回非 thenable（默认 undefined），模拟注入的 tester 违反 Promise 契约。 */
+export function createNonThenableTester(value: unknown = undefined): FakeTester {
+  return scriptedTester(() => value);
 }
 
 export { DS_ROUTE_ID, NS_DS, NS_PI };

@@ -11,8 +11,10 @@ import type { McSnapshot, ModelCapabilitiesStore, WizardDraft } from '../types';
 import { deriveEnv } from '../efforts';
 import { idWarn, secretError, wizardErrors } from '../validate';
 import { mcStyles as s, sx } from '../styles';
+import { msToMinutesText, parseTimeoutMinutes } from '../timeout';
 import { HeaderRows } from './EditAccessLayer';
 import { Btn, ErrText, Hint, Section, TextField } from './shared';
+import { TimeoutField } from './TimeoutField';
 
 type ComponentProps = { snap: McSnapshot; store: ModelCapabilitiesStore };
 
@@ -88,6 +90,7 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
       ? (w.env.trim() ? undefined : `留空时用 ${id ? deriveEnv(id) : '由 ID 生成的名字'}。`)
       : '随 ID 自动生成，可改。';
     const sErr = secret ? secretError(secret) : '';
+    const wizTimeout = parseTimeoutMinutes(w.timeoutText);
     content = (
       <>
         <TextField
@@ -126,6 +129,18 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
             onChange={(v) => { setSecret(v); store.setWizardSecret(v); }}
           />
         </div>
+        <TimeoutField
+          scope="wizard"
+          text={w.timeoutText}
+          resolvedMs={wizTimeout.kind === 'ok' ? wizTimeout.ms : undefined}
+          explicit={w.timeoutText.trim() !== ''}
+          error={e.timeout}
+          disabled={lock}
+          onText={(v) => patch({ timeoutText: v })}
+          onBlur={() => {}}
+          onPreset={(ms) => patch({ timeoutText: msToMinutesText(ms) })}
+          onReset={() => patch({ timeoutText: '' })}
+        />
         <div>
           <Btn
             kind="link"
@@ -143,7 +158,7 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
         <div style={s.row}>
           <Btn disabled={lock} onClick={() => store.wizardPrev()}>上一步</Btn>
           <span style={s.spacer} />
-          <Btn kind="primary" disabled={!!e.id || !w.ack || !!sErr || lock} onClick={() => store.wizardNext()}>下一步</Btn>
+          <Btn kind="primary" disabled={!!e.id || !w.ack || !!sErr || !!e.timeout || lock} onClick={() => store.wizardNext()}>下一步</Btn>
         </div>
       </>
     );
@@ -172,7 +187,7 @@ export function AddProviderWizard({ snap, store }: ComponentProps): JSX.Element 
         <div style={s.row}>
           <Btn disabled={lock} onClick={() => store.wizardPrev()}>上一步</Btn>
           <span style={s.spacer} />
-          <Btn kind="primary" disabled={!!(e.models || e.headers) || lock} onClick={() => store.wizardFinish()}>完成添加</Btn>
+          <Btn kind="primary" disabled={!!(e.models || e.headers || e.timeout) || lock} onClick={() => store.wizardFinish()}>完成添加</Btn>
         </div>
       </>
     );

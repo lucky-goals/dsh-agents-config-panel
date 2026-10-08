@@ -169,6 +169,13 @@ function buttonTags(html: string, label: string): string[] {
   return [...html.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].filter((m) => m[2].includes(label)).map((m) => m[1]);
 }
 
+/** The element right after the panel's root <div>: its content column, topbar-free. */
+function firstElementAfterRoot(html: string): string {
+  const root = html.match(/^<div[^>]*>/)?.[0];
+  expect(root, 'root div').toBeDefined();
+  return html.slice(root!.length).match(/^<[^>]*>/)?.[0] ?? '';
+}
+
 /** Text of every ARIA column header of the model table (spacer columns dropped). */
 function columnHeaders(html: string): string[] {
   return [...html.matchAll(/role="columnheader"[^>]*>([^<]*)/g)].map((m) => m[1].trim()).filter(Boolean);
@@ -248,6 +255,8 @@ const WIZARD_STEP3: WizardDraft = {
   headersOpen: false,
   headers: [],
   models: ['gpt-6-nova'],
+  // R4b：WizardDraft 新增的必填字段（第 2 步的分钟原文，defaultWizard() 里是 '30'）。
+  timeoutText: '30',
 };
 
 /* ================= 列表 ================= */
@@ -560,9 +569,21 @@ describe('状态条与横幅（SSR）', () => {
     expect(buttonTags(html, '保存')[0]).toContain('disabled');
   });
 
-  it('关闭 is forwarded from the host props, and absent without them', () => {
-    expect(buttonTags(renderPanel({ close: () => {} }), '关闭')).toHaveLength(1);
-    expect(buttonTags(renderPanel(), '关闭')).toHaveLength(0);
+  it('CL3: the host close prop renders neither a 关闭 button nor the topbar strip', () => {
+    const withClose = renderPanel({ close: () => {} });
+    const withoutClose = renderPanel();
+
+    // The panel still renders: 模型能力 is the list view's h2, and the root's
+    // first child is the content column either way (no extra strip).
+    expect(withClose).toContain('模型能力');
+    expect(firstElementAfterRoot(withClose)).toMatch(/^<div/);
+    expect(firstElementAfterRoot(withClose)).toBe(firstElementAfterRoot(withoutClose));
+
+    expect(buttonTags(withClose, '关闭')).toHaveLength(0);
+    expect(buttonTags(withoutClose, '关闭')).toHaveLength(0);
+    // The removed topbar's own style: display:flex;justify-content:flex-end;padding:8px 16px 0;flex:none
+    expect(withClose).not.toContain('padding:8px 16px 0');
+    expect(withoutClose).not.toContain('padding:8px 16px 0');
   });
 
   it('loading announces 正在加载配置', () => {
@@ -692,5 +713,421 @@ describe('导入预览对话框（R3 1.9）', () => {
     expect(labels).toHaveLength(2);
     expect(labels.filter((label) => label.includes('导入'))).toHaveLength(1);
     expect(labels.filter((label) => label.includes('覆盖'))).toHaveLength(1);
+  });
+});
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 6 节）：P1–P4。
+ *
+ * 只追加用例；TimeoutField.tsx 现在还不存在，所以这些断言现在是红的。
+ * ========================================================================== */
+
+const T_KEY = 'streamIdleTimeoutMs';
+const T_NOTE = '连续这么久没有收到任何数据就判定超时；不是单次调用的总时长。超时后 DSH 会话默认会自动重试。';
+const T_HINT_UNSET = '未设置 · 使用 DSH 默认 5 分钟。建议 30 分钟。';
+
+/** 只给一个提供方补上 R4b 的字段，其它提供方不变。 */
+function snapWithTimeout(id: string, over: Record<string, unknown>): Partial<Omit<McSnapshot, 'ui'>> {
+  const providers = draftProviders();
+  providers[id] = { ...providers[id], ...over } as ProviderDraft;
+  return { draft: { providers } };
+}
+
+/** 第一个带 data-mc hook 的 input/button 开始标签（属性顺序无关）。 */
+function tagWith(html: string, dataMc: string): string {
+  return html.match(new RegExp(`<(?:input|button)[^>]*data-mc="${dataMc}"[^>]*>`))?.[0] ?? '';
+}
+
+/** 所有带 data-mc hook 的 input/button 开始标签。 */
+function tagsWith(html: string, dataMc: string): string[] {
+  return [...html.matchAll(new RegExp(`<(?:input|button)[^>]*data-mc="${dataMc}"[^>]*>`, 'g'))].map((m) => m[0]);
+}
+
+describe('R4b 超时字段（SSR）：P1–P4', () => {
+  const accessUi: Partial<McUi> = { view: 'detail', route: 'gpt-gateway', edit: { kind: 'access', route: 'gpt-gateway' } };
+
+  it('P1 接入层: hook、value=30、hint、语义说明，且位于密钥环境变量名之后、请求头之前', () => {
+    const html = text(renderPanel({ ui: accessUi, snap: snapWithTimeout('gpt-gateway', { [T_KEY]: 1800000 }) }));
+
+    expect(html).toContain('data-mc="timeout"');
+    expect(html).toContain('data-mc-scope="access"');
+    expect(html).toContain('>超时</div>');
+    expect(tagWith(html, 'timeout-input')).toContain('value="30"');
+    expect(html).toContain('= 1800000 ms · 30 分钟');
+    expect(html).toContain(T_NOTE);
+
+    const keyAt = html.indexOf('密钥环境变量名');
+    const timeoutAt = html.indexOf('data-mc="timeout"');
+    const headersAt = html.indexOf('请求头');
+    expect(keyAt).toBeGreaterThan(-1);
+    expect(timeoutAt).toBeGreaterThan(keyAt);
+    expect(headersAt).toBeGreaterThan(timeoutAt);
+  });
+
+  it('P2 DS 详情: scope=ds、未设置 hint、摘要、新描述原文', () => {
+    const html = text(renderPanel({ ui: { view: 'detail', route: DS_ROUTE_ID } }));
+
+    expect(html).toContain('data-mc="timeout"');
+    expect(html).toContain('data-mc-scope="ds"');
+    expect(tagWith(html, 'timeout-input')).toContain('placeholder="30"');
+    expect(html).toContain(T_HINT_UNSET);
+    expect(html).toContain('data-mc="timeout-summary"');
+    expect(html).toContain('流空闲超时 默认 5 分钟');
+    expect(html).toContain('官方提供方由「模型」页接入，这里改思考和超时。接入本身不在这里改。');
+  });
+
+  it('P3 错误态 aria-invalid 与文案；只读时 input、芯片、恢复按钮都 disabled', () => {
+    const err = text(renderPanel({
+      ui: accessUi,
+      snap: {
+        ...snapWithTimeout('gpt-gateway', { [T_KEY]: 1800000 }),
+        errors: { 'gpt-gateway': { route: { [T_KEY]: '请输入大于 0 的分钟数' }, models: [] } },
+      },
+    }));
+    expect(tagWith(err, 'timeout-input')).toContain('aria-invalid="true"');
+    expect(err).toContain('请输入大于 0 的分钟数');
+
+    const locked = text(renderPanel({
+      ui: { ...accessUi, readonly: true },
+      snap: snapWithTimeout('gpt-gateway', { [T_KEY]: 1800000 }),
+    }));
+    expect(tagWith(locked, 'timeout-input')).toContain('disabled');
+    const chips = tagsWith(locked, 'timeout-preset');
+    expect(chips).toHaveLength(3);
+    for (const chip of chips) expect(chip).toContain('disabled');
+    expect(tagWith(locked, 'timeout-reset')).toContain('disabled');
+  });
+
+  it('P4 向导第 2 步: scope=wizard、value=30、30 分钟（推荐）芯片 aria-pressed', () => {
+    const html = text(renderPanel({ ui: { view: 'wizard', wizard: { ...WIZARD_STEP3, step: 2, timeoutText: '30' } } }));
+
+    expect(html).toContain('data-mc-scope="wizard"');
+    expect(tagWith(html, 'timeout-input')).toContain('value="30"');
+    expect(html).toContain('= 1800000 ms · 30 分钟');
+
+    const chips = buttonTags(html, '分钟');
+    expect(chips).toHaveLength(3);
+    expect(chips.filter((chip) => chip.includes('aria-pressed="true"'))).toHaveLength(1);
+    const recommended = buttonTags(html, '30 分钟（推荐）');
+    expect(recommended).toHaveLength(1);
+    expect(recommended[0]).toContain('aria-pressed="true"');
+  });
+});
+
+/* ==========================================================================
+ * R4a 模型可用性测试（docs/specs/r4a-model-test.md §2.3、§2.6、§4 节）：P01–P11。
+ *
+ * 只在新增的 `snap.test` 上做 SSR 字符串断言：data-mc* 钩子、aria 属性、逐字文案。
+ * 组件还不存在，所以这一组现在是红的；`snap.test === undefined` 时（P01）旧输出不变。
+ * 颜色扫描 P11 覆盖同一批新组件。
+ * ========================================================================== */
+
+type TestState = 'queued' | 'running' | 'ok' | 'fail' | 'transient' | 'cancelled';
+
+interface TestResultLike {
+  provider: string;
+  model: string;
+  ok: boolean;
+  latencyMs: number | null;
+  firstTokenMs: number | null;
+  sample: string;
+  finish: string | null;
+  errorKind: string | null;
+  status: number | null;
+  message: string;
+  transient: boolean;
+  params: { effort: string | null; maxTokens: number; timeoutMs: number };
+  testedAt: string;
+}
+
+interface TestEntryLike {
+  state: TestState;
+  result?: TestResultLike;
+  at?: number;
+  startedAt?: number;
+}
+
+interface TestBatchLike {
+  route: string;
+  keys: string[];
+  label: '全部模型' | '所选模型' | '重试失败项' | '已取消的模型';
+  stopped: boolean;
+  done: boolean;
+  startedAt: number;
+  endedAt?: number;
+}
+
+interface McTestStateLike {
+  hostUnsupported: boolean;
+  results: Record<string, TestEntryLike>;
+  batches: Record<string, TestBatchLike>;
+  open: string | null;
+  cost: { route: string; modelIds: string[]; label: TestBatchLike['label'] } | null;
+  skipCost: boolean;
+  blocked: Record<string, string | null>;
+  live: string;
+}
+
+const MC_T0 = new Date(2026, 9, 8, 2, 40, 0).getTime();
+const MC_IDS = ['m1', 'm2', 'm3', 'm4', 'm5'];
+const mcKey = (id: string): string => `gpt-gateway|${id}`;
+
+/** 契约 §1.1 的 200 体：默认成功、812 ms、首 token 341 ms。 */
+function mcResult(over: Partial<TestResultLike> = {}): TestResultLike {
+  return {
+    provider: 'gpt-gateway',
+    model: 'm1',
+    ok: true,
+    latencyMs: 812,
+    firstTokenMs: 341,
+    sample: 'OK',
+    finish: 'stop',
+    errorKind: null,
+    status: null,
+    message: '',
+    transient: false,
+    params: { effort: 'off', maxTokens: 32, timeoutMs: 20000 },
+    testedAt: '2026-10-08T02:40:00.000Z',
+    ...over,
+  };
+}
+
+function mcOk(id = 'm1'): TestEntryLike {
+  return { state: 'ok', result: mcResult({ model: id }), at: MC_T0 + 812 };
+}
+
+function mcFail(kind: string, status: number | null, over: Partial<TestEntryLike> = {}): TestEntryLike {
+  return {
+    state: 'fail',
+    at: MC_T0 + 230,
+    result: mcResult({ ok: false, latencyMs: 230, firstTokenMs: null, sample: '', finish: 'error', errorKind: kind, status, message: 'Incorrect API Key', model: 'm2' }),
+    ...over,
+  };
+}
+
+function mcTransient(): TestEntryLike {
+  return mcFail('RATE_LIMIT', 429, { state: 'transient', result: mcResult({ ok: false, latencyMs: 230, firstTokenMs: null, sample: '', finish: 'error', errorKind: 'RATE_LIMIT', status: 429, transient: true, message: 'rate limited', model: 'm2' }) });
+}
+
+function mcTest(over: Partial<McTestStateLike> = {}): McTestStateLike {
+  return {
+    hostUnsupported: false,
+    results: {},
+    batches: {},
+    open: null,
+    cost: null,
+    skipCost: false,
+    blocked: {},
+    live: '',
+    ...over,
+  };
+}
+
+function mcBatch(over: Partial<TestBatchLike> = {}): TestBatchLike {
+  return { route: 'gpt-gateway', keys: MC_IDS.map(mcKey), label: '全部模型', stopped: false, done: false, startedAt: MC_T0, ...over };
+}
+
+/** gpt-gateway 的模型表换成给定 id（其余提供方照旧）。 */
+function mcProviders(ids: string[] = MC_IDS): Record<string, ProviderDraft> {
+  const providers = draftProviders();
+  providers['gpt-gateway'] = { ...providers['gpt-gateway'], models: ids.map((id) => model(id, { name: id })) };
+  return providers;
+}
+
+function mcSnap(
+  test: McTestStateLike | undefined,
+  opts: { ui?: Partial<McUi>; snap?: Partial<Omit<McSnapshot, 'ui'>> } = {},
+): McSnapshot {
+  const base = makeSnap({ ...opts.snap, ui: opts.ui });
+  return (test === undefined ? base : { ...base, test }) as unknown as McSnapshot;
+}
+
+function renderMc(
+  test: McTestStateLike | undefined,
+  opts: { ui?: Partial<McUi>; snap?: Partial<Omit<McSnapshot, 'ui'>> } = {},
+): string {
+  return text(renderToString(<ModelCapabilitiesPanel store={fakeStore(mcSnap(test, opts))} close={() => {}} />));
+}
+
+/** 带该属性的完整 <button>…</button>（文本在标签体内，需要整段取）。 */
+function mcButton(html: string, attr: string): string {
+  const at = html.indexOf(attr);
+  expect(at, attr).toBeGreaterThan(-1);
+  const start = html.lastIndexOf('<button', at);
+  expect(start, `<button ${attr}>`).toBeGreaterThan(-1);
+  const end = html.indexOf('</button>', at);
+  expect(end, `</button> ${attr}`).toBeGreaterThan(-1);
+  return html.slice(start, end);
+}
+
+const MC_DETAIL: Partial<McUi> = { view: 'detail', route: 'gpt-gateway' };
+
+describe('R4a 模型测试（SSR）：P01–P11', () => {
+  it('P01 没有 test 字段 → 不含 data-mc-test 与「测试全部」', () => {
+    const html = renderMc(undefined);
+
+    expect(html).not.toContain('data-mc-test');
+    expect(html).not.toContain('测试全部');
+  });
+
+  it('P02 详情页：全部测试 / 测试所选（0）/ 每个模型的 data-mc-test 与 aria-label', () => {
+    const html = renderMc(mcTest(), { ui: MC_DETAIL, snap: { draft: { providers: mcProviders() } } });
+
+    expect(html).toContain('全部测试');
+    expect(html).toContain('测试所选（0）');
+    for (const id of MC_IDS) {
+      expect(html, id).toContain(`data-mc-test="${id}"`);
+      expect(html, id).toContain(`aria-label="测试 ${id}"`);
+    }
+  });
+
+  it('P03 ok 条目：data-mc-strip / data-mc-state / 可用 / 重测 / aria-expanded=false', () => {
+    const html = renderMc(mcTest({ results: { [mcKey('m1')]: mcOk() } }), {
+      ui: MC_DETAIL,
+      snap: { draft: { providers: mcProviders() } },
+    });
+
+    expect(html).toContain('data-mc-strip="m1"');
+    expect(html).toContain('data-mc-state="ok"');
+    expect(html).toContain('data-mc-detail="m1"');
+    expect(html).toContain('可用');
+    expect(mcButton(html, 'data-mc-detail="m1"')).toContain('aria-expanded="false"');
+    expect(mcButton(html, 'data-mc-retest="m1"')).toContain('重测');
+  });
+
+  it('P04 transient 条目：data-mc-state="transient"、重试按钮是「↻ 重试」', () => {
+    const html = renderMc(mcTest({ results: { [mcKey('m2')]: mcTransient() } }), {
+      ui: MC_DETAIL,
+      snap: { draft: { providers: mcProviders() } },
+    });
+
+    expect(html).toContain('data-mc-state="transient"');
+    expect(html).toContain('被限流');
+    const retest = mcButton(html, 'data-mc-retest="m2"');
+    expect(retest).toContain('↻');
+    expect(retest).toContain('重试');
+  });
+
+  it('P05 open 的详情：data-mc-tdetail / 请求参数 / 与提供方流空闲超时无关 / （已脱敏）', () => {
+    const html = renderMc(mcTest({ results: { [mcKey('m2')]: mcFail('AUTH', 401) }, open: mcKey('m2') }), {
+      ui: MC_DETAIL,
+      snap: { draft: { providers: mcProviders() } },
+    });
+
+    expect(html).toContain('data-mc-tdetail="m2"');
+    expect(html).toContain('请求参数');
+    expect(html).toContain('与提供方流空闲超时无关');
+    expect(html).toContain('（已脱敏）');
+    expect(html).toContain('401');
+    expect(mcButton(html, 'data-mc-detail="m2"')).toContain('aria-expanded="true"');
+  });
+
+  it('P06 批次进行中：progressbar / aria-valuemax=5 / 停止；结束：测试完成 + 仅重试失败项（1）', () => {
+    const providers = { draft: { providers: mcProviders() } };
+    const inFlight = mcTest({
+      batches: { 'gpt-gateway': mcBatch() },
+      results: {
+        [mcKey('m1')]: mcOk('m1'),
+        [mcKey('m2')]: mcOk('m2'),
+        [mcKey('m3')]: mcFail('AUTH', 401),
+        [mcKey('m4')]: { state: 'queued' },
+        [mcKey('m5')]: { state: 'queued' },
+      },
+    });
+    const html = renderMc(inFlight, { ui: MC_DETAIL, snap: providers });
+
+    expect(html).toContain('data-mc="batch"');
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-valuemax="5"');
+    expect(mcButton(html, 'data-mc="batch-stop"')).toContain('停止');
+    expect(html).toContain('已完成 3/5，失败 1');
+
+    const finished = mcTest({
+      batches: { 'gpt-gateway': mcBatch({ done: true, endedAt: MC_T0 + 20000 }) },
+      results: {
+        [mcKey('m1')]: mcOk('m1'),
+        [mcKey('m2')]: mcFail('AUTH', 401),
+        [mcKey('m3')]: mcOk('m3'),
+        [mcKey('m4')]: mcOk('m4'),
+        [mcKey('m5')]: mcOk('m5'),
+      },
+    });
+    const doneHtml = renderMc(finished, { ui: MC_DETAIL, snap: providers });
+
+    expect(doneHtml).toContain('测试完成');
+    expect(mcButton(doneHtml, 'data-mc="batch-retry-failed"')).toContain('仅重试失败项（1）');
+  });
+
+  it('P07 费用确认：测试 5 个模型？ / 开始测试 / 本次会话不再提示', () => {
+    const html = renderMc(mcTest({ cost: { route: 'gpt-gateway', modelIds: MC_IDS, label: '全部模型' } }), {
+      snap: { draft: { providers: mcProviders() } },
+    });
+
+    expect(html).toContain('测试 5 个模型？');
+    expect(html).toContain('本次会话不再提示');
+    expect(mcButton(html, 'data-mc="cost-ok"')).toContain('开始测试');
+    expect(mcButton(html, 'data-mc="cost-cancel"')).toContain('取消');
+  });
+
+  it('P08 hostUnsupported：横幅原文 + 选择栏/卡片按钮 aria-disabled + 卡片原因行', () => {
+    const state = mcTest({ hostUnsupported: true });
+    const providers = { draft: { providers: mcProviders() } };
+
+    const detail = renderMc(state, { ui: MC_DETAIL, snap: providers });
+    expect(detail).toContain('data-mc="test-unsupported"');
+    expect(detail).toContain('当前 Host 不支持模型测试，重启 DSH 后可用。');
+    expect(tagWith(detail, 'test-all')).toContain('aria-disabled="true"');
+    expect(mcButton(detail, 'data-mc-test="m1"')).toContain('aria-disabled="true"');
+
+    const list = renderMc(state, { snap: providers });
+    expect(mcButton(list, 'data-mc-test-all="gpt-gateway"')).toContain('aria-disabled="true"');
+    expect(list).toContain('id="mc-card-why-gpt-gateway"');
+    expect(list).toContain('当前 Host 不支持模型测试，重启 DSH 后可用');
+  });
+
+  it('P09 dirty 路由：先保存再测试 + data-mc="test-gate"', () => {
+    const html = renderMc(mcTest({ blocked: { 'gpt-gateway': '先保存再测试：Host 还不知道这个提供方的未保存改动' } }), {
+      ui: MC_DETAIL,
+      snap: {
+        draft: { providers: mcProviders() },
+        ops: { ...EMPTY_OPS, dirty: 1, dirtySet: new Set(['gpt-gateway']) },
+      },
+    });
+
+    expect(html).toContain('data-mc="test-gate"');
+    expect(html).toContain('先保存再测试');
+  });
+
+  it('P10 列表卡片：✓ 2/2 可用 徽标与 data-mc-test-all', () => {
+    const html = renderMc(mcTest({ results: { [mcKey('m1')]: mcOk('m1'), [mcKey('m2')]: mcOk('m2') } }), {
+      snap: { draft: { providers: mcProviders(['m1', 'm2']) } },
+    });
+
+    expect(html).toContain('data-mc-badge="gpt-gateway"');
+    expect(html).toContain('✓ 2/2 可用');
+    expect(html).toContain('data-mc-test-all="gpt-gateway"');
+  });
+
+  it('P11 颜色扫描：新组件 HTML 无 #xxx / rgb( / --mc-', () => {
+    const html = renderMc(
+      mcTest({
+        results: { [mcKey('m1')]: mcOk('m1'), [mcKey('m2')]: mcTransient() },
+        open: mcKey('m1'),
+        batches: { 'gpt-gateway': mcBatch({ done: true, stopped: true, endedAt: MC_T0 + 20000 }) },
+        cost: { route: 'gpt-gateway', modelIds: MC_IDS, label: '全部模型' },
+        live: '测试完成。可用 1，失败 1。',
+      }),
+      { ui: MC_DETAIL, snap: { draft: { providers: mcProviders() } } },
+    );
+
+    // 先确认这一页确实渲染了 r4a 的新组件，否则扫描等于空跑。
+    expect(html).toContain('data-mc="test-live"');
+    expect(html).toContain('data-mc-tdetail="m1"');
+    expect(html).toContain('data-mc="batch"');
+    expect(html).toContain('data-mc-badge="gpt-gateway"');
+
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(html).not.toContain('rgb(');
+    expect(html).not.toContain('--mc-');
   });
 });

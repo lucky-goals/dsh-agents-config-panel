@@ -1,5 +1,6 @@
 import { capErrors, modelCap, capFmtBad, capBlocks } from './capacity';
 import { deriveEnv } from './efforts';
+import { timeoutError } from './timeout';
 import { CAP_FMT_ERR, type DraftState, type FieldErrors, type HeaderPair, type ModelDraft, type ProviderDraft, type WizardDraft, type AllErrors, ALL_EFFORTS } from './types';
 
 const has = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
@@ -47,6 +48,11 @@ export function routeErrors(p: ProviderDraft): FieldErrors {
   const e: FieldErrors = {};
   if (isPi(p) && has(p, 'apiKeyEnv') && !String(p.apiKeyEnv ?? '').trim()) e.apiKeyEnv = '填写密钥环境变量名。';
   if (p.headers && duplicateHeaderNames(p.headers).length) e.headers = duplicateHeadersError(p.headers);
+  // 只校验用户正在输入的原文；加载来的值不报错，直到被编辑。
+  if (p.timeoutText !== undefined) {
+    const timeout = timeoutError(p.timeoutText);
+    if (timeout) e.streamIdleTimeoutMs = timeout;
+  }
   return e;
 }
 
@@ -73,8 +79,8 @@ export function providerIdError(id: string, d: DraftState): string {
   return '';
 }
 
-export function wizardErrors(w: WizardDraft, d: DraftState): { id?: string; models?: string; headers?: string } {
-  const e: { id?: string; models?: string; headers?: string } = {};
+export function wizardErrors(w: WizardDraft, d: DraftState): { id?: string; models?: string; headers?: string; timeout?: string } {
+  const e: { id?: string; models?: string; headers?: string; timeout?: string } = {};
   const idError = providerIdError(w.id, d);
   if (idError) e.id = idError;
   const trimmed = w.models.map((model) => model.trim());
@@ -82,6 +88,8 @@ export function wizardErrors(w: WizardDraft, d: DraftState): { id?: string; mode
   if (duplicate) e.models = `这个提供方里已有同名模型：${duplicate}`;
   else if (w.models.some((model) => /\s/.test(model.trim()))) e.models = 'ID 不能包含空格';
   if (duplicateHeaderNames(w.headers).length) e.headers = duplicateHeadersError(w.headers);
+  const timeout = timeoutError(w.timeoutText ?? '');
+  if (timeout) e.timeout = timeout;
   return e;
 }
 

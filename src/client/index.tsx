@@ -55,7 +55,7 @@ export function apply(ctx: any) {
   // 模型能力 (spec A): a child fiber that waits for the settings services, so
   // the two sections above keep working when those services are absent.
   ctx.inject([...MODEL_CAP_DEPS], (sub: any) => {
-    registerModelCapabilities(sub);
+    registerModelCapabilities(sub, { testModel: (b, signal) => api.testModel(b, signal) });
   });
 }
 

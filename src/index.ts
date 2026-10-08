@@ -171,6 +171,8 @@ export function apply(ctx: Context, config?: Config) {
       profileDefault,
       getCatalog: (yamlText) => buildCatalogWithSource(ctx.get('llm') as LLMService | undefined, yamlText),
       getAtomicWriteDiagnostics: () => atomicWriteDiagnostics,
+      // R4a model test: the live llm runtime, read per request (never cached).
+      getLlm: () => ctx.get('llm') as LLMService | undefined,
       // Late-bound on purpose: `subagents` is not in inject (contract v2.1 §1),
       // so a service that binds after these routes is picked up on the next
       // request without restarting the plugin.

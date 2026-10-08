@@ -1,5 +1,5 @@
 {
-  "name": "@nanmicoder/dsh-wuyou-agent",
+  "name": "@luckygoals/dsh-wuyou-agent",
   "version": "0.1.0",
   "description": "无忧Agent - DSH插件，提供subagent工具和agent-teams成员的可视化配置面板",
   "type": "module",
@@ -32,7 +32,11 @@
     "config",
     "panel"
   ],
-  "author": "nanmicoder",
+  "author": "lucky-goals",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucky-goals/dsh-agents-config-panel.git"
+  },
   "license": "MIT",
   "dependencies": {
     "yaml": "^2.6.1"
@@ -51,8 +55,8 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "react": "^18.2.0",
-    "@deepseek-ai/dsh-atomic-write": "0.1.7-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-general": "0.1.7-rc.2"
+    "@deepseek-ai/dsh-atomic-write": "0.2.0-rc.2 || 0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-general": "0.2.0-rc.2 || 0.1.7-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {

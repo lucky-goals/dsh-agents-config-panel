@@ -215,3 +215,111 @@ describe('createApiClient', () => {
     });
   });
 });
+
+/* ==========================================================================
+ * R4a 模型可用性测试的客户端调用（docs/specs/r4a-model-test.md §2.1、§4）：AC01–AC05。
+ *
+ * `testModel` 还不存在，所以这一组现在是红的；文案逐字取契约 §2.1。
+ * ========================================================================== */
+
+/** 契约 §2.1 的逐字文案；MODEL_TEST_UNSUPPORTED 常量缺失时也不会拖挂本文件其它用例。 */
+const UNSUPPORTED_TEXT = '当前 Host 不支持模型测试，重启 DSH 后可用';
+
+/** 契约 §1.1 / §2.1 的 200 响应体。 */
+const MODEL_TEST_RESULT: Record<string, unknown> = {
+  provider: 'openrouter',
+  model: 'openai/gpt-4.1-mini',
+  ok: true,
+  latencyMs: 812,
+  firstTokenMs: 341,
+  sample: 'OK',
+  finish: 'stop',
+  errorKind: null,
+  status: null,
+  message: '',
+  transient: false,
+  params: { effort: 'off', maxTokens: 32, timeoutMs: 20000 },
+  testedAt: '2026-10-08T02:40:00.000Z',
+};
+
+interface ModelTestClient {
+  testModel(body: { provider: string; model: string }, signal?: AbortSignal): Promise<Record<string, unknown>>;
+}
+
+function modelTestClient(mockFetch: unknown): ModelTestClient {
+  return createApiClient({ fetch: mockFetch as typeof fetch }) as unknown as ModelTestClient;
+}
+
+/** 捕获 reject 的 Error（带契约要求的 code / status）。 */
+async function captureError(promise: Promise<unknown>): Promise<{ message: string; code?: string; status?: number }> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as { message: string; code?: string; status?: number };
+  }
+  throw new Error('expected the promise to reject');
+}
+
+describe('api-client testModel（R4a AC01–AC05）', () => {
+  it('AC01 POST /models/test，body 与 init.signal 原样传递', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(mockResponse(true, 200, MODEL_TEST_RESULT));
+    const client = modelTestClient(mockFetch);
+    const controller = new AbortController();
+
+    await client.testModel({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' }, controller.signal);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/plugins/dsh-wuyou-agent/api/models/test');
+    expect(init).toEqual(expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' }),
+      credentials: 'same-origin',
+    }));
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it('AC02 200 → 解析响应体', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(mockResponse(true, 200, MODEL_TEST_RESULT));
+    const client = modelTestClient(mockFetch);
+
+    const result = await client.testModel({ provider: 'openrouter', model: 'openai/gpt-4.1-mini' }, new AbortController().signal);
+    expect(result).toEqual(MODEL_TEST_RESULT);
+  });
+
+  it('AC03 404 且 body 无 code → code HOST_UNSUPPORTED、message 为逐字文案、status 404', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(mockResponse(false, 404, { error: 'not found' }));
+    const client = modelTestClient(mockFetch);
+
+    const error = await captureError(client.testModel({ provider: 'openrouter', model: 'x' }, new AbortController().signal));
+    expect(error.message).toBe(UNSUPPORTED_TEXT);
+    expect(error.code).toBe('HOST_UNSUPPORTED');
+    expect(error.status).toBe(404);
+
+    // 常量 MODEL_TEST_UNSUPPORTED：导出时必须是同一句文案（动态 import，缺失也不影响其它用例）。
+    const apiClientModule = (await import('./api-client')) as unknown as Record<string, unknown>;
+    const apiTypesModule = (await import('./api-types')) as unknown as Record<string, unknown>;
+    const exported = apiClientModule.MODEL_TEST_UNSUPPORTED ?? apiTypesModule.MODEL_TEST_UNSUPPORTED;
+    if (exported !== undefined) expect(exported).toBe(UNSUPPORTED_TEXT);
+  });
+
+  it('AC04 404 且 body 有 code → 保留原 code / message / status', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(mockResponse(false, 404, { code: 'NOT_FOUND', message: '找不到这个模型' }));
+    const client = modelTestClient(mockFetch);
+
+    const error = await captureError(client.testModel({ provider: 'openrouter', model: 'x' }, new AbortController().signal));
+    expect(error.message).toBe('找不到这个模型');
+    expect(error.code).toBe('NOT_FOUND');
+    expect(error.status).toBe(404);
+  });
+
+  it('AC05 409 BUSY → code BUSY、status 409', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(mockResponse(false, 409, { code: 'BUSY', message: '模型 b 正在测试，请稍候' }));
+    const client = modelTestClient(mockFetch);
+
+    const error = await captureError(client.testModel({ provider: 'openrouter', model: 'b' }, new AbortController().signal));
+    expect(error.message).toBe('模型 b 正在测试，请稍候');
+    expect(error.code).toBe('BUSY');
+    expect(error.status).toBe(409);
+  });
+});

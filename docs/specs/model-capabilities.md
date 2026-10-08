@@ -2,13 +2,13 @@
 
 本文只规定实现形态。交互、文案和校验以 `docs/design/model-capabilities/prototype.html`（第 4 轮）为准，下文点名的函数按原型移植。原型把 DeepSeek 写成 `config.providers.deepseek-official.*`，这是错的，实现一律以本文 B 节的 path 为准。
 
-硬约束：不新增依赖，不引入 jsdom / Testing Library，不改 `scripts/build-client.mjs` 的 external，不改 host 路由。Client 对 Cordis、configForms、remote 只用结构类型，这些类型写在本模块的 `types.ts` 里，不从 `@deepseek-ai/*` 引入（`import type` 也不行）。
+硬约束：不新增依赖，不引入 jsdom / Testing Library，不改 `scripts/build-client.mjs` 的 external，不改 host 路由（R4a 新增只读测试路由 `POST /models/test`，见 `r4a-model-test.md`）。Client 对 Cordis、configForms、remote 只用结构类型，这些类型写在本模块的 `types.ts` 里，不从 `@deepseek-ai/*` 引入（`import type` 也不行）。
 
 ## 0. 决策
 
 | 方案 | 结论 |
 |---|---|
-| Client-only，经 `remote.settings.mutate` 写入 | 采用。host 不用重启，verify 的 9 条路由不变 |
+| Client-only，经 `remote.settings.mutate` 写入 | 采用。host 不用重启，verify 的 9 条路由不变（R4a 后为 10 条） |
 | 新增 host 路由，由 client fetch | 不采用。要改路由表，而且和官方 settings 写入通道重复 |
 | 把根 `inject` 扩成 slots + remote + configForms | 不采用。settings 服务没挂载时，现有两个 section 也会停 |
 | `whileServed(...)` | 不采用。cordis 4.0.4 没有这个 API |

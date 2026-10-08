@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { computeOps, draftFromNamespaces, fieldOut, modelOut, modelWrite, previewText, remoteErrorText, SKIP } from './ops';
-import type { DraftState, OpsResult, SettingsOp, SettingsOpSet } from './types';
+import type { DraftState, OpsResult, ProviderDraft, SettingsOp, SettingsOpSet } from './types';
 import { DS_ROUTE_ID } from './types';
 import { deepClone, defaultCreds, draftModel, draftProvider, dsSlice, piSlice } from './test-fixtures';
 
@@ -284,5 +284,159 @@ describe('ops.remoteErrorText', () => {
 
   it('Given 其它错误码 When remoteErrorText Then 「保存失败（<code>）」', () => {
     expect(remoteErrorText({ code: 'settings/teapot' })).toBe('保存失败（settings/teapot）');
+  });
+});
+
+/* ==========================================================================
+ * R4b 流空闲超时（docs/specs/r4b-stream-idle-timeout.md 第 4 节）：O1–O5。
+ *
+ * 只追加用例，不动 ops.ts。timeoutText / streamIdleTimeoutMs 现在还不是
+ * ProviderDraft 的字段，用下面的小工具绕过类型，保证这些用例失败在断言上。
+ * ========================================================================== */
+
+const T_KEY = 'streamIdleTimeoutMs';
+
+function timeoutOf(p: ProviderDraft): unknown {
+  return (p as unknown as Record<string, unknown>)[T_KEY];
+}
+
+function setTimeoutMs(p: ProviderDraft, ms: number | undefined): void {
+  const raw = p as unknown as Record<string, unknown>;
+  if (ms === undefined) delete raw[T_KEY];
+  else raw[T_KEY] = ms;
+}
+
+function setTimeoutText(p: ProviderDraft, text: string): void {
+  (p as unknown as Record<string, unknown>).timeoutText = text;
+}
+
+describe('R4b O1 fixture 对称：显式值进草稿字段、value 层默认不进 extra、不编辑无 op', () => {
+  it('O1 新 fixture load → gpt/cc=1800000、DS undefined、extra 无该键、computeOps 空且 dirty=0', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+
+    expect(timeoutOf(base.providers['gpt-gateway'])).toBe(1800000);
+    expect(timeoutOf(base.providers['cc-gateway'])).toBe(1800000);
+    // DS 只有 value 层的 schema 默认 300000；user 层没有这个键 → 草稿不设（不读 value 层）
+    expect(timeoutOf(base.providers[DS_ROUTE_ID])).toBeUndefined();
+
+    for (const id of ['gpt-gateway', 'cc-gateway', DS_ROUTE_ID]) {
+      expect(base.providers[id].extra, `${id}.extra`).not.toHaveProperty(T_KEY);
+    }
+
+    const ops = computeOps(base, deepClone(base), {});
+    expect(ops.pi).toEqual([]);
+    expect(ops.ds).toEqual([]);
+    expect(ops.dirty).toBe(0);
+    expect(ops.dirtySet.size).toBe(0);
+  });
+});
+
+describe('R4b O2 set / unset 与 DS 的 path', () => {
+  it('O2 pi 改 3600000 → set [providers, gpt-gateway, streamIdleTimeoutMs]，value 是 JS number', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutMs(draft.providers['gpt-gateway'], 3600000);
+
+    const ops = computeOps(base, draft, {});
+    expect(ops.pi).toEqual([{ op: 'set', path: ['providers', 'gpt-gateway', 'streamIdleTimeoutMs'], value: 3600000 }]);
+    expect(typeof (ops.pi[0] as SettingsOpSet).value).toBe('number');
+    expect(ops.dirty).toBe(1);
+  });
+
+  it('O2 删掉显式值 → unset 同一路径', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutMs(draft.providers['gpt-gateway'], undefined);
+
+    expect(computeOps(base, draft, {}).pi).toEqual([
+      { op: 'unset', path: ['providers', 'gpt-gateway', 'streamIdleTimeoutMs'] },
+    ]);
+  });
+
+  it('O2 DS 设 1800000 → ds 里的 path 是 [streamIdleTimeoutMs]，不出现 deepseek-official', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutMs(draft.providers[DS_ROUTE_ID], 1800000);
+
+    const ops = computeOps(base, draft, {});
+    expect(ops.ds).toEqual([{ op: 'set', path: ['streamIdleTimeoutMs'], value: 1800000 }]);
+    expect(JSON.stringify(ops)).not.toContain(DS_ROUTE_ID);
+    expect(JSON.stringify(ops)).not.toContain('providers');
+  });
+});
+
+describe('R4b O3 timeoutText 的三条规则', () => {
+  it('O3 text=30 与 base 1800000 相同 → 无 op、dirty=0', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutText(draft.providers['gpt-gateway'], '30');
+
+    const ops = computeOps(base, draft, {});
+    expect(ops.pi).toEqual([]);
+    expect(ops.dirty).toBe(0);
+  });
+
+  it('O3 text=abc → 无 op 但 dirty=1（非法原文必然是编辑）', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutText(draft.providers['gpt-gateway'], 'abc');
+
+    const ops = computeOps(base, draft, {});
+    expect(ops.pi).toEqual([]);
+    expect(ops.dirty).toBe(1);
+  });
+
+  it('O3 text 清空 → unset', () => {
+    const base = draftFromNamespaces({ pi: piSlice(), ds: dsSlice(), creds: defaultCreds() });
+    const draft = deepClone(base);
+    setTimeoutText(draft.providers['gpt-gateway'], '');
+
+    expect(computeOps(base, draft, {}).pi).toEqual([
+      { op: 'unset', path: ['providers', 'gpt-gateway', 'streamIdleTimeoutMs'] },
+    ]);
+  });
+});
+
+describe('R4b O4 新建提供方：有值才写，且写在 models 之前', () => {
+  const base: DraftState = { providers: {} };
+
+  it('O4 ms=1800000 → set 对象含 streamIdleTimeoutMs:1800000 且在 models 前', () => {
+    const mine = draftProvider({ id: 'mine', api: 'openai-completions', models: [draftModel({ id: 'm' })] });
+    setTimeoutMs(mine, 1800000);
+    const ops = computeOps(base, { providers: { mine } }, {});
+
+    expect(ops.pi).toHaveLength(1);
+    expect(ops.pi[0].op).toBe('set');
+    const value = (ops.pi[0] as SettingsOpSet).value as Record<string, unknown>;
+    expect(value[T_KEY]).toBe(1800000);
+    expect(typeof value[T_KEY]).toBe('number');
+    const keys = Object.keys(value);
+    expect(keys.indexOf(T_KEY)).toBeLessThan(keys.indexOf('models'));
+  });
+
+  it('O4 没有值 → 新建对象里没有这个键', () => {
+    const mine = draftProvider({ id: 'mine', api: 'openai-completions', models: [draftModel({ id: 'm' })] });
+    const ops = computeOps(base, { providers: { mine } }, {});
+
+    const value = (ops.pi[0] as SettingsOpSet).value as Record<string, unknown>;
+    expect(Object.keys(value)).not.toContain(T_KEY);
+  });
+});
+
+describe('R4b O5 user 层是非 number 的异常值：丢弃，不报错、不进 extra、不产 op', () => {
+  it('O5 user 写字符串 "1800000" → 草稿 undefined、extra 无键、无 op', () => {
+    const slice = piSlice(7);
+    const value = deepClone(slice.value);
+    const user = deepClone(slice.user ?? {});
+    const userProviders = user.providers as Record<string, Record<string, unknown>>;
+    userProviders['gpt-gateway'][T_KEY] = '1800000';
+
+    const base = draftFromNamespaces({ pi: { ...slice, value, user }, ds: null, creds: defaultCreds() });
+    expect(timeoutOf(base.providers['gpt-gateway'])).toBeUndefined();
+    expect(base.providers['gpt-gateway'].extra).not.toHaveProperty(T_KEY);
+
+    const ops = computeOps(base, deepClone(base), {});
+    expect(ops.pi).toEqual([]);
+    expect(ops.dirty).toBe(0);
   });
 });
