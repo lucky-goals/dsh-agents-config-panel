@@ -304,7 +304,7 @@ if (atomicWriteAnchor === undefined) {
 {
   const simBase = makeTemp('wuyou-symlink-sim');
   const profilePath = join(simBase, 'profiles/p1');
-  const pluginLink = join(profilePath, 'node_modules/@nanmicoder/dsh-wuyou-agent');
+  const pluginLink = join(profilePath, 'node_modules/@luckygoals/dsh-wuyou-agent');
   const profilesNodeModules = join(simBase, 'profiles');
   mkdirSync(dirname(pluginLink), { recursive: true });
   writeFileSync(join(profilePath, 'package.json'), '{}');

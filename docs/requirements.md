@@ -1,7 +1,7 @@
 # 无忧Agent 插件需求与接口契约
 
 版本：2.12（v2.2–v2.12 的变更见文末 K 节）
-插件包名：`@nanmicoder/dsh-wuyou-agent`  
+插件包名：`@luckygoals/dsh-wuyou-agent`  
 中文名：无忧Agent  
 目标环境：DSH 0.1.7-rc.2  
 
@@ -433,7 +433,7 @@ DSH 的 HMR 会监视 `cordis.patch.yml` 并自动 reconcile，插件不用主�
 
 ```js
 window.__ModuleLoader__.load({
-  id: '@nanmicoder/dsh-wuyou-agent',
+  id: '@luckygoals/dsh-wuyou-agent',
   factory(require) {
     // react 与 react/jsx-runtime 通过宿主 require 获取
     return {
@@ -543,7 +543,7 @@ Panel C 不改变 Panel A、Panel B 的 store、Host 路由、section 注入边�
   ```yaml
   - insert:
       - id: wuyou-agent
-        name: '@nanmicoder/dsh-wuyou-agent'
+        name: '@luckygoals/dsh-wuyou-agent'
   ```
 
 ### E1. 开发验证与热更新

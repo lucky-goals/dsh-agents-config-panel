@@ -75,7 +75,7 @@ $DSH plugin --profile web add -w /Users/jwyuan/source_code/dsh-agents-config-pan
 - `dsh plugin --profile <p> <pnpm-args...>` 会把参数原样交给 DSH 自带的 pnpm 10.4.1，在 `~/.dsh/profiles/<p>` 下执行。
 - **必须带 `-w`**（pnpm 的 `--workspace-root`）。profile 目录里有 `pnpm-workspace.yaml`（`packages: [.]`），profile 本身就是 workspace 根，pnpm 默认拒绝往根里加依赖（t9 实测不带 `-w` 时安装失败）。
 - 路径必须是**绝对路径**。
-- 装进去的是链接：`package.json` 里记录为 `"@nanmicoder/dsh-wuyou-agent": "link:/Users/jwyuan/source_code/dsh-agents-config-panel"`，`node_modules/@nanmicoder/dsh-wuyou-agent` 是指向仓库的符号链接（经 E2E `dsh plugin --profile wuyou-test add -w <仓库>` 实测确认）。这意味着：
+- 装进去的是链接：`package.json` 里记录为 `"@luckygoals/dsh-wuyou-agent": "link:/Users/jwyuan/source_code/dsh-agents-config-panel"`，`node_modules/@luckygoals/dsh-wuyou-agent` 是指向仓库的符号链接（经 E2E `dsh plugin --profile wuyou-test add -w <仓库>` 实测确认）。这意味着：
   - 安装后**不能移动、重命名或删除仓库**，否则 DSH 启动时找不到插件；
   - 运行的是仓库里的 `lib/`，改了源码要重新 `npm run build`，再重启 DSH 才会生效；
   - 不要在 DSH 运行时执行 `rm -rf lib` 这类清理。
@@ -86,10 +86,10 @@ $DSH plugin --profile web add -w /Users/jwyuan/source_code/dsh-agents-config-pan
 
 ```bash
 node -e 'console.log(require("fs").realpathSync(process.argv[1]))' \
-  ~/.dsh/profiles/web/node_modules/@nanmicoder/dsh-wuyou-agent
+  ~/.dsh/profiles/web/node_modules/@luckygoals/dsh-wuyou-agent
 # 期望输出仓库路径
 node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profiles/web/package.json
-# 期望包含 @nanmicoder/dsh-wuyou-agent
+# 期望包含 @luckygoals/dsh-wuyou-agent
 ```
 
 ## 5. 生效
@@ -250,8 +250,8 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 | 保存时出现「配置已被其他地方修改，请刷新后重试」 | 服务端返回 409 `STALE_REVISION`：加载后 `cordis.patch.yml` 被其他地方改过，例如另一个浏览器标签页、手动编辑或 DSH 自己的配置编辑器。文件不会被改动，面板会自动重新拉取最新状态。确认列表后重新操作即可。 |
 | 保存时出现「工具名 'xxx' 已存在」或「id 'xxx' 已存在」 | 服务端返回 409 `DUPLICATE`：新建 subagent 时指定的 toolName 或生成的 id，与 delegation 序列中已有的行重复（面板列表只展示 dsh-tool-subagent 行，但 id 冲突会和所有行比对）。换一个不重复的工具名即可。 |
 | 保存时出现「请求不合法」类错误（400 INVALID） | 请求字段格式不符合要求。常见情况：toolName 格式不对（不匹配 `^subagent(_[a-z0-9]+)*$`）、成员名格式不对（必须以小写字母开头、只含小写字母/数字/连字符）、spawn provider 没填模型、成员 provider 和 model 只填了一个。按提示检查对应字段。 |
-| 设置对话框里没有「无忧Subagent」「无忧Teams」两个页面 | 1）`package.json` 的 `dsh.profile.bundles` 里要有 `@nanmicoder/dsh-wuyou-agent`（第 4 节的核对命令）；2）符号链接要指向仓库，并且仓库里有 `lib/index.js` 和 `lib/client.js`，没有就执行 `npm run build`；3）装完要重启 DSH，并用新的 token 链接刷新页面；4）`$DSH --profile web --dump-config` 只打印合成后的配置并退出，检查里面有没有 `wuyou-agent`；5）检查启动日志里有没有 `wuyou-agent:` 开头的错误；6）服务运行时执行 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<端口>/plugins/dsh-wuyou-agent/api/state`：`401` 表示路由已注册，只是未登录；`404` 表示插件没有注册路由，通常是启动的 profile 不对或插件没有加载。 |
-| 面板显示「请求失败（HTTP 4xx/5xx）」 | 这通常表示插件没有激活，或者网关出错（例如 404、502、504 等非插件错误）。排查步骤：（a）确认 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 里有 `@nanmicoder/dsh-wuyou-agent`；（b）重启 `dsh web` 后用新 token 链接刷新浏览器；（c）查看 DSH 启动日志里有没有 `wuyou-agent:` 开头的激活错误。服务端返回非 JSON 或格式异常时（如 HTML 错误页、空 body），面板统一显示这一提示，不会暴露原始英文异常。 |
+| 设置对话框里没有「无忧Subagent」「无忧Teams」两个页面 | 1）`package.json` 的 `dsh.profile.bundles` 里要有 `@luckygoals/dsh-wuyou-agent`（第 4 节的核对命令）；2）符号链接要指向仓库，并且仓库里有 `lib/index.js` 和 `lib/client.js`，没有就执行 `npm run build`；3）装完要重启 DSH，并用新的 token 链接刷新页面；4）`$DSH --profile web --dump-config` 只打印合成后的配置并退出，检查里面有没有 `wuyou-agent`；5）检查启动日志里有没有 `wuyou-agent:` 开头的错误；6）服务运行时执行 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<端口>/plugins/dsh-wuyou-agent/api/state`：`401` 表示路由已注册，只是未登录；`404` 表示插件没有注册路由，通常是启动的 profile 不对或插件没有加载。 |
+| 面板显示「请求失败（HTTP 4xx/5xx）」 | 这通常表示插件没有激活，或者网关出错（例如 404、502、504 等非插件错误）。排查步骤：（a）确认 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 里有 `@luckygoals/dsh-wuyou-agent`；（b）重启 `dsh web` 后用新 token 链接刷新浏览器；（c）查看 DSH 启动日志里有没有 `wuyou-agent:` 开头的激活错误。服务端返回非 JSON 或格式异常时（如 HTML 错误页、空 body），面板统一显示这一提示，不会暴露原始英文异常。 |
 | 面板显示「未找到 preset-standard-acp 的 delegation 组…」或「未找到 agent-teams 配置…」 | 当前 profile 的 `cordis.patch.yml` 没有对应结构，这时 state 仍返回 200，并把原因放在 `errors` 里。Panel B 需要已安装 `@nanmicoder/dsh-agent-teams`，并在配置里有 `- id: agent-teams`。 |
 | 安装时 pnpm 报错，拒绝向 workspace 根添加依赖 | 安装命令漏了 `-w`。profile 目录是 pnpm workspace 根，请用 `$DSH plugin --profile web add -w <绝对路径>`。 |
 | 安装时提示版本不兼容 | DSH 会打印 `dsh plugin --profile <p> allow-version <pkg>@<ver> --dsh-version <ver> --accept-risk`。本插件只在 0.1.7-rc.2 上验证过，放行前先确认风险。 |
@@ -270,8 +270,8 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 ```bash
 # 1. 停掉 web profile 的 dsh web 进程
 # 2. 卸载
-$DSH plugin --profile web remove @nanmicoder/dsh-wuyou-agent
-# 3. 核对：bundles 里不再有 @nanmicoder/dsh-wuyou-agent
+$DSH plugin --profile web remove @luckygoals/dsh-wuyou-agent
+# 3. 核对：bundles 里不再有 @luckygoals/dsh-wuyou-agent
 node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profiles/web/package.json
 # 4. 重启 dsh web
 ```
@@ -281,6 +281,12 @@ node -e 'console.log(require(process.argv[1]).dsh.profile.bundles)' ~/.dsh/profi
 卸载**不会**撤销面板写进 `cordis.patch.yml` 的修改。这些修改是普通配置，卸载后仍然生效。需要回到安装前的状态时，按第 3 节从备份恢复 `cordis.patch.yml`。
 
 说明：`remove` 在 web profile 上没有实际执行过，这里只核对了 `remove --help` 和 plugin-manager 的对账逻辑。若 pnpm 提示 workspace 根相关错误，同样加 `-w`。
+
+### 从旧包名迁移（@nanmicoder/dsh-wuyou-agent）
+
+- 已按旧包名注册过的 profile：先执行 `$DSH plugin --profile <profile> remove @nanmicoder/dsh-wuyou-agent`（或手动删除该 profile 的 `package.json` 里的这个依赖和 `dsh.profile.bundles` 中的对应条目，并移除 `node_modules/@nanmicoder/dsh-wuyou-agent` 链接）。
+- 再按上文步骤用 `@luckygoals/dsh-wuyou-agent` 重新添加，然后重启 DSH。
+- `@nanmicoder/dsh-agent-teams` 是第三方依赖，不受影响，不要删除。
 
 ## 9. 开发
 

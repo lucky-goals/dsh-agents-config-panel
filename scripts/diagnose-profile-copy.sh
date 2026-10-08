@@ -80,7 +80,7 @@ with sync_playwright() as p:
         took = int((time.time() - started.get(r.request, time.time())) * 1000)
         if "client.js" in r.url:
             body = r.body()
-            m = re.search(rb"window\.__ModuleLoader__\.load\(\{\s*id: '@nanmicoder/dsh-wuyou-agent'[\s\S]*?\n\}\);\n", body)
+            m = re.search(rb"window\.__ModuleLoader__\.load\(\{\s*id: '@luckygoals/dsh-wuyou-agent'[\s\S]*?\n\}\);\n", body)
             served = hashlib.sha256(m.group(0)).hexdigest()[:16] if m else "not-found"
             events.append(f"bundle {r.status} {took}ms served_wuyou_hash={served} local={local_hash} has_new_team_ui={b'\xe6\x96\xb0\xe5\xbb\xba\xe5\x9b\xa2\xe9\x98\x9f' in body}")
         else:

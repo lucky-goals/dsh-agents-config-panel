@@ -1,4 +1,4 @@
-# 无忧Agent（@nanmicoder/dsh-wuyou-agent）
+# 无忧Agent（@luckygoals/dsh-wuyou-agent）
 
 无忧Agent 是一个 DSH（DeepSeek Harness）0.1.7-rc.2 插件，在 DSH Web 的设置对话框里加两个页面，用来直接编辑当前 profile 的 `cordis.patch.yml`，不用手改 YAML：
 
@@ -56,4 +56,4 @@ bash scripts/e2e-isolated-profile.sh  # 在隔离 profile wuyou-test 中安装 E
 
 ## 许可证
 
-MIT © nanmicoder
+MIT © lucky-goals

@@ -9,7 +9,7 @@ PROFILE="wuyou-test"
 PROFILE_DIR="${HOME}/.dsh/profiles/${PROFILE}"
 PATCH_PATH="${PROFILE_DIR}/cordis.patch.yml"
 PACKAGE_PATH="${PROFILE_DIR}/package.json"
-INSTALLED_PLUGIN="${PROFILE_DIR}/node_modules/@nanmicoder/dsh-wuyou-agent"
+INSTALLED_PLUGIN="${PROFILE_DIR}/node_modules/@luckygoals/dsh-wuyou-agent"
 WEB_PATCH="${HOME}/.dsh/profiles/web/cordis.patch.yml"
 WEB_PACKAGE="${HOME}/.dsh/profiles/web/package.json"
 ARTIFACT_DIR="${E2E_ARTIFACTS_DIR:-${ROOT_DIR}/test/e2e/artifacts-v2.1}"
@@ -428,7 +428,7 @@ const packagePath = process.argv[2];
 const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
 const bundles = pkg.dsh?.profile?.bundles;
 if (!Array.isArray(bundles)) throw new Error('clean profile has no dsh.profile.bundles array');
-const next = bundles.filter((item) => item !== '@nanmicoder/dsh-wuyou-agent');
+const next = bundles.filter((item) => item !== '@luckygoals/dsh-wuyou-agent');
 if (next.length === bundles.length) throw new Error('plugin bundle was not present before removal contrast');
 pkg.dsh.profile.bundles = next;
 writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
@@ -452,7 +452,7 @@ NODE
   start_server "${LOG_BUNDLE_RESTORED}" 1
   exchange_token_and_fetch_state "${BUNDLE_RESTORED_STATE}"
   cat >"${BUNDLE_CONTRAST}" <<JSON
-{"removedStatus":"${removed_status}","removedExpected":["404","000"],"restoredStatus":"200","bundle":"@nanmicoder/dsh-wuyou-agent"}
+{"removedStatus":"${removed_status}","removedExpected":["404","000"],"restoredStatus":"200","bundle":"@luckygoals/dsh-wuyou-agent"}
 JSON
   redact_file "${BUNDLE_CONTRAST}"
   printf 'E2E_BUNDLE_CONTRAST removed=%s restored=200 route_recovered=1\n' "${removed_status}"
@@ -516,7 +516,7 @@ ACP_INSTALLED_VERSION="$(node -e 'process.stdout.write(require(process.argv[1]).
 printf 'E2E_INSTALL_ACP package=@deepseek-ai/dsh-subagent-acp version=%s\n' "${ACP_INSTALLED_VERSION}"
 cp "${PACKAGE_PATH}" "${INSTALL_PACKAGE}"
 env -u DSH_PROFILE "${DSH_BIN}" --profile "${PROFILE}" --dump-config >"${BUNDLE_DUMP}" 2>&1
-if ! grep -Fq '# == @nanmicoder/dsh-wuyou-agent' "${BUNDLE_DUMP}" || ! grep -Eq '^- id: wuyou-agent$' "${BUNDLE_DUMP}"; then
+if ! grep -Fq '# == @luckygoals/dsh-wuyou-agent' "${BUNDLE_DUMP}" || ! grep -Eq '^- id: wuyou-agent$' "${BUNDLE_DUMP}"; then
   fail "composed config does not include the installed wuyou-agent bundle"
 fi
 
